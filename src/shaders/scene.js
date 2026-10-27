@@ -778,106 +778,103 @@ Surf stonePodium(vec2 uv, float v, vec2 f, Bld b){
 float boxF(float x, float a, float b, float f){ float w = max(f, 1e-4); return clamp((x - a)/w + 0.5, 0.0, 1.0) * clamp((b - x)/w + 0.5, 0.0, 1.0); }
 float rectF(vec2 q, vec4 r, vec2 f){ return boxF(q.x, r.x, r.z, f.x) * boxF(q.y, r.y, r.w, f.y); }
 float knobF(vec2 d, float rad, vec2 f){ float w = max(max(f.x, f.y), 1e-4); return clamp((rad - length(d))/w + 0.5, 0.0, 1.0) * min(1.0, 4.0*rad*rad/(w*w)); }
-// paint / stain / frame colours: wood (walnut, oak, red, green), glass-door frames (aluminium, black,
-// bronze, grey), steel (grey, green, maroon, navy)
-vec3 doorPaint(int type, int col){
-  if (type == 0) return col == 0 ? vec3(0.16, 0.09, 0.05) : (col == 1 ? vec3(0.36, 0.22, 0.11) : (col == 2 ? vec3(0.42, 0.07, 0.05) : vec3(0.07, 0.20, 0.13)));
-  if (type == 1) return col == 0 ? vec3(0.62, 0.63, 0.64) : (col == 1 ? vec3(0.05, 0.05, 0.055) : (col == 2 ? vec3(0.20, 0.13, 0.07) : vec3(0.40, 0.40, 0.42)));
-  return col == 0 ? vec3(0.32, 0.33, 0.34) : (col == 1 ? vec3(0.09, 0.19, 0.13) : (col == 2 ? vec3(0.25, 0.07, 0.06) : vec3(0.09, 0.11, 0.16)));
-}
+// paint / stain / frame colours, by type x 4 + colour: wood (walnut, oak, red, green), glass-door frames
+// (aluminium, black, bronze, grey), steel (grey, green, maroon, navy)
+const vec3 DOOR_PAINT[12] = vec3[12](
+  vec3(0.16, 0.09, 0.05), vec3(0.36, 0.22, 0.11), vec3(0.42, 0.07, 0.05), vec3(0.07, 0.20, 0.13),
+  vec3(0.62, 0.63, 0.64), vec3(0.05, 0.05, 0.055), vec3(0.20, 0.13, 0.07), vec3(0.40, 0.40, 0.42),
+  vec3(0.32, 0.33, 0.34), vec3(0.09, 0.19, 0.13), vec3(0.25, 0.07, 0.06), vec3(0.09, 0.11, 0.16));
+vec3 doorPaint(int type, int col){ return DOOR_PAINT[type * 4 + col]; }
 // raised panels: the panel field is sunk 1 cm with a 4 cm bevel
 float panelH(vec2 q, vec4 r, vec2 f){ return -0.010 * rectF(q, r, f) + 0.006 * rectF(q, r + vec4(0.04, 0.04, -0.04, -0.04), f); }
+/* Door designs as data, one entry per type x 4 + variety:
+   wood: 4-panel, 6-panel, boards, half-glazed · glass: frameless, narrow aluminium, heavy frame with a mid
+   rail, kick plate · steel: flush with a kick plate, wired-glass window, ribbed, louvre vent.
+   One short piece of code reads them, with no branch per design: the Direct3D shader compiler (used by
+   browsers on Windows) took tens of seconds over the earlier version with a branch for each. "None" is a
+   range above the door (5 m). */
+const vec2 D_ROW0[12] = vec2[12](vec2(0.22, 0.95), vec2(0.20, 0.80), vec2(5.0), vec2(0.20, 0.90), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0));
+const vec2 D_ROW1[12] = vec2[12](vec2(1.12, 2.08), vec2(0.96, 1.56), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0));
+const vec2 D_ROW2[12] = vec2[12](vec2(5.0), vec2(1.70, 2.08), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0), vec2(5.0));
+// glass pane: x0 = a0 x leaf width + b0, x1 = a1 x leaf width + b1 (D_GX = a0, b0, a1, b1); heights D_GY
+const vec4 D_GX[12] = vec4[12](vec4(0.0), vec4(0.0), vec4(0.0), vec4(0.0, 0.11, 1.0, -0.11),
+  vec4(0.0, 0.0, 1.0, 0.0), vec4(0.0, 0.055, 1.0, -0.055), vec4(0.0, 0.10, 1.0, -0.10), vec4(0.0, 0.07, 1.0, -0.07),
+  vec4(0.0), vec4(0.5, -0.13, 0.5, 0.13), vec4(0.0), vec4(0.0));
+const vec2 D_GY[12] = vec2[12](vec2(5.0), vec2(5.0), vec2(5.0), vec2(1.05, 2.08), vec2(0.0, 2.2), vec2(0.25, 2.14), vec2(0.15, 2.10), vec2(0.32, 2.14),
+  vec2(5.0), vec2(1.30, 1.90), vec2(5.0), vec2(5.0));
+// D_FLAGS: x = split panels into two columns, y = cross bar on the pane, z = mid rail on the glass, w = patch fittings
+const vec4 D_FLAGS[12] = vec4[12](vec4(1, 0, 0, 0), vec4(1, 0, 0, 0), vec4(0), vec4(0, 1, 0, 0), vec4(0, 0, 0, 1), vec4(0), vec4(0, 0, 1, 0), vec4(0), vec4(0), vec4(0), vec4(0), vec4(0));
+// D_SURF: x = board grooves, y = wired glass, z = ribs, w = louvre vent
+const vec4 D_SURF[12] = vec4[12](vec4(0), vec4(0), vec4(1, 0, 0, 0), vec4(0), vec4(0), vec4(0), vec4(0), vec4(0), vec4(0), vec4(0, 1, 0, 0), vec4(0, 0, 1, 0), vec4(0, 0, 0, 1));
+// D_KICK: kick plate height and how metallic; D_HANDLE: 0 knob, 1 lever on a rose, 2 vertical pull bar, 3 push bar
+const vec2 D_KICK[12] = vec2[12](vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.0), vec2(0.32, 0.6), vec2(0.25, 0.7), vec2(0.0), vec2(0.0), vec2(0.0));
+const int D_HANDLE[12] = int[12](0, 0, 0, 0, 2, 3, 2, 3, 1, 1, 1, 1);
+const vec3 D_METAL[3] = vec3[3](vec3(0.55, 0.42, 0.17), vec3(0.70, 0.70, 0.68), vec3(0.55, 0.55, 0.54));
 Surf doorLeaf(int code, float a, float y, vec2 f, vec3 wp){
-  int type = code >> 6, vr = (code >> 4) & 3, col = (code >> 2) & 3;
+  int type = code >> 6, vr = (code >> 4) & 3, col = (code >> 2) & 3, d = type * 4 + vr;
   bool dbl = (code & 2) != 0, tr = (code & 1) != 0;
   float Wl = dbl ? 1.8 : 0.95, hw = 0.5*Wl, lw = dbl ? hw : Wl;
   float u = dbl ? hw - abs(a) : a + hw;               // single: hinge on the left; double: hinges outside
   vec2 q = vec2(u, y);
   float fn = max(f.x, f.y);
-  vec3 paint = doorPaint(type, col);
+  float isWood = type == 0 ? 1.0 : 0.0, isGlass = type == 1 ? 1.0 : 0.0, isSteel = type == 2 ? 1.0 : 0.0;
+  vec3 paint = DOOR_PAINT[type * 4 + col];
   Surf s = blank();
   // frame around the leaves and the transom, standing 1.2 cm proud
-  s.alb = type == 1 ? paint : paint * 0.8; s.h = 0.012; s.refl = type == 1 ? 0.25 : 0.06;
+  s.alb = paint * mix(0.8, 1.0, isGlass); s.h = 0.012; s.refl = mix(0.06, 0.25, isGlass);
   float leaf = boxF(a, -hw, hw, f.x) * boxF(y, 0.0, 2.2, f.y);
   float trn = tr ? boxF(a, -hw, hw, f.x) * boxF(y, 2.26, 2.72, f.y) : 0.0;
-  vec3 c = paint; float hh = 0.0, gl = 0.0, met = 0.0; vec3 metC = vec3(0.62, 0.62, 0.60);
-  if (type == 0){
-    // wood: grain along the boards
-    c *= 1.0 + 0.22 * fbmG(vec2(u, y * 0.12), 0.05, 0.0008, fn);
-    float x0 = 0.11, x1 = lw - 0.11, xm = 0.5*lw;
-    bool two = lw > 0.6;
-    if (vr == 0 || vr == 1){
-      // 4-panel or 6-panel door
-      vec4 c0 = two ? vec4(x0, 0.0, xm - 0.05, 0.0) : vec4(x0, 0.0, x1, 0.0);
-      vec4 c1 = vec4(xm + 0.05, 0.0, x1, 0.0);
-      vec2 r0 = vr == 0 ? vec2(0.22, 0.95) : vec2(0.20, 0.80), r1 = vr == 0 ? vec2(1.12, 2.08) : vec2(0.96, 1.56), r2 = vec2(1.70, 2.08);
-      hh += panelH(q, vec4(c0.x, r0.x, c0.z, r0.y), f) + panelH(q, vec4(c0.x, r1.x, c0.z, r1.y), f);
-      if (vr == 1) hh += panelH(q, vec4(c0.x, r2.x, c0.z, r2.y), f);
-      if (two){
-        hh += panelH(q, vec4(c1.x, r0.x, c1.z, r0.y), f) + panelH(q, vec4(c1.x, r1.x, c1.z, r1.y), f);
-        if (vr == 1) hh += panelH(q, vec4(c1.x, r2.x, c1.z, r2.y), f);
-      }
-    } else if (vr == 2){
-      // boards with V-grooves, each board a slightly different tone
-      hh -= 0.006 * pulseF(u, 0.14, 0.012, f.x);
-      c *= 1.0 + 0.12 * (hf(h2(ivec2(int(floor((u + wp.x + wp.z) / 0.14)), code), uSeed + 211u)) - 0.5) * gate(0.14, f.x);
-    } else {
-      // half-glazed: a panel below, a pane with a cross bar above
-      hh += panelH(q, vec4(x0, 0.20, x1, 0.90), f);
-      float pane = rectF(q, vec4(x0, 1.05, x1, 2.08), f);
-      float bar = max(boxF(u, xm - 0.02, xm + 0.02, f.x), boxF(y, 1.545, 1.585, f.y));
-      gl = pane * (1.0 - bar);
-    }
-    // knob (brass)
-    met = knobF(q - vec2(lw - 0.07, 0.98), 0.028, f); metC = vec3(0.55, 0.42, 0.17);
-  } else if (type == 1){
-    // glass door: frameless with patch fittings, narrow aluminium, heavy frame with mid rail, or with a kick plate
-    float sw = vr == 0 ? 0.0 : (vr == 1 ? 0.055 : (vr == 2 ? 0.10 : 0.07));
-    float top = vr == 0 ? 0.0 : (vr == 2 ? 0.10 : 0.06);
-    float bot = vr == 0 ? 0.0 : (vr == 1 ? 0.25 : (vr == 2 ? 0.15 : 0.32));
-    gl = rectF(q, vec4(sw, bot, lw - sw, 2.2 - top), f);
-    if (vr == 2) gl *= 1.0 - boxF(y, 0.95, 1.07, f.y);
-    if (vr == 0){
-      float fit = rectF(q, vec4(0.0, 0.0, 0.26, 0.11), f) + rectF(q, vec4(0.0, 2.09, 0.26, 2.2), f);
-      gl *= 1.0 - fit; met = fit;
-    }
-    if (vr == 3){ float kick = rectF(q, vec4(0.0, 0.0, lw, 0.32), f); met = max(met, kick * 0.6); }
-    // vertical pull bar, or a horizontal push bar
-    float bar = (vr == 0 || vr == 2) ? rectF(q, vec4(lw - 0.13, 0.80, lw - 0.10, 1.50), f) : rectF(q, vec4(0.08, 0.96, lw - 0.08, 1.02), f);
-    met = max(met, bar); metC = vec3(0.70, 0.70, 0.68);
-  } else {
-    // steel: painted, a little worn near the bottom
-    c *= 1.0 + 0.05 * fbmG(q, 0.3, 0.002, fn);
-    c *= 1.0 - 0.12 * boxF(y, 0.0, 0.3, f.y) * smoothstep(0.35, 0.85, vnoise(vec2(u + wp.x + wp.z, y) * 4.0)) * gate(0.2, fn);
-    if (vr == 1){
-      // small wired-glass window
-      float win = rectF(q, vec4(0.5*lw - 0.13, 1.30, 0.5*lw + 0.13, 1.90), f);
-      float wire = max(pulseF(u, 0.025, 0.0015, f.x), pulseF(y, 0.025, 0.0015, f.y));
-      gl = win * (1.0 - 0.6 * wire);
-      hh -= 0.004 * rectF(q, vec4(0.5*lw - 0.16, 1.27, 0.5*lw + 0.16, 1.93), f) * (1.0 - win);
-    } else if (vr == 2){
-      hh += 0.006 * pulseF(y, 0.10, 0.05, f.y) * boxF(y, 0.1, 2.1, f.y);      // ribbed service door
-    } else if (vr == 3){
-      float lv = rectF(q, vec4(0.15, 0.12, lw - 0.15, 0.50), f);              // louvre vent
-      c = mix(c, c * 0.25, lv * pulseF(y, 0.04, 0.02, f.y)); hh -= 0.004 * lv;
-    } else {
-      met = rectF(q, vec4(0.0, 0.0, lw, 0.25), f) * 0.7;                       // kick plate
-    }
-    // lever handle on a round rose
-    met = max(met, max(rectF(q, vec4(lw - 0.18, 0.965, lw - 0.06, 0.995), f), knobF(q - vec2(lw - 0.07, 0.98), 0.03, f)));
-    metC = vec3(0.55, 0.55, 0.54);
+  vec4 fl = D_FLAGS[d], sf = D_SURF[d];
+  // paint or wood grain (along the boards for wood), and wear near the bottom of steel doors
+  vec3 c = paint;
+  c *= 1.0 + mix(0.05 * isSteel, 0.22, isWood) * fbmG(isWood > 0.5 ? vec2(u, y * 0.12) : q, isWood > 0.5 ? 0.05 : 0.3, isWood > 0.5 ? 0.0008 : 0.002, fn);
+  c *= 1.0 - 0.12 * isSteel * boxF(y, 0.0, 0.3, f.y) * smoothstep(0.35, 0.85, vnoise(vec2(u + wp.x + wp.z, y) * 4.0)) * gate(0.2, fn);
+  float hh = 0.0;
+  // raised panels: up to three rows, in one or two columns
+  float x0 = 0.11, x1 = lw - 0.11, xm = 0.5*lw;
+  bool two = fl.x > 0.5 && lw > 0.6;
+  vec2 c0 = two ? vec2(x0, xm - 0.05) : vec2(x0, x1), c1 = two ? vec2(xm + 0.05, x1) : vec2(5.0);
+  for (int r = ZERO; r < 3; r++){
+    vec2 ry = r == 0 ? D_ROW0[d] : (r == 1 ? D_ROW1[d] : D_ROW2[d]);
+    hh += panelH(q, vec4(c0.x, ry.x, c0.y, ry.y), f) + panelH(q, vec4(c1.x, ry.x, c1.y, ry.y), f);
   }
+  // boards with V-grooves, each a slightly different tone; ribs; louvre vent
+  hh -= 0.006 * sf.x * pulseF(u, 0.14, 0.012, f.x);
+  c *= 1.0 + sf.x * 0.12 * (hf(h2(ivec2(int(floor((u + wp.x + wp.z) / 0.14)), code), uSeed + 211u)) - 0.5) * gate(0.14, f.x);
+  hh += 0.006 * sf.z * pulseF(y, 0.10, 0.05, f.y) * boxF(y, 0.1, 2.1, f.y);
+  float lv = sf.w * rectF(q, vec4(0.15, 0.12, lw - 0.15, 0.50), f);
+  c = mix(c, c * 0.25, lv * pulseF(y, 0.04, 0.02, f.y)); hh -= 0.004 * lv;
+  // the glass pane, less what crosses it: a cross bar, a mid rail, patch fittings, wire mesh
+  vec4 gx = D_GX[d]; vec2 gy = D_GY[d];
+  float pane = rectF(q, vec4(gx.x * lw + gx.y, gy.x, gx.z * lw + gx.w, gy.y), f);
+  float bar = fl.y * max(boxF(u, xm - 0.02, xm + 0.02, f.x), boxF(y, 1.545, 1.585, f.y));
+  float rail = fl.z * boxF(y, 0.95, 1.07, f.y);
+  float fit = fl.w * (rectF(q, vec4(0.0, 0.0, 0.26, 0.11), f) + rectF(q, vec4(0.0, 2.09, 0.26, 2.2), f));
+  float wire = sf.y * 0.6 * max(pulseF(u, 0.025, 0.0015, f.x), pulseF(y, 0.025, 0.0015, f.y));
+  float gl = pane * (1.0 - bar) * (1.0 - rail) * (1.0 - fit) * (1.0 - wire);
+  hh -= 0.004 * sf.y * rectF(q, vec4(0.5*lw - 0.16, 1.27, 0.5*lw + 0.16, 1.93), f) * (1.0 - pane);   // the small window's recessed frame
+  // metal parts: fittings, a kick plate, and the handle
+  vec2 kick = D_KICK[d];
+  float kp = kick.y * rectF(q, vec4(0.0, 0.0, lw, kick.x), f);
+  int ht = D_HANDLE[d];
+  float knob = knobF(q - vec2(lw - 0.07, 0.98), ht == 0 ? 0.028 : 0.03, f);
+  float lever = max(rectF(q, vec4(lw - 0.18, 0.965, lw - 0.06, 0.995), f), knob);
+  float pull = rectF(q, vec4(lw - 0.13, 0.80, lw - 0.10, 1.50), f);
+  float push = rectF(q, vec4(0.08, 0.96, lw - 0.08, 1.02), f);
+  float handle = ht == 0 ? knob : (ht == 1 ? lever : (ht == 2 ? pull : push));
+  float met = max(max(fit, kp), handle);
   // the gap between the leaves of a double door
   if (dbl) c = mix(c, c * 0.15, boxF(a, -0.004, 0.004, f.x));
-  c = mix(c, metC, met);
+  c = mix(c, D_METAL[type], met);
   s.alb = mix(s.alb, c, leaf);
   s.h = mix(s.h, hh + 0.004 * met, leaf);
-  s.refl = mix(s.refl, mix(type == 2 ? 0.10 : 0.05, 0.45, met), leaf);
+  s.refl = mix(s.refl, mix(mix(0.05, 0.10, isSteel), 0.45, met), leaf);
   s.glass = clamp(gl * leaf + trn * boxF(y, 2.30, 2.68, f.y) * boxF(a, -hw + 0.04, hw - 0.04, f.x), 0.0, 1.0);
   s.interior = vec3(0.10, 0.085, 0.065);        // a dim hallway or lobby behind the glass
   return s;
 }
 // Which door surface (if any) p is on. Also sets gDoorU when p is on a wall right beside a door.
+// The loop only finds the door; the shading happens once, after it.
 bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
 #ifdef NO_DOORS
   s = blank(); return false;
@@ -888,35 +885,38 @@ bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
   vec4 dC = cityT(cell, 5), r = b.rect;
   vec2 cen = (vec2(cell) + 0.5) * C;
   float y = p.y - 0.15;
-  for (int k = 0 + ZERO; k < 4; k++){
+  int found = -1, code = 0;
+  float a = 0.0, dpt = 0.0, along = 0.0, hw = 0.0, Hn = 0.0;
+  vec2 out2 = vec2(0.0);
+  for (int k = ZERO; k < 4; k++){
     if (dO[k] > 900.0) continue;
-    int code = int(dC[k] + 0.5);
-    float Wn, Hn; doorDims(code, Wn, Hn);
+    int cd = int(dC[k] + 0.5);
+    float Wn, H; doorDims(cd, Wn, H);
     bool xf = k < 2;                                    // the wall faces west or east
-    float along = xf ? lp.y : lp.x, acr = xf ? lp.x : lp.y;
+    float al = xf ? lp.y : lp.x, acr = xf ? lp.x : lp.y;
     float face = k == 0 ? r.x : (k == 1 ? r.z : (k == 2 ? r.y : r.w));
-    float dpt = (k == 0 || k == 2) ? acr - face : face - acr;   // depth into the wall
-    float a = along - dO[k];
-    if (k == 1 || k == 2) a = -a;                       // + = to the right, seen from the street
-    if (abs(a) > 0.5*Wn + 1.6 || y > Hn + 0.5 || dpt > 0.3 || dpt < -0.05) continue;
-    vec2 out2 = k == 0 ? vec2(-1.0, 0.0) : (k == 1 ? vec2(1.0, 0.0) : (k == 2 ? vec2(0.0, -1.0) : vec2(0.0, 1.0)));
-    float hw = 0.5*Wn;
-    gDoorU = (xf ? cen.y : cen.x) + dO[k]; gDoorHW = hw;
-    vec3 trim = b.kind > 1.5 ? vec3(0.06, 0.06, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; dark metal on podiums
-    if (dpt < 0.02){
-      // on the wall: a 10 cm surround around the opening
-      if (abs(a) < hw + 0.1 && y < Hn + 0.1 && dot(n.xz, out2) > 0.7){
-        s.alb = trim * (1.0 + 0.08 * fbmG(vec2(along, p.y), 0.05, 0.002, max(f.x, f.y))); return true;
-      }
-      return false;
-    }
-    if (abs(a) > hw + 0.02 || y > Hn + 0.02) continue;
-    if (dpt > 0.22 && dot(n.xz, out2) > 0.7){ s = doorLeaf(code, a, y, f, p); return true; }
-    // inside the opening: the step, and the reveals around it
-    if (n.y > 0.7){ s.alb = vec3(0.46, 0.45, 0.43); return true; }
-    s.alb = (code >> 6) == 1 ? doorPaint(1, (code >> 2) & 3) : trim * 0.85; s.refl = 0.06; return true;
+    float dp = (k == 0 || k == 2) ? acr - face : face - acr;   // depth into the wall
+    float ak = al - dO[k];
+    if (k == 1 || k == 2) ak = -ak;                     // + = to the right, seen from the street
+    if (abs(ak) > 0.5*Wn + 1.6 || y > H + 0.5 || dp > 0.3 || dp < -0.05) continue;
+    gDoorU = (xf ? cen.y : cen.x) + dO[k]; gDoorHW = 0.5*Wn;
+    code = cd; a = ak; dpt = dp; along = al; hw = 0.5*Wn; Hn = H;
+    out2 = k == 0 ? vec2(-1.0, 0.0) : (k == 1 ? vec2(1.0, 0.0) : (k == 2 ? vec2(0.0, -1.0) : vec2(0.0, 1.0)));
+    if (dp < 0.02 || (abs(ak) <= hw + 0.02 && y <= H + 0.02)){ found = k; break; }
   }
-  return false;
+  if (found < 0) return false;
+  vec3 trim = b.kind > 1.5 ? vec3(0.06, 0.06, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; dark metal on podiums
+  if (dpt < 0.02){
+    // on the wall: a 10 cm surround around the opening
+    if (abs(a) < hw + 0.1 && y < Hn + 0.1 && dot(n.xz, out2) > 0.7){
+      s.alb = trim * (1.0 + 0.08 * fbmG(vec2(along, p.y), 0.05, 0.002, max(f.x, f.y))); return true;
+    }
+    return false;
+  }
+  if (dpt > 0.22 && dot(n.xz, out2) > 0.7){ s = doorLeaf(code, a, y, f, p); return true; }
+  // inside the opening: the step, and the reveals around it
+  if (n.y > 0.7){ s.alb = vec3(0.46, 0.45, 0.43); return true; }
+  s.alb = (code >> 6) == 1 ? doorPaint(1, (code >> 2) & 3) : trim * 0.85; s.refl = 0.06; return true;
 #endif
 }
 
@@ -1083,8 +1083,9 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
   vec2 uv = an.y > 0.7 ? p.xz : (an.x > an.z ? vec2(p.z, p.y) : vec2(p.x, p.y));
   vec2 f = vec2(cone * (t + t0) + 0.005);
   vec3 alb; float glassy; vec3 inter = vec3(0.04);
-  if (uReflMode == 3){ Surf s = surfAt(mat, p, n, uv, f); alb = s.alb; glassy = s.glass; inter = s.interior; }
-  else alb = reflAlbedo(mat, p, n, uv, f, glassy);
+  // Every mode uses the simple colours: calling the full material code here as well doubled the shader
+  // the Direct3D compiler has to digest (~55 s more on Windows). "Full" adds ambient occlusion.
+  alb = reflAlbedo(mat, p, n, uv, f, glassy);
   float shd = 1.0;
   if (uReflMode >= 2) shd = (dot(uKeyCol, vec3(1.0)) > 0.0 && dot(n, uKeyDir) > -0.05) ? softShadow(p + n * max(0.05, 0.0015 * t), uKeyDir, 0.5) : 0.0;
   float ao = uReflMode == 3 ? calcAO(p, n) : 1.0;
