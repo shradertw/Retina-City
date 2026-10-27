@@ -1,0 +1,14 @@
+{
+  "name": "retina-city",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build-single.mjs",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "esbuild": "0.24.0",
+    "eslint": "9.14.0",
+    "globals": "15.12.0"
+  }
+}
