@@ -10,10 +10,11 @@ import { SEED, h2, hf, rnd } from './hash.js';
    - closed-off loops of street are joined to the rest of the network (a few are kept);
    - buildings fill their lots: behind the sidewalk on street sides, and across a filled-in segment
      either meeting the neighbour's building or leaving a 4 m alley (seeded per segment).
-   Computed once here; the map repeats every 256 lots (~11 km). The shader reads it from a texture. */
+   Computed once at startup (buildCity); the map repeats every 256 lots (~11 km). The shader reads it from a texture. */
 export const CITY_N = 256;
 function smooth01(a, b, x){ const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); }
-export const city = (() => {
+export let city = null;
+export function buildCity(){ city = (() => {
   const N = CITY_N, M = N - 1;
   const L = (x, z) => ((z & M) * N) + (x & M);
   const mE = new Uint8Array(N * N), mN = new Uint8Array(N * N), lockE = new Uint8Array(N * N);
@@ -35,21 +36,34 @@ export const city = (() => {
   // the starting point stands on a north-south street at x = 0: keep it open
   for (let j = -4; j < 4; j++){ mE[L(-1, j)] = 0; lockE[L(-1, j)] = 1; }
   // the four road segments meeting at intersection (i, j) (the lot (i, j)'s south-west corner): N, S, E, W
-  const arms = (i, j) => [[mE, L(i - 1, j)], [mE, L(i - 1, j - 1)], [mN, L(i, j - 1)], [mN, L(i - 1, j - 1)]];
+  // (Written without temporary arrays: these run millions of times at startup.)
+  const armArr = (q) => q < 2 ? mE : mN;
+  const armIx = (i, j, q) => q === 0 ? L(i - 1, j) : q === 1 ? L(i - 1, j - 1) : q === 2 ? L(i, j - 1) : L(i - 1, j - 1);
+  const isOpen = (i, j, q) => !armArr(q)[armIx(i, j, q)];
   const OPP = [1, 0, 3, 2], STEP = [[0, 1], [0, -1], [1, 0], [-1, 0]];
-  const openCount = (i, j) => { let o = 0; for (const [a, ix] of arms(i, j)) if (!a[ix]) o++; return o; };
-  // 1. dead ends
+  const openCount = (i, j) => (mE[L(i - 1, j)] ? 0 : 1) + (mE[L(i - 1, j - 1)] ? 0 : 1) + (mN[L(i, j - 1)] ? 0 : 1) + (mN[L(i - 1, j - 1)] ? 0 : 1);
+  // 1. dead ends. A running count of open streets per intersection makes each check one lookup; every
+  // change to a segment updates the two intersections at its ends.
+  const open = new Uint8Array(N * N);
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) open[L(i, j)] = openCount(i, j);
+  const setSeg = (arr, ix, v) => {
+    if (arr[ix] === v) return;
+    arr[ix] = v;
+    const x = ix & M, z = ix >> 8, d = v ? -1 : 1;              // the segment's lot; filling in closes a street
+    if (arr === mE){ open[L(x + 1, z)] += d; open[L(x + 1, z + 1)] += d; }
+    else { open[L(x, z + 1)] += d; open[L(x + 1, z + 1)] += d; }
+  };
   for (let pass = 0; pass < 100; pass++){
     let changed = 0;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++){
-      const a = arms(i, j); let o = 0, k = -1;
-      for (let q = 0; q < 4; q++) if (!a[q][0][a[q][1]]){ o++; k = q; }
-      if (o !== 1) continue;
+      if (open[(j << 8) | i] !== 1) continue;
+      let k = 0;
+      while (!isOpen(i, j, k)) k++;
       const hn = h2(i, j, (SEED ^ 0xDE4D) >>> 0);
       if (hf(hn) < 0.04) continue;                                   // a rare cul-de-sac
-      const [arr, ix] = a[k], [oarr, oix] = a[OPP[k]];
+      const arr = armArr(k), ix = armIx(i, j, k), ko = OPP[k];
       const locked = arr === mE && lockE[ix];
-      if (!locked && rnd(hn, pass + 1) < 0.5) arr[ix] = 1; else oarr[oix] = 0;
+      if (!locked && rnd(hn, pass + 1) < 0.5) setSeg(arr, ix, 1); else setSeg(armArr(ko), armIx(i, j, ko), 0);
       changed++;
     }
     if (!changed) break;
@@ -60,11 +74,11 @@ export const city = (() => {
   for (let iter = 0; iter < 8; iter++){
     comp.fill(-1); const sizes = [], firsts = [];
     for (let n0 = 0; n0 < N * N; n0++){
-      if (comp[n0] >= 0 || openCount(n0 & M, n0 >> 8) === 0) continue;
+      if (comp[n0] >= 0 || open[n0] === 0) continue;
       const c = sizes.length; let qh = 0, qt = 0; queue[qt++] = n0; comp[n0] = c;
       while (qh < qt){
-        const n = queue[qh++], i = n & M, j = n >> 8, a = arms(i, j);
-        for (let q = 0; q < 4; q++){ if (a[q][0][a[q][1]]) continue; const m = L(i + STEP[q][0], j + STEP[q][1]); if (comp[m] < 0){ comp[m] = c; queue[qt++] = m; } }
+        const n = queue[qh++], i = n & M, j = n >> 8;
+        for (let q = 0; q < 4; q++){ if (!isOpen(i, j, q)) continue; const m = L(i + STEP[q][0], j + STEP[q][1]); if (comp[m] < 0){ comp[m] = c; queue[qt++] = m; } }
       }
       sizes.push(qt); firsts.push(n0);
     }
@@ -85,7 +99,7 @@ export const city = (() => {
         }
       }
       for (let m = hitN; m >= 0 && prev[m] >= 0; m = prev[m]){
-        const n = prev[m], [arr, ix] = arms(n & M, n >> 8)[prevQ[m]]; arr[ix] = 0;
+        const n = prev[m], q = prevQ[m]; setSeg(armArr(q), armIx(n & M, n >> 8, q), 0);
         if (comp[m] !== big) comp[m] = big;
       }
       for (let n = 0; n < N * N; n++) if (comp[n] === c) comp[n] = big;
@@ -99,25 +113,24 @@ export const city = (() => {
   //    4: door position along the W, E, S, N walls (999 = none); 5: door codes (type, variety, colour, double, transom)
   const data = new Float32Array(N * N * 24);
   const alley = (x, z, s) => hf(h2(x, z, (SEED ^ s) >>> 0)) < 0.35;
+  const valid = new Int8Array(8), r = new Float64Array(10);
   for (let z = 0; z < N; z++) for (let x = 0; x < N; x++){
     const i = L(x, z), o = (z * N * 6 + x * 6) * 4;
     data[o + 16] = data[o + 17] = data[o + 18] = data[o + 19] = 999;
     const mW = mE[L(x - 1, z)], mEe = mE[i], mS = mN[L(x, z - 1)], mNn = mN[i];
     // a lot's corner piece of an intersection square belongs to the block only when that intersection is
     // fully inside the block (all four segments filled in); otherwise it is road
-    const inSW = openCount(x, z) === 0, inSE = openCount(x + 1, z) === 0, inNW = openCount(x, z + 1) === 0, inNE = openCount(x + 1, z + 1) === 0;
+    const inSW = open[L(x, z)] === 0, inSE = open[L(x + 1, z)] === 0, inNW = open[L(x, z + 1)] === 0, inNE = open[L(x + 1, z + 1)] === 0;
     const flags = (mW ? 1 : 0) | (mEe ? 2 : 0) | (mS ? 4 : 0) | (mNn ? 8 : 0)
                 | (mW && mS && inSW ? 16 : 0) | (mEe && mS && inSE ? 32 : 0) | (mW && mNn && inNW ? 64 : 0) | (mEe && mNn && inNE ? 128 : 0);
     // street light at intersection (x, z): the seed picks a corner and which open street its arm reaches over
-    const a = arms(x, z), open = a.map(([arr, ix]) => !arr[ix]);
-    const valid = [];
-    for (let c = 0; c < 8; c++){
-      const sx = (c & 1) ? 1 : -1, sz = (c & 2) ? 1 : -1;
-      if ((c & 4) === 0 ? open[sz > 0 ? 0 : 1] : open[sx > 0 ? 2 : 3]) valid.push(c);
-    }
-    const lamp = valid.length ? valid[h2(x, z, (SEED ^ 0x1A3B) >>> 0) % valid.length] + 1 : 0;
+    const oN = isOpen(x, z, 0), oS = isOpen(x, z, 1), oE = isOpen(x, z, 2), oW = isOpen(x, z, 3);
+    let nValid = 0;
+    for (let c = 0; c < 8; c++) if ((c & 4) === 0 ? ((c & 2) ? oN : oS) : ((c & 1) ? oE : oW)) valid[nValid++] = c;
+    const lamp = nValid ? valid[h2(x, z, (SEED ^ 0x1A3B) >>> 0) % nValid] + 1 : 0;
     data[o + 12] = flags; data[o + 13] = lamp;
-    const h = h2(x, z, SEED), r = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(k => rnd(h, k));
+    const h = h2(x, z, SEED);
+    for (let k = 0; k < 10; k++) r[k] = rnd(h, k);
     data[o + 11] = r[7];
     if (r[1] < 0.08){ data[o + 10] = -1; continue; }                    // an open plaza
     // A building reaching across two joined sides would fill a corner that is road: it pulls back on one
@@ -140,7 +153,8 @@ export const city = (() => {
       hx = Math.min(7 + r[3] * 5, rhx - 1.5); hz = Math.min(7 + r[4] * 5, rhz - 1.5);
       cx = rcx + (rhx - 1.5 - hx) * (r[6] * 2 - 1); cz = rcz + (rhz - 1.5 - hz) * (r[8] * 2 - 1);
     }
-    data.set([x0, z0, x1, z1, cx, cz, hx, hz, bh, podH, kind], o);
+    data[o] = x0; data[o + 1] = z0; data[o + 2] = x1; data[o + 3] = z1; data[o + 4] = cx; data[o + 5] = cz;
+    data[o + 6] = hx; data[o + 7] = hz; data[o + 8] = bh; data[o + 9] = podH; data[o + 10] = kind;
     // Doors: each wall facing an open street, 90% of the time, kept 2.2 m from the corners. The type mostly
     // suits the building: brick mostly wood, concrete metal or glass, tower podiums mostly glass.
     // code = type (0 wood, 1 glass, 2 metal) x 64 + variety x 16 + colour x 4 + double x 2 + transom
@@ -156,7 +170,7 @@ export const city = (() => {
     }
   }
   return { N, data, L };
-})();
+})(); return city; }
 export function getBld(cx, cz){
   const o = (((cz & (CITY_N - 1)) * CITY_N * 6) + (cx & (CITY_N - 1)) * 6) * 4, d = city.data;
   return { x0: d[o], z0: d[o + 1], x1: d[o + 2], z1: d[o + 3], cx: d[o + 4], cz: d[o + 5], hx: d[o + 6], hz: d[o + 7],

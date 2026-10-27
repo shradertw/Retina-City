@@ -118,6 +118,7 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .start div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px 22px; max-width: 360px; text-align: left; display: grid; gap: 8px; }
 .start strong { font-size: 16px; }
 .start p { margin: 0; color: var(--muted); font-size: 12.5px; }
+.start .loadlist { margin: 4px 0 0; color: var(--muted); font-family: var(--mono); font-size: 11px; line-height: 1.5; white-space: pre; }
 
 .err { position: fixed; inset: auto 12px 12px 12px; background: #2a0f0f; color: #ffd9d0; border: 1px solid #7a2a22; border-radius: 6px; padding: 12px; font-family: var(--mono); font-size: 11px; white-space: pre-wrap; max-height: 40%; overflow: auto; }
 .dials { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }

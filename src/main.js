@@ -1,5 +1,7 @@
 import { SEED, CELL, HALF, LAMP_TOP, hu, h2, hf, rnd } from './world/hash.js';
-import { CITY_N, city, getBld, slabBoxesJS } from './world/cityplan.js';
+import { CITY_N, city, buildCity, getBld, slabBoxesJS } from './world/cityplan.js';
+import { compilePrograms, nextPaint } from './core/gpu.js';
+import { loadReport } from './ui/loading.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
 import { SCENE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
@@ -11,7 +13,7 @@ import { drawCompass } from './ui/compass.js';
 import { RESOLVE_FS, ACCUM_FS, DOF_FS, DOWN_FS, GDOWN_FS, BDOWN_FS, BUP_FS, STREAK_FS, AFTER_FS, SQAVG_FS, LIDGLOW_FS, METER_FS, PRESENT_FS } from './shaders/post.js';
 
 // Everything that runs: WebGL setup, state and controls, sky, movement, the frame loop and the eye.
-function start(){
+async function start(){
 "use strict";
 /* ---------------- WebGL setup ---------------- */
 const canvas = document.getElementById("view");
@@ -20,23 +22,23 @@ const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPr
 if (!gl){ errBox("This page needs WebGL2. Try a current Chrome, Edge or Firefox with hardware acceleration enabled."); return; }
 const floatFB = !!gl.getExtension("EXT_color_buffer_float");
 
-function compile(type, src){
-  const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
-  return s;
-}
-function program(fs){
-  const p = gl.createProgram();
-  gl.attachShader(p, compile(gl.VERTEX_SHADER, VS)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
-  gl.bindAttribLocation(p, 0, "aPos"); gl.linkProgram(p);
-  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-  const u = {}; const n = gl.getProgramParameter(p, gl.ACTIVE_UNIFORMS);
-  for (let i = 0; i < n; i++){ const info = gl.getActiveUniform(p, i); u[info.name] = gl.getUniformLocation(p, info.name); }
-  return { p, u };
-}
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
-try { sceneP = program(SCENE_FS); resolveP = program(RESOLVE_FS); accumP = program(ACCUM_FS); presentP = program(PRESENT_FS); dofP = program(DOF_FS); meterP = program(METER_FS); downP = program(DOWN_FS); gdownP = program(GDOWN_FS); bdownP = program(BDOWN_FS); bupP = program(BUP_FS); streakP = program(STREAK_FS); afterP = program(AFTER_FS); sqavgP = program(SQAVG_FS); lidglowP = program(LIDGLOW_FS); }
-catch (e){ errBox("Shader error:\n" + e.message); window.__shaderError = e.message; return; }
+// Loading: all shaders compile at once; the city plan is generated on this thread meanwhile.
+const load = loadReport();
+load.set("Page and modules", performance.now());
+load.set("Shaders and city plan", "working…");
+await nextPaint();
+try {
+  const t0 = performance.now();
+  const P = await compilePrograms(gl, VS, { sceneP: SCENE_FS, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
+    dofP: DOF_FS, meterP: METER_FS, downP: DOWN_FS, gdownP: GDOWN_FS, bdownP: BDOWN_FS, bupP: BUP_FS, streakP: STREAK_FS,
+    afterP: AFTER_FS, sqavgP: SQAVG_FS, lidglowP: LIDGLOW_FS },
+    () => { const t = performance.now(); buildCity(); load.set("City plan", performance.now() - t); });
+  ({ sceneP, resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
+  load.set("Shaders and city plan", performance.now() - t0);
+}
+catch (e){ errBox("Shader error:\n" + e.message); window.__shaderError = e.message; load.fail(); return; }
+const tSetup = performance.now();
 window.__ready = true;
 
 // the city plan (bound to texture unit 12 before each scene draw)
@@ -1432,6 +1434,7 @@ function frame(now){
   pmark("final image + overlays");
   pend();
   window.__frames = (window.__frames || 0) + 1;
+  if (window.__frames === 1){ load.set("Setup and first frame", performance.now() - tSetup); load.set("Total", performance.now()); load.ready(); }
   requestAnimationFrame(frame);
 }
 
@@ -1442,4 +1445,4 @@ window.__setView = (o) => { Object.assign(state, o); updateReadouts(); };
 window.__getBld = getBld; window.__state = state;
 requestAnimationFrame(frame);
 }
-start();
+start().catch((e) => { window.__shaderError = window.__shaderError || String(e); throw e; });
