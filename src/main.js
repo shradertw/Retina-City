@@ -1274,7 +1274,7 @@ function frame(now){
   gl.uniform1f(su.uBase, sp.base); gl.uniform1f(su.uMult, sp.mult); gl.uniform1f(su.uA, sp.A); gl.uniform1f(su.uR2, sp.R2);
   gl.uniform1f(su.uR0, sp.r0); gl.uniform1f(su.uNth, sp.Nth); gl.uniform1f(su.uS, sp.s); gl.uniform1f(su.uE2, state.e2);
   gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
-  setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uCity, 12);
+  setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uCity, 12); gl.uniform1i(su.uZero, 0);
   gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
   gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, cityTex); gl.activeTexture(gl.TEXTURE0);
   const setFocus = (u) => {

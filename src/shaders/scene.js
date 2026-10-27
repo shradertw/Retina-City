@@ -14,6 +14,11 @@ uniform float uAcuity;
 uniform float uZoom;
 uniform int uMode;
 uniform uint uSeed;
+// Always 0, but unknown to the compiler: loops start at ZERO so the Direct3D shader compiler (used by
+// browsers on Windows) cannot unroll them into one copy of the body per iteration. Unrolled, the scene
+// shader took ~100 s to compile.
+uniform int uZero;
+#define ZERO uZero
 // sampling layout: every fragment of this pass is one cell = one ray
 uniform int uLayout;      // 0 = square-grid level, 1 = retina rings (log-polar)
 uniform float uCell;      // cell size in screen pixels for this grid level
@@ -101,7 +106,7 @@ bool gHOnly = false;
 float fbmG(vec2 p, float size0, float minSize, float f){
   if (gHOnly) return 0.0;                 // fractal noise is only ever used for colour
   float s = 0.0, a = 0.5, sz = size0;
-  for (int i = 0; i < 14; i++){
+  for (int i = 0 + ZERO; i < 14; i++){
     if (sz < minSize) break;
     float w = gate(sz, f);
     if (w <= 0.0) break;
@@ -116,7 +121,7 @@ float fbmG(vec2 p, float size0, float minSize, float f){
 vec4 grains(vec2 p, uint salt){
   vec2 i = floor(p), fr = p - i;
   float d1 = 8.0, d2 = 8.0, id = 0.0, id2 = 0.0;
-  for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++){
+  for (int y = -1 + ZERO; y <= 1; y++) for (int x = -1 + ZERO; x <= 1; x++){
     vec2 g = vec2(float(x), float(y));
     uint h = h2(ivec2(i + g), uSeed ^ salt);
     vec2 r = g + vec2(rnd(h, 1u), rnd(h, 2u)) - fr;
@@ -182,7 +187,7 @@ bool slabBox(int fl, int k, out vec4 b){
 }
 bool onSlab(vec2 lp, int fl){
   if (max(abs(lp.x), abs(lp.y)) <= 17.0) return true;
-  for (int k = 1; k < 9; k++){ vec4 b; if (slabBox(fl, k, b) && all(greaterThanEqual(lp, b.xy)) && all(lessThanEqual(lp, b.zw))) return true; }
+  for (int k = 1 + ZERO; k < 9; k++){ vec4 b; if (slabBox(fl, k, b) && all(greaterThanEqual(lp, b.xy)) && all(lessThanEqual(lp, b.zw))) return true; }
   return false;
 }
 
@@ -199,7 +204,7 @@ float doorNiches(ivec2 cell, vec2 lp, float y, vec4 r){
   if (min(min(dO.x, dO.y), min(dO.z, dO.w)) > 900.0) return 1e9;
   vec4 dC = cityT(cell, 5);
   float dn = 1e9;
-  for (int k = 0; k < 4; k++){
+  for (int k = 0 + ZERO; k < 4; k++){
     if (dO[k] > 900.0) continue;
     float Wn, Hn; doorDims(int(dC[k] + 0.5), Wn, Hn);
     vec3 c, hs;
@@ -259,7 +264,7 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
   vec3 acc = vec3(0.0);
   if (uLampEmit <= 0.0) return acc;
   ivec2 cn = ivec2(floor(uCamPos.xz / C + 0.5));
-  for (int j = -6; j <= 6; j++) for (int i = -6; i <= 6; i++){
+  for (int j = -6 + ZERO; j <= 6; j++) for (int i = -6 + ZERO; i <= 6; i++){
     // every part of a light is within ~8.5 m of its intersection: skip those clearly away from the ray
     vec2 nc = vec2(cn + ivec2(i, j)) * C;
     vec3 v0 = vec3(nc.x, 7.7, nc.y) - ro;
@@ -286,7 +291,7 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
 float lampIrradiance(vec3 p, vec3 n){
   float E = 0.0;
   ivec2 c0 = ivec2(floor(p.xz / C));
-  for (int j = 0; j < 2; j++) for (int i = 0; i < 2; i++){
+  for (int j = 0 + ZERO; j < 2; j++) for (int i = 0 + ZERO; i < 2; i++){
     ivec2 node = c0 + ivec2(i, j);
     if (!lampShown(node)) continue;
     vec3 head; vec2 base, arm;
@@ -307,7 +312,7 @@ vec2 map(vec3 p){
   vec2 nodeF = floor(p.xz / C + 0.5);
   ivec2 node = ivec2(nodeF);
   vec2 res = vec2(1e9, -1.0);
-  for (int j = -1; j <= 0; j++) for (int i = -1; i <= 0; i++){
+  for (int j = -1 + ZERO; j <= 0; j++) for (int i = -1 + ZERO; i <= 0; i++){
     ivec2 cell = node + ivec2(i, j);
     vec2 lp = p.xz - (vec2(cell) + 0.5) * C;
     vec4 r = cityT(cell, 0);
@@ -360,12 +365,12 @@ float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
   float t0 = -ro.y / rd.y, ta = max(t15, 0.0), best = t0;
   vec2 d = vec2(abs(rd.x) < 1e-9 ? 1e-9 : rd.x, abs(rd.z) < 1e-9 ? 1e-9 : rd.z);
   // between y = 0.15 and the road, the ray may run into the side of a slab (a curb)
-  for (int k = 0; k < 4; k++){
+  for (int k = 0 + ZERO; k < 4; k++){
     vec2 P = ro.xz + rd.xz * mix(ta, t0, (float(k) + 0.5) / 4.0);
     ivec2 cl = ivec2(floor(P / C));
     vec2 cen = (vec2(cl) + 0.5) * C;
     int fl = int(cityT(cl, 3).x + 0.5);
-    for (int q = 0; q < 9; q++){
+    for (int q = 0 + ZERO; q < 9; q++){
       vec4 sb;
       if (!slabBox(fl, q, sb)) continue;
       vec2 t1 = (cen + sb.xy - ro.xz) / d, t2 = (cen + sb.zw - ro.xz) / d;
@@ -382,8 +387,13 @@ float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
 }
 
 vec3 calcN(vec3 p, float t){
-  float e = max(0.0008, 0.0004*t); vec2 k = vec2(1.0, -1.0);
-  return normalize(k.xyy*map(p + k.xyy*e).x + k.yyx*map(p + k.yyx*e).x + k.yxy*map(p + k.yxy*e).x + k.xxx*map(p + k.xxx*e).x);
+  // four taps (1,-1,-1), (-1,-1,1), (-1,1,-1), (1,1,1), written as a loop so map() is compiled once here
+  float e = max(0.0008, 0.0004*t); vec3 n = vec3(0.0);
+  for (int i = ZERO; i < 4; i++){
+    vec3 k = 2.0 * vec3(float(((i + 3) >> 1) & 1), float((i >> 1) & 1), float(i & 1)) - 1.0;
+    n += k * map(p + k*e).x;
+  }
+  return normalize(n);
 }
 // Soft shadow: how closely the ray toward the sun passes by geometry.
 // Uses the closest approach between samples (not only at them) to avoid banding,
@@ -391,7 +401,7 @@ vec3 calcN(vec3 p, float t){
 float softShadow(vec3 ro, vec3 rd, float jit){
   float res = 1.0, t = 0.03 + 0.08*jit, ph = -1.0, st = 0.0;
   // enough steps for rays that skim along the ground before reaching a building
-  for (int i = 0; i < 128; i++){
+  for (int i = 0 + ZERO; i < 128; i++){
     vec3 p = ro + rd*t;
     if (p.y > 150.0) break;
     float h = map(p).x;
@@ -414,7 +424,7 @@ float softShadow(vec3 ro, vec3 rd, float jit){
 }
 float calcAO(vec3 p, vec3 n){
   float o = 0.0, s = 1.0;
-  for (int i = 1; i <= 4; i++){ float h = 0.12*float(i*i); o += (h - map(p + n*h).x) * s; s *= 0.6; }
+  for (int i = 1 + ZERO; i <= 4; i++){ float h = 0.12*float(i*i); o += (h - map(p + n*h).x) * s; s *= 0.6; }
   return clamp(1.0 - 0.45*o, 0.0, 1.0);
 }
 
@@ -431,11 +441,11 @@ vec3 stars(vec3 rd, float ang, float bgCd){
   float r = max(0.6 * ang, 6e-5), r2 = r * r;
   float Eth = 1e-8 * sqrt(max(bgCd, 1e-6) / 2e-4);      // lux needed to see a point on this background
   vec3 acc = vec3(0.0);
-  for (int j = -1; j <= 1; j++){
+  for (int j = -1 + ZERO; j <= 1; j++){
     float lc = (li + float(j) + 0.5) * CS;
     float nLon = max(1.0, floor(6.2831853 * cos(lc) / CS));
     float lj = floor((lon + 3.14159265) / 6.2831853 * nLon);
-    for (int i = -1; i <= 1; i++){
+    for (int i = -1 + ZERO; i <= 1; i++){
       float lk = mod(lj + float(i), nLon);
       uint h = h2(ivec2(int(lk), int(li) + j), uSeed ^ 0x5A17u);
       if (rnd(h, 1u) > 0.3) continue;
@@ -489,7 +499,7 @@ float moonAngDist(vec2 a, vec2 b){                  // great-circle distance (de
 }
 float moonAlbedo(vec2 ll){
   float a = 1.0;
-  for (int i = 0; i < 24; i++){
+  for (int i = 0 + ZERO; i < 24; i++){
     // irregular outlines that run into each other
     float d = moonAngDist(ll, MARIA[i].xy) + 4.0 * (vnoise(ll * 0.18 + float(i) * 7.1) - 0.5);
     float r = MARIA[i].z * 1.25;
@@ -539,7 +549,7 @@ vec3 moonDisk(vec3 rd, float ang){
 }
 float cloudNoise(vec2 p){
   float s = 0.0, a = 0.5;
-  for (int i = 0; i < 5; i++){ s += a * vnoise(p + float(i) * 13.7); p *= 2.03; a *= 0.5; }
+  for (int i = 0 + ZERO; i < 5; i++){ s += a * vnoise(p + float(i) * 13.7); p *= 2.03; a *= 0.5; }
   return s / 0.97;
 }
 // The sky's broad brightness and colour in a direction, without sun disk, moon, stars or clouds.
@@ -845,7 +855,7 @@ bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
   vec4 dC = cityT(cell, 5), r = b.rect;
   vec2 cen = (vec2(cell) + 0.5) * C;
   float y = p.y - 0.15;
-  for (int k = 0; k < 4; k++){
+  for (int k = 0 + ZERO; k < 4; k++){
     if (dO[k] > 900.0) continue;
     int code = int(dC[k] + 0.5);
     float Wn, Hn; doorDims(code, Wn, Hn);
@@ -1001,7 +1011,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
   float tMax = min(tG, uReflReach);
   int steps = uReflMode == 3 ? 220 : 110;
   float t = 0.05, tPrev = 0.05; vec2 h = vec2(1e9, -1.0); bool hit = false, reached = false, forced = false;
-  for (int i = 0; i < 220; i++){
+  for (int i = 0 + ZERO; i < 220; i++){
     if (i >= steps) break;
     vec3 q = ro + rd * t;
     if (q.y > 150.0 && rd.y > 0.0) break;
@@ -1017,7 +1027,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
   // ray start on the outside (otherwise the shadow ray starts inside and marks the spot fully shaded)
   if (hit && forced){
     float lo = tPrev, hi = t;
-    for (int j = 0; j < 8; j++){ float mid = 0.5 * (lo + hi); if (map(ro + rd * mid).x < 0.0015 * mid + 0.01) hi = mid; else lo = mid; }
+    for (int j = 0 + ZERO; j < 8; j++){ float mid = 0.5 * (lo + hi); if (map(ro + rd * mid).x < 0.0015 * mid + 0.01) hi = mid; else lo = mid; }
     t = hi; h = map(ro + rd * t);
   }
   vec3 sky = skyCol(rd, sunVis, max(cone, 0.015));
@@ -1070,7 +1080,7 @@ void main(){
       // Distances come from last frame, checked at the centre and corners of the cell.
       float dc = prevDepthAt(c);
       float Lmin = log2(cellPx(max(r - m, 0.0), dc)/uBase), Lmax = log2(cellPx(r + m, dc)/uBase);
-      for (int i = 1; i < 5; i++){
+      for (int i = 1 + ZERO; i < 5; i++){
         vec2 q = c + vec2((i == 1 || i == 3) ? -m : m, i < 3 ? -m : m);
         float L = log2(cellPx(distance(q, uGaze), prevDepthAt(q))/uBase);
         Lmin = min(Lmin, L); Lmax = max(Lmax, L);
@@ -1102,7 +1112,7 @@ void main(){
   float tG = groundHit(ro, rd, gm, gn);
   float tMax = min(tG, 1800.0);       // only buildings closer than the ground need marching
   float t = 0.0, ph = 1e9, tPrev = 0.0; vec2 h = vec2(1e9, -1.0); bool hit = false, ranOut = true, big = false;
-  for (int i = 0; i < 640; i++){   // most rays finish in far fewer; long street-canyon rays need more
+  for (int i = 0 + ZERO; i < 640; i++){   // most rays finish in far fewer; long street-canyon rays need more
     vec3 p = ro + rd*t;
     if (p.y > 150.0 && rd.y > 0.0){ ranOut = false; break; }
     h = map(p);
@@ -1110,7 +1120,7 @@ void main(){
       if (big){
         // the last step was a long one and may have gone past the surface: search back for it
         float lo = tPrev, hi = t;
-        for (int j = 0; j < 10; j++){
+        for (int j = 0 + ZERO; j < 10; j++){
           float mid = 0.5 * (lo + hi);
           if (map(ro + rd*mid).x < 0.0004*mid + 0.0008) hi = mid; else lo = mid;
         }
@@ -1173,11 +1183,15 @@ void main(){
     vec2 f = vec2(length(vec2(f0/cosv*dot(sa, T), f0*dot(sb, T))),
                   length(vec2(f0/cosv*dot(sa, B), f0*dot(sb, B))));
 
-    Surf s = surfAt(h.y, p, n, uv, f);
+    // the material here and at two points beside it (for the surface relief), from one call site
     vec2 eps = max(f*0.5, vec2(0.0015));
-    gHOnly = true;
-    Surf su = surfAt(h.y, p + T*eps.x, n, uv + vec2(eps.x, 0.0), f);
-    Surf sv = surfAt(h.y, p + B*eps.y, n, uv + vec2(0.0, eps.y), f);
+    Surf s, su, sv;
+    for (int k = ZERO; k < 3; k++){
+      vec2 du = k == 1 ? vec2(eps.x, 0.0) : (k == 2 ? vec2(0.0, eps.y) : vec2(0.0));
+      gHOnly = k > 0;
+      Surf r = surfAt(h.y, p + T*du.x + B*du.y, n, uv + du, f);
+      if (k == 0) s = r; else if (k == 1) su = r; else sv = r;
+    }
     gHOnly = false;
     // surface relief slope, capped (~60 degrees) so sharp steps cannot flip the shading normal
     float dhu = clamp((su.h - s.h)/eps.x, -1.7, 1.7), dhv = clamp((sv.h - s.h)/eps.y, -1.7, 1.7);
