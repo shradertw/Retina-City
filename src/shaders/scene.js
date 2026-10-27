@@ -1,6 +1,8 @@
 /* The scene: one ray per sampling cell through the raymarched city, sky, sun and moon. */
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './common.js';
 
+/* Feature switches (NO_REFL, NO_DOORS, NO_SPRITES, NO_SHADOW, NO_MATERIALS, NO_LAMPLIGHT, NO_SKYDETAIL)
+   exist only for the compile-time diagnostic page (diag.html); the game never sets them. */
 export const SCENE_FS = `#version 300 es
 precision highp float;
 precision highp int;
@@ -200,6 +202,9 @@ void doorDims(int code, out float Wn, out float Hn){
   Hn = 2.32 + ((code & 1) != 0 ? 0.46 : 0.0);
 }
 float doorNiches(ivec2 cell, vec2 lp, float y, vec4 r){
+#ifdef NO_DOORS
+  return 1e9;
+#else
   vec4 dO = cityT(cell, 4);
   if (min(min(dO.x, dO.y), min(dO.z, dO.w)) > 900.0) return 1e9;
   vec4 dC = cityT(cell, 5);
@@ -213,6 +218,7 @@ float doorNiches(ivec2 cell, vec2 lp, float y, vec4 r){
     dn = min(dn, sdBox(vec3(lp.x, y, lp.y) - c, hs));
   }
   return dn;
+#endif
 }
 
 // mat ids: 0 road, 1 sidewalk, 2 brick, 3 concrete, 4 glass curtain, 5 stone podium, 6 plaza
@@ -261,6 +267,9 @@ float lensView(float cosUp){ return mix(0.08, 1.0, smoothstep(0.42, 0.85, cosUp)
 // others, so it twinkles. Instead each lens adds its light spread over the ray's footprint, with the same
 // total light; close up (lens bigger than a pixel) the lens itself is drawn.
 vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
+#ifdef NO_SPRITES
+  return vec3(0.0);
+#else
   vec3 acc = vec3(0.0);
   if (uLampEmit <= 0.0) return acc;
   ivec2 cn = ivec2(floor(uCamPos.xz / C + 0.5));
@@ -285,10 +294,14 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
     acc += (1.0 - smoothstep(0.4 * R, R, da)) * k * facing * (rl * rl) / (0.52 * R * R) * exp(-along * 0.0007);
   }
   return acc * vec3(1.0, 0.66, 0.3) * uLampEmit;
+#endif
 }
 // light from the street lights reaching point p with normal n (lux, before colour). Old-style
 // sodium lamps: a narrow cone straight down (full inside ~22 degrees, gone by ~40).
 float lampIrradiance(vec3 p, vec3 n){
+#ifdef NO_LAMPLIGHT
+  return 0.0;
+#else
   float E = 0.0;
   ivec2 c0 = ivec2(floor(p.xz / C));
   for (int j = 0 + ZERO; j < 2; j++) for (int i = 0 + ZERO; i < 2; i++){
@@ -304,6 +317,7 @@ float lampIrradiance(vec3 p, vec3 n){
     E += 750.0 * cone * max(dot(n, -v * id), 0.0) / max(d2, 0.25);     // ~12 lux under the lamp
   }
   return E;
+#endif
 }
 vec2 map(vec3 p){
   // Buildings only: the ground and the sidewalk slabs are found exactly by groundHit().
@@ -399,6 +413,9 @@ vec3 calcN(vec3 p, float t){
 // Uses the closest approach between samples (not only at them) to avoid banding,
 // and a per-pixel, per-frame start offset that frame blending averages out.
 float softShadow(vec3 ro, vec3 rd, float jit){
+#ifdef NO_SHADOW
+  return 1.0;
+#else
   float res = 1.0, t = 0.03 + 0.08*jit, ph = -1.0, st = 0.0;
   // enough steps for rays that skim along the ground before reaching a building
   for (int i = 0 + ZERO; i < 128; i++){
@@ -421,6 +438,7 @@ float softShadow(vec3 ro, vec3 rd, float jit){
   }
   res = clamp(res, 0.0, 1.0);
   return res*res*(3.0 - 2.0*res);
+#endif
 }
 float calcAO(vec3 p, vec3 n){
   float o = 0.0, s = 1.0;
@@ -434,6 +452,9 @@ float calcAO(vec3 p, vec3 n){
 // ~1.5 decades. Returns light already divided by the eye's gain, so it lands at that brightness on screen.
 // Cells of 0.6 degrees; a star's spot is checked in this cell and its neighbours.
 vec3 stars(vec3 rd, float ang, float bgCd){
+#ifdef NO_SKYDETAIL
+  return vec3(0.0);
+#else
   vec3 d = uStarRot * rd;
   float lat = asin(clamp(d.y, -1.0, 1.0)), lon = atan(d.z, d.x);
   const float CS = 0.0104720;                       // 0.6 degrees in radians
@@ -464,6 +485,7 @@ vec3 stars(vec3 rd, float ang, float bgCd){
     }
   }
   return acc;
+#endif
 }
 // The moon: a lit sphere, so its phase and the tilt of the lit side follow the sun's real direction.
 // The moon's near side: dark plains (maria) at their real lunar positions (latitude, longitude, radius
@@ -520,6 +542,9 @@ float moonAlbedo(vec2 ll){
   return a;
 }
 vec3 moonDisk(vec3 rd, float ang){
+#ifdef NO_SKYDETAIL
+  return vec3(0.0);
+#else
   float R = 0.0045 * uMoonSize;                     // the real moon is 0.26 degrees in radius
   float cd = dot(rd, uMoonDir);
   if (cd < cos(R + 3.0 * ang + 0.002)) return vec3(0.0);
@@ -546,6 +571,7 @@ vec3 moonDisk(vec3 rd, float ang){
   // shown ~1/1500 of its real brightness: the part of the retina looking at the moon adapts to it on its own,
   // so its dark plains stay visible (the moonlight falling on the city is computed separately)
   return vec3(1.0, 0.97, 0.92) * moonAlbedo(vec2(lat, lon)) * (lit * 0.65 + earthshine) * edge * 6.5e-4;
+#endif
 }
 float cloudNoise(vec2 p){
   float s = 0.0, a = 0.5;
@@ -584,7 +610,11 @@ vec3 skyCol(vec3 rd, float sunVis, float ang){
   c += vec3(0.45, 0.55, 0.85) * mix(1.0, 0.6, y) * uNightSky;          // airglow and moonlit sky
   if (ang > 0.0 && rd.y > -0.02 && !gNoStars) c += stars(rd, ang, dot(c, vec3(0.2126, 0.7152, 0.0722)) * uAbsScale);
   c += moonDisk(rd, max(ang, 2e-4)) * uMoonDisk;
+#ifdef NO_SKYDETAIL
+  if (false){
+#else
   if (uCloud > 0.001 && rd.y > 0.005){
+#endif
     float tc = (1800.0 - uCamPos.y) / rd.y;
     if (tc > 0.0){
       vec2 P = (uCamPos.xz + rd.xz * tc + uCloudOff) / 1400.0;
@@ -849,6 +879,9 @@ Surf doorLeaf(int code, float a, float y, vec2 f, vec3 wp){
 }
 // Which door surface (if any) p is on. Also sets gDoorU when p is on a wall right beside a door.
 bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
+#ifdef NO_DOORS
+  s = blank(); return false;
+#else
   s = blank();
   vec4 dO = cityT(cell, 4);
   if (min(min(dO.x, dO.y), min(dO.z, dO.w)) > 900.0) return false;
@@ -884,6 +917,7 @@ bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
     s.alb = (code >> 6) == 1 ? doorPaint(1, (code >> 2) & 3) : trim * 0.85; s.refl = 0.06; return true;
   }
   return false;
+#endif
 }
 
 Surf roof(vec2 uv, vec2 f){
@@ -957,6 +991,9 @@ Surf road(vec2 uv, vec2 lp, vec2 f){
 }
 
 Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
+#ifdef NO_MATERIALS
+  return blank();
+#else
   ivec2 cell = ivec2(floor((p.xz - n.xz * 0.05) / C));
   vec2 lp = p.xz - (vec2(cell) + 0.5) * C;
   Bld b = getBld(cell);
@@ -972,6 +1009,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
   if (mat < 3.5) return concreteWall(uv, p.y, f, b);
   if (mat < 4.5) return glassWall(uv, p.y - b.podH, f, b);
   return stonePodium(uv, p.y, f, b);
+#endif
 }
 
 /* ---- reflections in glass: one bounce into the city ----
@@ -1006,6 +1044,9 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
 // ro: a point just off the glass; rd: reflected direction; cone: spread (radians) of what one cell sees
 // after the bounce (receptor footprint plus the waviness of real glass); t0: distance already travelled.
 vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
+#ifdef NO_REFL
+  return skyCol(rd, sunVis, max(cone, 0.015));
+#else
   float gm; vec3 gn;
   float tG = groundHit(ro, rd, gm, gn);
   float tMax = min(tG, uReflReach);
@@ -1058,6 +1099,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
   c = mix(c, uFogCol, 1.0 - exp(-(t + t0) * 0.0007));
   c += lampSprites(ro, rd, t, cone);
   return mix(c, sky, smoothstep(0.75 * uReflReach, uReflReach, t));   // fade out toward the reach limit
+#endif
 }
 
 vec3 camRay(vec2 px){ return normalize(uCamRot * projDir(px)); }
