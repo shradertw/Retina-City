@@ -33,7 +33,8 @@ try {
   const P = await compilePrograms(gl, VS, { sceneP: SCENE_FS, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
     dofP: DOF_FS, meterP: METER_FS, downP: DOWN_FS, gdownP: GDOWN_FS, bdownP: BDOWN_FS, bupP: BUP_FS, streakP: STREAK_FS,
     afterP: AFTER_FS, sqavgP: SQAVG_FS, lidglowP: LIDGLOW_FS },
-    () => { const t = performance.now(); buildCity(); load.set("City plan", performance.now() - t); });
+    () => { const t = performance.now(); buildCity(); load.set("City plan", performance.now() - t); },
+    { serial: new URLSearchParams(location.search).has("serial"), onEach: (name, ms) => load.set("  " + name.replace(/P$/, ""), ms) });
   ({ sceneP, resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
   load.set("Shaders and city plan", performance.now() - t0);
 }
