@@ -488,57 +488,36 @@ vec3 stars(vec3 rd, float ang, float bgCd){
 #endif
 }
 // The moon: a lit sphere, so its phase and the tilt of the lit side follow the sun's real direction.
-// The moon's near side: dark plains (maria) at their real lunar positions (latitude, longitude, radius
-// in degrees of lunar arc) and the bright craters Tycho (with rays), Copernicus, Kepler and Aristarchus.
-const vec3 MARIA[24] = vec3[](
-  vec3(33.0, -16.0, 17.0),
-  vec3(28.0, 17.5, 10.0),
-  vec3(8.5, 31.0, 12.0),
-  vec3(17.0, 59.0, 8.0),
-  vec3(-8.0, 51.0, 11.0),
-  vec3(-15.0, 35.0, 5.5),
-  vec3(-21.0, -17.0, 10.0),
-  vec3(-24.0, -39.0, 6.0),
-  vec3(-10.0, -23.0, 6.0),
-  vec3(13.0, 4.0, 4.0),
-  vec3(56.0, -20.0, 5.0),
-  vec3(57.0, 0.0, 5.0),
-  vec3(56.0, 20.0, 5.0),
-  vec3(55.0, 40.0, 4.0),
-  vec3(20.0, -55.0, 12.0),
-  vec3(5.0, -55.0, 12.0),
-  vec3(-5.0, -45.0, 9.0),
-  vec3(30.0, -45.0, 9.0),
-  vec3(40.0, -60.0, 8.0),
-  vec3(7.0, -31.0, 6.0),
-  vec3(2.0, 1.0, 3.0),
-  vec3(45.0, -32.0, 5.0),
-  vec3(-2.0, 87.0, 6.0),
-  vec3(13.0, 86.0, 5.0));
-float moonAngDist(vec2 a, vec2 b){                  // great-circle distance (degrees) between (lat, lon) points
-  vec2 ar = radians(a), br = radians(b);
-  return degrees(acos(clamp(sin(ar.x) * sin(br.x) + cos(ar.x) * cos(br.x) * cos(ar.y - br.y), -1.0, 1.0)));
-}
-float moonAlbedo(vec2 ll){
+// The moon's near side, drawn on the visible disk (x to the left on screen = lunar west, y up; radius 1):
+// dark plains (maria) at their real positions (x, y, size in radians) and the bright craters Tycho (with
+// rays), Copernicus, Kepler and Aristarchus. Flat distances across the disk keep this cheap.
+const vec3 MARIA_D[24] = vec3[24](
+  vec3(0.231, 0.545, 0.3709), vec3(-0.266, 0.469, 0.2182), vec3(-0.509, 0.148, 0.2618), vec3(-0.820, 0.292, 0.1745),
+  vec3(-0.770, -0.139, 0.2400), vec3(-0.554, -0.259, 0.1200), vec3(0.273, -0.358, 0.2182), vec3(0.575, -0.407, 0.1309),
+  vec3(0.385, -0.174, 0.1309), vec3(-0.068, 0.225, 0.0873), vec3(0.191, 0.829, 0.1091), vec3(-0.000, 0.839, 0.1091),
+  vec3(-0.191, 0.829, 0.1091), vec3(-0.369, 0.819, 0.0873), vec3(0.770, 0.342, 0.2618), vec3(0.816, 0.087, 0.2618),
+  vec3(0.704, -0.087, 0.1963), vec3(0.612, 0.500, 0.1963), vec3(0.663, 0.643, 0.1745), vec3(0.511, 0.122, 0.1309),
+  vec3(-0.017, 0.035, 0.0654), vec3(0.375, 0.707, 0.1091), vec3(-0.998, -0.035, 0.1309), vec3(-0.972, 0.225, 0.1091));
+const vec2 TYCHO = vec2(0.141, -0.686), COPERNICUS = vec2(0.339, 0.167), KEPLER = vec2(0.610, 0.141), ARISTARCHUS = vec2(0.674, 0.402);
+float moonAlbedo(vec2 xy){
   float a = 1.0;
-  for (int i = 0 + ZERO; i < 24; i++){
+  for (int i = ZERO; i < 24; i++){
     // irregular outlines that run into each other
-    float d = moonAngDist(ll, MARIA[i].xy) + 4.0 * (vnoise(ll * 0.18 + float(i) * 7.1) - 0.5);
-    float r = MARIA[i].z * 1.25;
+    float d = length(xy - MARIA_D[i].xy) + 0.07 * (vnoise(xy * 10.0 + float(i) * 7.1) - 0.5);
+    float r = MARIA_D[i].z;
     a -= 0.5 * (1.0 - smoothstep(r * 0.5, r * 1.15, d));
   }
   a = max(a, 0.38);
   // highland mottling and small craters (subtle)
-  a *= 0.95 + 0.07 * vnoise(ll * 0.25) + 0.03 * vnoise(ll * 1.1);
-  // bright young craters; Tycho's rays reach across the southern half
-  float t = moonAngDist(ll, vec2(-43.3, -11.2));
+  a *= 0.95 + 0.07 * vnoise(xy * 14.3) + 0.03 * vnoise(xy * 63.0);
+  // bright young craters (distances in degrees of lunar arc); Tycho's rays reach across the southern half
+  vec2 dv = (xy - TYCHO) * 57.3;
+  float t = length(dv);
   a += 0.9 * (1.0 - smoothstep(0.8, 2.2, t));
-  vec2 dv = ll - vec2(-43.3, -11.2);
-  float ray = pow(max(0.0, sin(atan(dv.y, dv.x) * 9.0 + 1.3)), 24.0) * (1.0 - smoothstep(10.0, 60.0, t));
-  a += 0.25 * ray;
-  a += 0.6 * (1.0 - smoothstep(0.7, 2.0, moonAngDist(ll, vec2(9.6, -20.1))));
-  a += 0.4 * (1.0 - smoothstep(0.4, 1.2, moonAngDist(ll, vec2(8.1, -38.0))));
-  a += 0.9 * (1.0 - smoothstep(0.3, 0.9, moonAngDist(ll, vec2(23.7, -47.4))));
+  a += 0.25 * pow(max(0.0, sin(atan(dv.y, dv.x) * 9.0 + 1.3)), 24.0) * (1.0 - smoothstep(10.0, 60.0, t));
+  a += 0.6 * (1.0 - smoothstep(0.7, 2.0, length(xy - COPERNICUS) * 57.3));
+  a += 0.4 * (1.0 - smoothstep(0.4, 1.2, length(xy - KEPLER) * 57.3));
+  a += 0.9 * (1.0 - smoothstep(0.3, 0.9, length(xy - ARISTARCHUS) * 57.3));
   return a;
 }
 vec3 moonDisk(vec3 rd, float ang){
@@ -556,9 +535,6 @@ vec3 moonDisk(vec3 rd, float ang){
   float edge = 1.0 - smoothstep(1.0 - max(ang / R, 0.02), 1.0 + max(ang / R, 0.02), rr);
   float z = sqrt(max(1.0 - rr*rr, 0.0));
   vec3 nrm = xy.x * t1 + xy.y * t2 - z * uMoonDir;
-  // where on the moon this is (selenographic latitude and longitude; east to the right, seen from the north)
-  float lat = degrees(asin(clamp(xy.y, -1.0, 1.0)));
-  float lon = degrees(atan(-xy.x, z));
   // sunlight from the phase dial, all the way round: new (from behind the moon) -> lit from the right while
   // waxing -> full (from behind you) -> lit from the left while waning -> new (as seen from the north)
   vec3 Ld = -cos(uMoonPhase) * uMoonDir - sin(uMoonPhase) * t1;
@@ -570,13 +546,13 @@ vec3 moonDisk(vec3 rd, float ang){
   float earthshine = 0.0015 * (1.0 - cos(uMoonPhase)) * 0.5;   // the dark part, faintly lit by the Earth (strongest near new moon)
   // shown ~1/1500 of its real brightness: the part of the retina looking at the moon adapts to it on its own,
   // so its dark plains stay visible (the moonlight falling on the city is computed separately)
-  return vec3(1.0, 0.97, 0.92) * moonAlbedo(vec2(lat, lon)) * (lit * 0.65 + earthshine) * edge * 6.5e-4;
+  return vec3(1.0, 0.97, 0.92) * moonAlbedo(xy) * (lit * 0.65 + earthshine) * edge * 6.5e-4;
 #endif
 }
 float cloudNoise(vec2 p){
   float s = 0.0, a = 0.5;
-  for (int i = 0 + ZERO; i < 5; i++){ s += a * vnoise(p + float(i) * 13.7); p *= 2.03; a *= 0.5; }
-  return s / 0.97;
+  for (int i = 0 + ZERO; i < 4; i++){ s += a * vnoise(p + float(i) * 13.7); p *= 2.03; a *= 0.5; }
+  return s / 0.9375;
 }
 // The sky's broad brightness and colour in a direction, without sun disk, moon, stars or clouds.
 // Rough surfaces reflect this blurred version.
@@ -618,11 +594,15 @@ vec3 skyCol(vec3 rd, float sunVis, float ang){
     float tc = (1800.0 - uCamPos.y) / rd.y;
     if (tc > 0.0){
       vec2 P = (uCamPos.xz + rd.xz * tc + uCloudOff) / 1400.0;
-      float n = cloudNoise(P);
+      // the cloud here, and a little toward the sun for its shading, from one call site
+      float n = 0.0, n2 = 0.0;
+      for (int k = ZERO; k < 2; k++){
+        float v = cloudNoise(P + float(k) * uSunDir.xz / max(uSunDir.y + 0.15, 0.1) * 0.08);
+        if (k == 0) n = v; else n2 = v;
+      }
       float th = 1.0 - uCloud * 1.05;
       float dens = smoothstep(th - 0.05, th + 0.22, n);
       if (dens > 0.0){
-        float n2 = cloudNoise(P + uSunDir.xz / max(uSunDir.y + 0.15, 0.1) * 0.08);
         float shade = clamp(1.0 - (n2 - n) * 3.0, 0.35, 1.0);
         vec3 cc = uSunColor * uSunK * 0.45 * shade + vec3(0.78, 0.80, 0.86) * (uSkyK * 0.85 + uNightSky * 1.5)
                 + uKeyCol * 0.15 * shade * step(uSunK, 0.001);
@@ -1043,17 +1023,17 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
 }
 // ro: a point just off the glass; rd: reflected direction; cone: spread (radians) of what one cell sees
 // after the bounce (receptor footprint plus the waviness of real glass); t0: distance already travelled.
-vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis){
+vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced){
 #ifdef NO_REFL
   return skyCol(rd, sunVis, max(cone, 0.015));
 #else
-  float gm; vec3 gn;
-  float tG = groundHit(ro, rd, gm, gn);
+  float gm = 0.0; vec3 gn = vec3(0.0, 1.0, 0.0);
+  float tG = traced ? groundHit(ro, rd, gm, gn) : 1e9;
   float tMax = min(tG, uReflReach);
   int steps = uReflMode == 3 ? 220 : 110;
   float t = 0.05, tPrev = 0.05; vec2 h = vec2(1e9, -1.0); bool hit = false, reached = false, forced = false;
   for (int i = 0 + ZERO; i < 220; i++){
-    if (i >= steps) break;
+    if (i >= steps || !traced) break;
     vec3 q = ro + rd * t;
     if (q.y > 150.0 && rd.y > 0.0) break;
     h = map(q);
@@ -1192,7 +1172,8 @@ void main(){
   if (!hit){
     // below the horizon but too far to reach: ground lost in haze
     float skyAng = max(cellAng, recAng / uZoom);
-    col = rd.y < 0.0 ? mix(uFogCol, skyCol(rd, 1.0, skyAng), 0.15) : skyCol(rd, 1.0, skyAng);
+    vec3 skyc = skyCol(rd, 1.0, skyAng);
+    col = rd.y < 0.0 ? mix(uFogCol, skyc, 0.15) : skyc;
     col += lampSprites(ro, rd, 1e9, skyAng);
   } else {
     vec3 p = ro + rd*t;
@@ -1259,12 +1240,11 @@ void main(){
     float cv = max(dot(N, -rd), 0.0);
     float F = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0);
     gNoStars = true;
-    vec3 refl;
-    if (uReflMode > 0 && s.glass > 0.02) refl = reflScene(p + N * 0.03, R, ang + 0.0003, t, sh);   // a flat mirror keeps the cell's sharpness (+ a little glass waviness)
-    else {
-      refl = skyCol(R, sh, max(ang * 2.0, 0.015));   // glass is never perfectly flat: the sun's glint spreads ~1 degree
-      if (R.y < 0.0) refl = mix(refl, vec3(0.10, 0.10, 0.11), 0.6);
-    }
+    // Glass traces its reflection into the city (a flat mirror keeps the cell's sharpness, plus a little glass
+    // waviness); everything else reflects only the sky (spread ~1 degree: no surface is perfectly flat).
+    // One call either way, so the sky's code is compiled once here.
+    bool traced = uReflMode > 0 && s.glass > 0.02;
+    vec3 refl = reflScene(p + N * 0.03, R, traced ? ang + 0.0003 : ang * 2.0, t, sh, traced);
     gNoStars = false;
     // rooms behind the glass are lit by daylight through the windows (dark at night, for now)
     vec3 glassCol = mix(s.interior * (0.6 + 0.4*ao) * min(uAmbK, 1.0), refl, clamp(F, 0.0, 1.0));
