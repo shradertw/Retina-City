@@ -113,8 +113,11 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .start {
   position: fixed; inset: 0; display: grid; place-items: center; background: rgba(11,14,16,0.45);
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
-  cursor: pointer;
+  cursor: default;
 }
+.start.ready { cursor: pointer; }               /* a click enters the city */
+.start.ready .wopt, .start.ready .genbtn { cursor: default; }
+.start.ready .genbtn { cursor: pointer; }
 .start div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px 22px; max-width: 360px; text-align: left; display: grid; gap: 8px; }
 .start strong { font-size: 16px; }
 .start p { margin: 0; color: var(--muted); font-size: 12.5px; }

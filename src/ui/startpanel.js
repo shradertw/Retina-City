@@ -9,7 +9,11 @@ export function initStartPanel(hooks){
   const title = document.getElementById('startTitle');
   const opts = loadWorldOptions();
   let shadersReady = false, worldReady = false;
-  const showTitle = () => { title.textContent = !worldReady ? 'New world' : !shadersReady ? 'Loading…' : 'Click to enter the city'; };
+  const startEl = document.getElementById('start');
+  const showTitle = () => {
+    title.textContent = !worldReady ? 'New world' : !shadersReady ? 'Loading…' : 'Click to enter the city';
+    startEl.classList.toggle('ready', worldReady && shadersReady);   // the hand cursor only when a click will enter
+  };
   for (const o of WORLD_OPTIONS){
     const row = document.createElement('div'); row.className = 'wopt';
     const id = 'wopt-' + o.key;
