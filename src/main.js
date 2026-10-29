@@ -8,6 +8,7 @@ import { buildWorld } from './gen/world.js';
 import { makeRoads } from './gen/roads.js';
 import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
+import { BUILD } from './version.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
 import { SCENE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
@@ -46,6 +47,7 @@ const startPanel = initStartPanel({ onGenerate: (opts) => {
   if (generatedOnce){ generatedOnce(); generatedOnce = null; }
 } });
 const worldMap = initMap();
+$("buildStamp").textContent = "Build " + BUILD;
 window.__gen = current;
 load.set("Page and modules", performance.now());
 await firstGenerate;
