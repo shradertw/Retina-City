@@ -2,6 +2,12 @@ import { SEED, CELL, HALF, LAMP_TOP, hu, h2, hf, rnd } from './world/hash.js';
 import { CITY_N, city, buildCity, getBld, slabBoxesJS } from './world/cityplan.js';
 import { compilePrograms, nextPaint } from './core/gpu.js';
 import { loadReport } from './ui/loading.js';
+import { initStartPanel } from './ui/startpanel.js';
+import { initMap } from './ui/map.js';
+import { buildWorld } from './gen/world.js';
+import { makeRoads } from './gen/roads.js';
+import { makeBlocks } from './gen/blocks.js';
+import { current } from './gen/current.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
 import { SCENE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
@@ -24,7 +30,18 @@ const floatFB = !!gl.getExtension("EXT_color_buffer_float");
 
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
 // Loading: all shaders compile at once; the city plan is generated on this thread meanwhile.
-const load = loadReport();
+// The start screen: world options and Generate (the new generator, shown on the map for now; the 3D view
+// still draws the old city until the renderer switch). Shaders keep compiling while the player chooses.
+const load = loadReport({ onReady: () => startPanel.setShadersReady() });
+const startPanel = initStartPanel({ onGenerate: (opts) => {
+  const t = performance.now();
+  const w = buildWorld(opts), roads = makeRoads(w);
+  Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
+  current.blocks.chunk(Math.floor(state.pos[0] / 512), Math.floor(state.pos[2] / 512));   // the start area, ready on the map
+  load.set("World (" + opts.size + " km)", performance.now() - t);
+} });
+const worldMap = initMap();
+window.__gen = current;
 load.set("Page and modules", performance.now());
 load.set("Shaders and city plan", "working…");
 await nextPaint();
@@ -414,7 +431,7 @@ document.querySelectorAll("details.grp").forEach((d) => {
 });
 
 const start = $("start");
-start.addEventListener("click", () => { start.hidden = true; tryLock(); });
+start.addEventListener("click", () => { if (!startPanel.ready()) return; start.hidden = true; tryLock(); });
 function tryLock(force){
   if (state.mouseGaze && !force) return;
   freshLock = true;
@@ -480,7 +497,7 @@ window.addEventListener("wheel", (e) => {
     state.maxOpen = Math.max(0, Math.min(1, state.maxOpen + (e.deltaY < 0 ? 0.06 : -0.06)));
     return;
   }
-  if (!(state.keys.has("KeyZ") || state.rmb)) return;
+  if (!state.rmb) return;                  // right mouse held: zoom
   e.preventDefault();
   state.zoomLevel = Math.max(1, Math.min(4, state.zoomLevel * (e.deltaY < 0 ? 1.08 : 1 / 1.08)));
   $("zoom").value = state.zoomLevel; updateReadouts();
@@ -574,7 +591,10 @@ window.addEventListener("keydown", (e) => {
   }
   if (k === state.panelKey){ setPanel(!state.panel); return; }
   if (e.target && e.target.id === "codeIn"){ if (k === "Enter") applyCode(e.target.value); return; }
-  if (e.target && (e.target.tagName === "INPUT")) { if (!["KeyW","KeyA","KeyS","KeyD","KeyZ","KeyQ","KeyE"].includes(k)) return; }
+  if (e.target && e.target.type === "number") return;      // typing a seed
+  if (k === "KeyZ" && !e.repeat){ worldMap.toggle(); e.preventDefault(); return; }
+  if (worldMap.isOpen()){ if (k === "Escape") worldMap.toggle(); return; }   // the map takes no movement keys
+  if (e.target && (e.target.tagName === "INPUT")) { if (!["KeyW","KeyA","KeyS","KeyD","KeyQ","KeyE"].includes(k)) return; }
   if (k === "Digit1" || k === "Digit2" || k === "Digit3" || k === "Digit4"){
     const n = Number(k.slice(5)) - 1;
     if (!e.shiftKey) setCamMode(n); else if (n < 3) setMode(n);
@@ -626,7 +646,7 @@ function step(dt){
   const k = state.keys;
   const run = k.has("ShiftLeft") || k.has("ShiftRight");
   const speed = state.fly ? (run ? 60 : 18) : (run ? 9 : 3.2);
-  const zTarget = (k.has("KeyZ") || state.rmb) ? state.zoomLevel : 1;
+  const zTarget = state.rmb ? state.zoomLevel : 1;
   state.zoom += (zTarget - state.zoom) * Math.min(1, dt * 12);
   const turn = 1.6 * dt / state.zoom;
   if (k.has("ArrowLeft")) state.yaw -= turn; if (k.has("ArrowRight")) state.yaw += turn;
@@ -1137,6 +1157,8 @@ function runAfterimages(fx, afterOn){
 }
 
 function frame(now){
+  // while the map covers the screen, the city is paused (nothing to see, and the map gets the machine)
+  if (worldMap.isOpen()){ last = now; requestAnimationFrame(frame); return; }
   pstart();
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   step(dt);

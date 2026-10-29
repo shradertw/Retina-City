@@ -14,9 +14,11 @@ Working with Claude.AI to make a procedural city you see the way a human eye see
 | `src/main.js` | WebGL setup, controls, view codes, the frame loop and the eye's processing passes |
 | `src/core/` | Shared state and small helpers |
 | `src/world/` | The seeded hash, the city plan, and the world evaluated in JavaScript (collision, focus ray) |
+| `src/gen/` | The new world generator: options, land and ocean, roads and buildings in 512 m chunks (shown on the Z map; the 3D view switches to it in step 1b) |
 | `src/sky/` | Sun and moon positions, light levels, the day/night cycle |
-| `src/ui/` | Sky dials and the compass |
+| `src/ui/` | Start screen, loading report, map, sky dials, compass |
 | `src/shaders/` | GLSL: shared pieces, the raymarched scene, and the post-processing passes |
 | `tools/build-single.mjs` | Bundles everything into one HTML file |
+| `diag.html` | Times the scene shader's compile with features switched off |
 
 Branches: `main` holds tested versions, `dev` is work in progress, `baseline-v72` is the original single-file version.

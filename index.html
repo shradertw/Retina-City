@@ -81,7 +81,7 @@
       <input type="range" id="fov" min="30" max="210" step="1" value="210">
     </div>
     <div class="row">
-      <label for="zoom">Zoom level (hold Z)</label><output id="zoomOut"></output>
+      <label for="zoom">Zoom level (hold right mouse)</label><output id="zoomOut"></output>
       <input type="range" id="zoom" min="1" max="4" step="0.05" value="2">
     </div>
     <div class="row">
@@ -403,7 +403,8 @@
       <kbd>F</kbd><span>tap to blink; hold F and scroll to set how far your eyes open at most (hold without scrolling to reset)</span>
       <kbd>Left mouse</kbd><span>hold on the view to look; tank / eye + head: also turns the body</span>
       <kbd>Arrows</kbd><span>look while gaze follows mouse</span>
-      <kbd>Z / right mouse</kbd><span>hold to zoom; scroll to change level</span>
+      <kbd>Right mouse</kbd><span>hold to zoom; scroll to change level</span>
+      <kbd>Z</kbd><span>map of the generated world</span>
       <kbd>Middle mouse</kbd><span>capture the mouse to look freely, or free it. In gaze mode (G): hold focus in place, press again to move focus to the cursor</span>
       <kbd>1 / 2 / 3 / 4</kbd><span>camera: standard / tank / eye + head / hybrid (X cycles)</span>
       <kbd>Shift + 1 / 2 / 3</kbd><span>view: eye / standard / detail map</span>
@@ -424,13 +425,17 @@
 
 <div class="start" id="start">
   <div>
-    <strong id="startTitle">Loading…</strong>
+    <strong id="startTitle">New world</strong>
+    <div class="wopts" id="worldOptions"></div>
+    <button type="button" class="genbtn" id="generate">Generate</button>
     <p>Mouse looks around, WASD moves. Keep your eyes on the crosshair; that is where the simulated fovea is. Press G to move the fovea with the mouse instead.</p>
     <p>Middle mouse or Esc frees the mouse. While it is free, hold left mouse on the view to look around.</p>
     <pre class="loadlist" id="loadList" aria-live="polite"></pre>
   </div>
 </div>
 <canvas class="compass" id="compass" aria-hidden="true"></canvas>
+<canvas class="worldmap" id="map" hidden aria-label="Overhead map of the generated world"></canvas>
+<div class="mapinfo" id="mapInfo" hidden></div>
 <div class="crossnote" id="crossnote">Seed 1337 · Eye mode</div>
 
 <script type="module" src="src/main.js"></script>
