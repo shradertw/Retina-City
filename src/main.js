@@ -31,18 +31,25 @@ const floatFB = !!gl.getExtension("EXT_color_buffer_float");
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
 // Loading: all shaders compile at once; the city plan is generated on this thread meanwhile.
 // The start screen: world options and Generate (the new generator, shown on the map for now; the 3D view
-// still draws the old city until the renderer switch). Shaders keep compiling while the player chooses.
+// still draws the old city until the renderer switch). Nothing heavy happens before Generate is pressed:
+// the first press builds the world, then compiles the shaders and the old city plan.
 const load = loadReport({ onReady: () => startPanel.setShadersReady() });
+let generatedOnce = null;
+const firstGenerate = new Promise((resolve) => { generatedOnce = resolve; });
 const startPanel = initStartPanel({ onGenerate: (opts) => {
   const t = performance.now();
   const w = buildWorld(opts), roads = makeRoads(w);
   Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
   current.blocks.chunk(Math.floor(state.pos[0] / 512), Math.floor(state.pos[2] / 512));   // the start area, ready on the map
   load.set("World (" + opts.size + " km)", performance.now() - t);
+  window.__lastWorldMs = performance.now() - t;
+  if (generatedOnce){ generatedOnce(); generatedOnce = null; }
 } });
 const worldMap = initMap();
 window.__gen = current;
 load.set("Page and modules", performance.now());
+await firstGenerate;
+const tGenerate = performance.now() - (window.__lastWorldMs || 0);
 load.set("Shaders and city plan", "working…");
 await nextPaint();
 try {
@@ -1457,7 +1464,7 @@ function frame(now){
   pmark("final image + overlays");
   pend();
   window.__frames = (window.__frames || 0) + 1;
-  if (window.__frames === 1){ load.set("Setup and first frame", performance.now() - tSetup); load.set("Total", performance.now()); load.ready(); }
+  if (window.__frames === 1){ load.set("Setup and first frame", performance.now() - tSetup); load.set("Total from Generate", performance.now() - tGenerate); load.ready(); }
   requestAnimationFrame(frame);
 }
 
