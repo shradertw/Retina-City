@@ -8,6 +8,8 @@ import { h2, hf } from '../world/hash.js';
 import { vnoise, salt } from './noise.js';
 
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
+/** a number key for a pair of integers (faster than text keys like "3,-2") */
+export const key2 = (x, z) => (x + 524288) * 1048576 + (z + 524288);
 export const SIDEWALK = 3;                                   // sidewalk width beyond each road edge (m)
 
 /** @typedef {{ id: number, i: number, j: number, dir: number, pts: Float32Array, w: number, major: boolean }} Road */
@@ -22,7 +24,7 @@ export function makeRoads(world){
   const cache = new Map();
   /** roads whose first grid point lies in chunk (cx, cz) @returns {Road[]} */
   function chunk(cx, cz){
-    const key = cx + ',' + cz;
+    const key = key2(cx, cz);
     let c = cache.get(key);
     if (c) return c;
     c = [];
@@ -51,7 +53,7 @@ export function makeRoads(world){
    *  can matter at a point, instead of checking every road nearby. */
   const indexes = new Map(), IC = 32;
   function index(cx, cz){
-    const key = cx + ',' + cz;
+    const key = key2(cx, cz);
     let ix = indexes.get(key);
     if (ix) return ix;
     const cells = new Map();
@@ -63,11 +65,11 @@ export function makeRoads(world){
         for (let gx = Math.floor((x0 - pad) / IC); gx <= Math.floor((x1 + pad) / IC); gx++){
           const cx2 = (gx + 0.5) * IC, cz2 = (gz + 0.5) * IC;
           if (distToRoad(e, cx2, cz2) > pad + IC * 0.71) continue;   // the cell's centre is too far for any point in it
-          const k = gx + ',' + gz; let l = cells.get(k); if (!l){ l = []; cells.set(k, l); } l.push(e);
+          const k = key2(gx, gz); let l = cells.get(k); if (!l){ l = []; cells.set(k, l); } l.push(e);
         }
     }
     const EMPTY = [];
-    ix = { near: (x, z) => cells.get(Math.floor(x / IC) + ',' + Math.floor(z / IC)) || EMPTY };
+    ix = { near: (x, z) => cells.get(key2(Math.floor(x / IC), Math.floor(z / IC))) || EMPTY };
     indexes.set(key, ix);
     if (indexes.size > 512) indexes.delete(indexes.keys().next().value);
     return ix;
@@ -78,7 +80,7 @@ export function makeRoads(world){
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) for (const e of chunk(cx + dx, cz + dz)) out.push(e);
     return out;
   }
-  return { chunk, around, index, bend, cached: (cx, cz) => cache.has(cx + ',' + cz) };
+  return { chunk, around, index, bend, cached: (cx, cz) => cache.has(key2(cx, cz)) };
 }
 
 /** distance from (x, z) to a road's centre line @param {Road} e @param {number} x @param {number} z */

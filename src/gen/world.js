@@ -2,7 +2,7 @@
    the start point, with land shaped by noise and ocean all around the edges. A small world comes out as an
    island, a large one as a continent with bays and inland lakes. Heights are kept on a coarse grid
    (32 m cells, or coarser so the grid stays at most 1024 x 1024). */
-import { fbm, salt } from './noise.js';
+import { fbmTable, salt } from './noise.js';
 
 /**
  * @typedef {{ size: number, seed: number, half: number, res: number, cell: number, height: Float32Array,
@@ -16,9 +16,10 @@ export function buildWorld(opts){
   const height = new Float32Array(res * res);
   const sA = salt(seed, 1), sB = salt(seed, 2);
   const L = Math.max(size / 3, 3000);                       // size of the big land features
+  const nA = fbmTable(sA, 6, -half / L, half / L), nB = fbmTable(sB, 3, -half / (L * 0.25), half / (L * 0.25));
   for (let j = 0; j < res; j++) for (let i = 0; i < res; i++){
     const x = -half + (i + 0.5) * cell, z = -half + (j + 0.5) * cell;
-    const n = fbm(x / L, z / L, sA, 6) - 0.5 + 0.25 * (fbm(x / (L * 0.25), z / (L * 0.25), sB, 3) - 0.5);
+    const n = nA(x / L, z / L) - 0.5 + 0.25 * (nB(x / (L * 0.25), z / (L * 0.25)) - 0.5);
     const edge = Math.max(Math.abs(x), Math.abs(z)) / half;        // 0 at the centre, 1 at the border
     const fall = Math.min(Math.max((edge - 0.55) / 0.4, 0), 1);
     const centre = Math.exp(-Math.pow(Math.hypot(x, z) / (0.12 * size + 600), 2));   // keep the start point on land

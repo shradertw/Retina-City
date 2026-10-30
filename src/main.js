@@ -1,5 +1,5 @@
-import { SEED, CELL, HALF, LAMP_TOP, hu, h2, hf, rnd } from './world/hash.js';
-import { CITY_N, city, buildCity, getBld, slabBoxesJS } from './world/cityplan.js';
+import { SEED } from './world/hash.js';
+import { makeStream } from './world/stream.js';
 import { compilePrograms, nextPaint } from './core/gpu.js';
 import { loadReport } from './ui/loading.js';
 import { initStartPanel } from './ui/startpanel.js';
@@ -13,7 +13,7 @@ import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
 import { SCENE_FS, SCENE_GEOM_FS, SCENE_MAT_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
 import { $, D2R, sstep } from './core/util.js';
-import { onSlab, groundAt, lampJS, lampBasesJS, lampLuxJS, collide, bldCache, bldAt, sdBox3, mapJS, groundJS, castJS } from './world/query.js';
+import { groundAt, lampLuxJS, collide, castJS, hit, setWorldData, spawnNear } from './world/query.js';
 import { skyDir, DAY_TABLE, dayLog, SKY_TABLE, skyLog, elongation, moonHours, fmtClock, phaseName, computeSky, realMoonDec, advanceSky } from './sky/sky.js';
 import { drawDials, syncCycleUI, initDials } from './ui/dials.js';
 import { drawCompass } from './ui/compass.js';
@@ -34,10 +34,10 @@ const MULTI = floatFB && !new URLSearchParams(location.search).has("single");
 let scenePasses = [];
 
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
-// Loading: all shaders compile at once; the city plan is generated on this thread meanwhile.
-// The start screen: world options and Generate (the new generator, shown on the map for now; the 3D view
-// still draws the old city until the renderer switch). Nothing heavy happens before Generate is pressed:
-// the first press builds the world, then compiles the shaders and the old city plan.
+// The start screen: world options and Generate. Nothing heavy happens before Generate is pressed: the first
+// press builds the world, then compiles the shaders while the chunks around the start point are built.
+const stream = makeStream(gl);
+window.__stream = stream;
 const load = loadReport({ onReady: () => startPanel.setShadersReady() });
 let generatedOnce = null;
 const firstGenerate = new Promise((resolve) => { generatedOnce = resolve; });
@@ -45,7 +45,11 @@ const startPanel = initStartPanel({ onGenerate: (opts) => {
   const t = performance.now();
   const w = buildWorld(opts), roads = makeRoads(w);
   Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
-  current.blocks.chunk(Math.floor(state.pos[0] / 512), Math.floor(state.pos[2] / 512));   // the start area, ready on the map
+  // start on the sidewalk of the road nearest the centre, facing along it
+  const sp0 = spawnNear(roads, 0, 0);
+  if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
+  stream.reset(current); setWorldData(stream.packs, w);
+  if (!generatedOnce){ const t1 = performance.now(); stream.update(state.pos, state.yaw); load.set("Chunks near you", performance.now() - t1); }
   load.set("World (" + opts.size + " km)", performance.now() - t);
   window.__lastWorldMs = performance.now() - t;
   if (generatedOnce){ generatedOnce(); generatedOnce = null; }
@@ -56,7 +60,7 @@ window.__gen = current;
 load.set("Page and modules", performance.now());
 await firstGenerate;
 const tGenerate = performance.now() - (window.__lastWorldMs || 0);
-load.set("Shaders and city plan", "working…");
+load.set("Shaders and chunks", "working…");
 await nextPaint();
 try {
   const t0 = performance.now();
@@ -65,24 +69,16 @@ try {
   const P = await compilePrograms(gl, VS, { ...sceneSrc, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
     dofP: DOF_FS, meterP: METER_FS, downP: DOWN_FS, gdownP: GDOWN_FS, bdownP: BDOWN_FS, bupP: BUP_FS, streakP: STREAK_FS,
     afterP: AFTER_FS, sqavgP: SQAVG_FS, lidglowP: LIDGLOW_FS },
-    () => { const t = performance.now(); buildCity(); load.set("City plan", performance.now() - t); },
+    () => { const t = performance.now(); stream.update(state.pos, state.yaw); load.set("Chunks near you (" + stream.stats.built + ")", performance.now() - t); },
     { serial: new URLSearchParams(location.search).has("serial"), onEach: (name, ms) => load.set("  " + name.replace(/P$/, ""), ms) });
   scenePasses = MULTI ? [P.sceneGeomP, P.sceneMatP, P.sceneLightP, P.sceneReflP, P.sceneComposeP] : [P.sceneP];
   ({ resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
-  load.set("Shaders and city plan", performance.now() - t0);
+  load.set("Shaders and chunks", performance.now() - t0);
 }
 catch (e){ errBox("Shader error:\n" + e.message); window.__shaderError = e.message; load.fail(); return; }
 const tSetup = performance.now();
 window.__ready = true;
 
-// the city plan (bound to texture unit 12 before each scene draw)
-const cityTex = gl.createTexture();
-{ const t = cityTex;
-  gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, CITY_N * 6, CITY_N, 0, gl.RGBA, gl.FLOAT, city.data);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.activeTexture(gl.TEXTURE0); }
 const vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
 gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
@@ -151,7 +147,7 @@ function setMode(m){
   state.mode = m;
   modeBtns.forEach((b, i) => b.setAttribute("aria-pressed", String(i === m)));
   $("legend").hidden = m !== 2;
-  $("crossnote").textContent = "Seed " + SEED + " · " + modeNames[m];
+  $("crossnote").textContent = "Seed " + (current.options ? current.options.seed : SEED) + " · " + modeNames[m];
 }
 modeBtns.forEach((b, i) => b.addEventListener("click", () => setMode(i)));
 
@@ -381,7 +377,7 @@ function heading(){ let d = (state.yaw * 180 / Math.PI) % 360; if (d < 0) d += 3
 function compass(d){ return ["N","NE","E","SE","S","SW","W","NW"][Math.round(d / 45) % 8]; }
 function viewCode(){
   const p = state.pos.map(v => v.toFixed(2)).join(",");
-  return "RC1 seed=" + SEED + " pos=" + p + " heading=" + heading().toFixed(1) + " pitch=" + (state.pitch * 180 / Math.PI).toFixed(1)
+  return "RC1 seed=" + current.options.seed + " size=" + current.options.size + " pos=" + p + " heading=" + heading().toFixed(1) + " pitch=" + (state.pitch * 180 / Math.PI).toFixed(1)
     + " fov=" + state.fov + " mode=" + MODES[state.mode] + " fly=" + (state.fly ? 1 : 0)
     + " cells=" + (state.foveated ? (state.layout ? "rings" : "grid") : "off") + " base=" + state.cell
     + " edges=" + (state.smooth ? "smooth" : "hard") + " blend=" + (state.temporal ? 1 : 0)
@@ -407,7 +403,7 @@ function applyCode(text){
   if (!kv.pos){ codeMsg("No position found in that code"); return; }
   const pos = kv.pos.split(",").map(Number);
   if (pos.length !== 3 || pos.some(isNaN)){ codeMsg("Position should be three numbers"); return; }
-  if (kv.seed && Number(kv.seed) !== SEED) codeMsg("Different seed (" + kv.seed + "); the city will not match");
+  if ((kv.seed && Number(kv.seed) !== current.options.seed) || (kv.size && Number(kv.size) !== current.options.size)) codeMsg("Made in another world (seed " + kv.seed + (kv.size ? ", " + kv.size + " km" : "") + "); generate that one to see the same place");
   else codeMsg("Moved");
   state.pos = pos;
   if (kv.heading) state.yaw = Number(kv.heading) * Math.PI / 180;
@@ -1209,6 +1205,8 @@ function frame(now){
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
   step(dt);
   advanceSky(dt);
+  // chunks coming into reach: at most ~3 ms of building per frame (always at least one)
+  if (stream.update(state.pos, state.yaw, 3)) pmark("CPU: new chunks");
   const sp = samplingParams();
   ensureTargets(sp);
   const gaze = state.mouseGaze ? state.gaze : hasGazeOff() ? [W/2 + state.eyeOff[0], H/2 + state.eyeOff[1]] : [W/2, H/2];
@@ -1258,8 +1256,7 @@ function frame(now){
   const tG = castJS(state.pos, gw);
   const targetD = Math.min(1 / Math.max(tG, 0.01), 100 / state.nearPt);
   const aP = [state.pos[0] + gw[0]*tG, state.pos[1] + gw[1]*tG, state.pos[2] + gw[2]*tG];
-  const aCell = [Math.floor((aP[0] + gw[0] * 0.05) / CELL), Math.floor((aP[2] + gw[2] * 0.05) / CELL)];   // just inside the surface
-  const aBld = tG < 1800 && aP[1] > 0.2 && bldAt(aCell[0], aCell[1]).kind >= 0;
+  const aBld = tG < 1800 && hit.bld ? hit.bld : null;     // the building looked at (its centre), if any
 
   // Eye adaptation. La = light reaching the eye (cd/m2), from the meter reading of the last frames.
   // The pupil follows quickly when light rises and slowly when it falls; the retina adapts more slowly.
@@ -1343,17 +1340,17 @@ function frame(now){
     gl.uniformMatrix3fv(su.uCamRot, false, rot);
     gl.uniform1f(su.uXmax, xmax); gl.uniform1f(su.uPanini, d); gl.uniform1f(su.uZoom, state.zoom);
     gl.uniform2f(su.uGaze, gaze[0], gaze[1]); gl.uniform3f(su.uGazeDir, gd[0], gd[1], gd[2]);
-    gl.uniform1f(su.uAcuity, acuityRad); gl.uniform1i(su.uMode, state.mode); gl.uniform1ui(su.uSeed, SEED);
+    gl.uniform1f(su.uAcuity, acuityRad); gl.uniform1i(su.uMode, state.mode); gl.uniform1ui(su.uSeed, current.options ? current.options.seed >>> 0 : SEED);
     gl.uniform1i(su.uFov, sp.fov ? 1 : 0); gl.uniform1i(su.uLpMode, sp.lpMode ? 1 : 0); gl.uniform1i(su.uFast, state.fast ? 1 : 0);
     gl.uniform1f(su.uBase, sp.base); gl.uniform1f(su.uMult, sp.mult); gl.uniform1f(su.uA, sp.A); gl.uniform1f(su.uR2, sp.R2);
     gl.uniform1f(su.uR0, sp.r0); gl.uniform1f(su.uNth, sp.Nth); gl.uniform1f(su.uS, sp.s); gl.uniform1f(su.uE2, state.e2);
     gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
-    setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uCity, 12); gl.uniform1i(su.uZero, 0);
+    setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uZero, 0);
     gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
-    gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, cityTex); gl.activeTexture(gl.TEXTURE0);
+    stream.bind(su, 10);    // render cells, lists, land, nearby lights on units 10-13
     setFocus(su);
     gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
-    gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); gl.uniform2f(su.uAttnCell, aCell[0], aCell[1]);
+    gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); if (aBld) gl.uniform2f(su.uAttnB, aBld[0], aBld[1]);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, prevRes.tex); gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(su.uG0, 4); gl.uniform1i(su.uM0, 5); gl.uniform1i(su.uM1, 6); gl.uniform1i(su.uM2, 7);
     gl.uniform1i(su.uL0, 8); gl.uniform1i(su.uRf, 9);
@@ -1532,7 +1529,7 @@ resize();
 setMode(0);
 updateReadouts();
 window.__setView = (o) => { Object.assign(state, o); updateReadouts(); };
-window.__getBld = getBld; window.__state = state;
+window.__state = state;
 requestAnimationFrame(frame);
 }
 start().catch((e) => { window.__shaderError = window.__shaderError || String(e); throw e; });

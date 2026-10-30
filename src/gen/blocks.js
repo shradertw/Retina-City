@@ -5,7 +5,7 @@
    only on the seed and the roads, so the result is the same whatever order chunks are generated in. */
 import { h2, hf, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
-import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad } from './roads.js';
+import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2 } from './roads.js';
 
 /**
  * @typedef {{ x: number, z: number, ux: number, uz: number, hx: number, hz: number, h: number, podH: number,
@@ -35,7 +35,7 @@ export function makeBlocks(world, roads){
 
   /** buildings proposed by the roads of chunk (cx, cz), already checked against roads @returns {Building[]} */
   function propose(cx, cz){
-    const key = cx + ',' + cz;
+    const key = key2(cx, cz);
     let out = proposals.get(key);
     if (out) return out;
     out = [];
@@ -82,12 +82,12 @@ export function makeBlocks(world, roads){
 
   /** the final buildings and lamps of chunk (cx, cz) */
   function chunk(cx, cz){
-    const key = cx + ',' + cz;
+    const key = key2(cx, cz);
     let f = finals.get(key);
     if (f) return f;
     // proposals of this chunk and its neighbours, in a 40 m grid for quick lookups
     const grid = new Map(), G = 40;
-    const cellKey = (x, z) => Math.floor(x / G) + ',' + Math.floor(z / G);
+    const cellKey = (x, z) => key2(Math.floor(x / G), Math.floor(z / G));
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) for (const b of propose(cx + dx, cz + dz)){
       const k = cellKey(b.x, b.z); let l = grid.get(k); if (!l){ l = []; grid.set(k, l); } l.push(b);
     }
@@ -97,7 +97,7 @@ export function makeBlocks(world, roads){
       const gx = Math.floor(b.x / G), gz = Math.floor(b.z / G);
       let beaten = false;
       for (let j = -reach; j <= reach && !beaten; j++) for (let i = -reach; i <= reach && !beaten; i++){
-        for (const o of grid.get((gx + i) + ',' + (gz + j)) || []){
+        for (const o of grid.get(key2(gx + i, gz + j)) || []){
           if (o === b || o.prio < b.prio || (o.prio === b.prio && o.hash <= b.hash)) continue;
           if (overlap(b, o)){ beaten = true; break; }
         }
@@ -142,5 +142,5 @@ export function makeBlocks(world, roads){
     }
     return b;
   }
-  return { chunk, chunkOf, cached: (cx, cz) => finals.has(cx + ',' + cz) };
+  return { chunk, chunkOf, cached: (cx, cz) => finals.has(key2(cx, cz)) };
 }

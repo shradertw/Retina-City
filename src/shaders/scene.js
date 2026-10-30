@@ -49,15 +49,13 @@ uniform float uBase, uMult, uA, uR2, uR0, uNth, uS, uE2, uPixVis;
 uniform vec2 uJit;
 uniform int uAttn, uAttnBld;   // attention on; the gazed-at thing is a building
 uniform vec3 uAttnP;          // world point under the gaze
-uniform vec2 uAttnCell;       // city block of that building
+uniform vec2 uAttnB;          // that building's centre
 uniform float uAttnK;         // attention strength: attended falloff x k, the rest / sqrt(k)
 uniform int uReflMode;        // what glass reflects: 0 sky only, 1 the city (simple), 2 simple + shadows, 3 full
 uniform float uReflReach;     // how far reflected rays travel before fading to sky (m)
 ${PROJ}
 ${CELLFN}
 
-const float C = 44.0;
-const float HALF = 22.0;
 // Sky and light, computed each frame from the time, moon and cloud dials. "Normalised" values are
 // divided by the overall light level, so the stored image stays near 1 day or night; the eye model
 // multiplies the real level back in at the end.
@@ -186,29 +184,43 @@ float pits(vec2 uv, float cellSize, float rMin, float rMax, float chance, uint s
   return mix(m, chance * 3.14159 * rAvg*rAvg / (cellSize*cellSize), far);
 }
 
-/* ---- the world as data: the city plan, 6 texels per lot (see the city plan in the script) ---- */
-uniform highp sampler2D uCity;
-vec4 cityT(ivec2 lot, int k){ return texelFetch(uCity, ivec2((lot.x & 255) * 6 + k, lot.y & 255), 0); }
-struct Bld { float kind; vec2 c; vec2 hs; float h; float podH; float var; vec4 rect; };
-Bld getBld(ivec2 cell){
-  vec4 r = cityT(cell, 0), tw = cityT(cell, 1), m = cityT(cell, 2);
-  Bld b; b.rect = r; b.c = tw.xy; b.hs = tw.zw; b.h = m.x; b.podH = m.y; b.kind = m.z; b.var = m.w;
-  return b;
+/* ---- the world as data: render cells (see src/gen/cells.js for the layouts) ----
+   Cells of 32 m, 16 x 16 per 512 m chunk, 9 x 9 chunks around the player in wrapping slots. Each cell lists
+   the buildings, street lights and road pieces that can matter inside it; a cell of a chunk not (yet) in its
+   slot reads as empty. */
+uniform highp sampler2D uCells, uList, uLand, uLampTex;
+uniform int uLampN;          // street lights in uLampTex (nearest the camera first)
+uniform float uLampR;        // lights farther than this are not in uLampTex: drawn neither as poles nor glows
+uniform float uWorldHalf;    // the world square: -half..half on both axes
+const float RC = 32.0, PAD = 8.0, LAMP_H = 8.0;
+const int SLOT_TEX = 12288;
+vec4 wT(int i){ return texelFetch(uList, ivec2(i & 4095, i >> 12), 0); }
+// The cell at xz: list start (global texel), counts, empty rings around it, tallest top. False if not loaded.
+bool cellAt(vec2 xz, out int base, out ivec4 n, out float top, out vec2 lo){
+  vec2 cf = floor(xz / RC);
+  lo = cf * RC;
+  vec2 ch = floor(cf / 16.0), sl = mod(ch, 9.0);
+  vec4 v = texelFetch(uCells, ivec2(mod(cf, 144.0)), 0);
+  base = 0; n = ivec4(0, 0, 0, 1); top = 0.0;
+  if (v.z != (ch.x + 512.0) * 1024.0 + ch.y + 513.0) return false;
+  int k = int(v.y);
+  base = int(sl.y * 9.0 + sl.x) * SLOT_TEX + int(v.x);
+  n = ivec4(k & 63, (k >> 6) & 63, (k >> 12) & 63, k >> 18);
+  top = v.w;
+  return true;
 }
-// Sidewalk slab of a lot (same as slabBoxesJS): the 34 m square, a 5 m strip out to the lot edge on each
-// joined side, and a 5 m corner square where the intersection there is inside the block. Box k = 0..8,
-// (x0, z0, x1, z1) in lot-local metres; false if this lot does not have it.
-bool slabBox(int fl, int k, out vec4 b){
-  if (k == 0){ b = vec4(-17.0, -17.0, 17.0, 17.0); return true; }
-  const vec4 BX[8] = vec4[](vec4(-22.0, -17.0, -17.0, 17.0), vec4(17.0, -17.0, 22.0, 17.0), vec4(-17.0, -22.0, 17.0, -17.0), vec4(-17.0, 17.0, 17.0, 22.0),
-                            vec4(-22.0, -22.0, -17.0, -17.0), vec4(17.0, -22.0, 22.0, -17.0), vec4(-22.0, 17.0, -17.0, 22.0), vec4(17.0, 17.0, 22.0, 22.0));
-  b = BX[k - 1];
-  return (fl & (1 << (k - 1))) != 0;
-}
-bool onSlab(vec2 lp, int fl){
-  if (max(abs(lp.x), abs(lp.y)) <= 17.0) return true;
-  for (int k = 1 + ZERO; k < 9; k++){ vec4 b; if (slabBox(fl, k, b) && all(greaterThanEqual(lp, b.xy)) && all(lessThanEqual(lp, b.zw))) return true; }
-  return false;
+bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHalf)).r > 0.0; }
+
+// Materials (the second number map() returns): 0 road, 1 sidewalk (and curbs), 2 building, 5 podium,
+// 6 paved lot, 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
+// texel, so the material pass can read the building's data.
+float matId(float m){ return m - 16.0 * floor(m / 16.0); }
+int bldOf(float m){ return int(m / 16.0); }
+struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; };
+Bld getBld(int k){
+  vec4 a = wT(k), b = wT(k + 1), c = wT(k + 2);
+  Bld r; r.c = a.xy; r.u = a.zw; r.hs = b.xy; r.top = b.z; r.podH = b.w; r.kind = c.x; r.var = c.y; r.doorOff = c.z; r.door = int(c.w);
+  return r;
 }
 
 float sdBox(vec3 p, vec3 b){ vec3 q = abs(p) - b; return length(max(q, 0.0)) + min(max(q.x, max(q.y, q.z)), 0.0); }
@@ -219,62 +231,32 @@ void doorDims(int code, out float Wn, out float Hn){
   Wn = ((code & 2) != 0 ? 1.8 : 0.95) + 0.12;
   Hn = 2.32 + ((code & 1) != 0 ? 0.46 : 0.0);
 }
-float doorNiches(ivec2 cell, vec2 lp, float y, vec4 r){
-#ifdef NO_DOORS
-  return 1e9;
-#else
-  vec4 dO = cityT(cell, 4);
-  if (min(min(dO.x, dO.y), min(dO.z, dO.w)) > 900.0) return 1e9;
-  vec4 dC = cityT(cell, 5);
-  float dn = 1e9;
-  for (int k = 0 + ZERO; k < 4; k++){
-    if (dO[k] > 900.0) continue;
-    float Wn, Hn; doorDims(int(dC[k] + 0.5), Wn, Hn);
-    vec3 c, hs;
-    if (k < 2){ c = vec3(k == 0 ? r.x : r.z, 0.15 + 0.5*Hn, dO[k]); hs = vec3(0.25, 0.5*Hn, 0.5*Wn); }
-    else      { c = vec3(dO[k], 0.15 + 0.5*Hn, k == 2 ? r.y : r.w); hs = vec3(0.5*Wn, 0.5*Hn, 0.25); }
-    dn = min(dn, sdBox(vec3(lp.x, y, lp.y) - c, hs));
-  }
-  return dn;
-#endif
+
+// step limits set by map(): gBound, a distance nothing unlisted can be nearer than; and the region
+// (gRegLo..gRegHi, above gTop) a ray can cross without being able to hit anything (see rayJump)
+float gBound = 1e9, gTop = 1e9;
+vec2 gRegLo = vec2(0.0), gRegHi = vec2(0.0);
+float rayJump(vec3 p, vec3 rd){
+  if (p.y < gTop) return 0.0;
+  vec2 d = vec2(abs(rd.x) < 1e-6 ? 1e-6 : rd.x, abs(rd.z) < 1e-6 ? 1e-6 : rd.z);
+  vec2 tx = (mix(gRegLo, gRegHi, step(0.0, d)) - p.xz) / d;
+  float t = min(tx.x, tx.y);
+  if (rd.y < 0.0) t = min(t, (p.y - gTop) / -rd.y);
+  return t + 0.01;
 }
 
-// mat ids: 0 road, 1 sidewalk, 2 brick, 3 concrete, 4 glass curtain, 5 stone podium, 6 plaza
-float gBound = 1e9;   // step limit from the block grid, set by map()
-
-/* ---- street lights: upside-down L poles at street corners, from the city plan ----
-   One per intersection with an open street (none inside blocks). Pole 0.5 m back from the curb (5.5 m
-   from the node on both axes), 8 m tall, with a 2.5 m arm over the traffic lane of an open street. */
-const float LAMP_H = 8.0;
-// The intersection's light (false if it has none): corner and arm direction come from the city plan.
-bool lampAt(ivec2 node, out vec3 head, out vec2 base, out vec2 arm){
-  int code = int(cityT(node, 3).y + 0.5) - 1;
-  if (code < 0){ head = vec3(0.0); base = vec2(0.0); arm = vec2(0.0); return false; }
-  vec2 sg = vec2((code & 1) != 0 ? 1.0 : -1.0, (code & 2) != 0 ? 1.0 : -1.0);
-  base = vec2(node) * C + sg * 5.5;
-  arm = (code & 4) == 0 ? vec2(-sg.x, 0.0) : vec2(0.0, -sg.y);
-  head = vec3(base.x + arm.x * 2.5, LAMP_H - 0.25, base.y + arm.y * 2.5);
-  return true;
-}
-// distance and material (7 pole and arm, 8 lamp head) to an intersection's light; lb = distance to
-// a box around the whole light, so callers can skip the detail when far away
-bool lampShown(ivec2 node){
-  ivec2 dn = abs(node - ivec2(floor(uCamPos.xz / C + 0.5)));
-  return max(dn.x, dn.y) <= 6;
-}
-vec2 lampSDF(vec3 p, ivec2 node, out float lb){
-  lb = 1e9;
-  if (!lampShown(node)) return vec2(1e9, -1.0);
-  vec3 head; vec2 base, arm;
-  if (!lampAt(node, head, base, arm)) return vec2(1e9, -1.0);
-  vec2 bc = base + arm * 1.3;
-  lb = sdBox(p - vec3(bc.x, 4.1, bc.y), vec3(abs(arm.x) * 1.3 + 0.45, 4.0, abs(arm.y) * 1.3 + 0.45));
-  if (lb > 0.5) return vec2(1e9, -1.0);
-  float pole = max(length(p.xz - base) - 0.09, max(p.y - LAMP_H, 0.15 - p.y));      // capped cylinder (approx.)
-  bool ax = abs(arm.x) > 0.5;
-  vec3 ac = vec3(base.x + arm.x * 1.3, LAMP_H - 0.12, base.y + arm.y * 1.3);
-  float armD = sdBox(p - ac, ax ? vec3(1.3, 0.05, 0.05) : vec3(0.05, 0.05, 1.3));
-  float headD = sdBox(p - head, ax ? vec3(0.36, 0.08, 0.17) : vec3(0.17, 0.08, 0.36));
+/* ---- street lights: upside-down L poles at the curb, arm over the road ----
+   Pole 8 m tall, 0.6 m back from the road edge, with a 2.5 m arm. Data: (pole x, z, arm direction x, z). */
+vec3 lampHead(vec4 L){ return vec3(L.x + L.z * 2.5, LAMP_H - 0.25, L.y + L.w * 2.5); }
+// distance and material (7 pole and arm, 8 lamp head); lb = distance to a box around the whole light
+vec2 lampSDF(vec3 p, vec4 L, out float lb){
+  vec2 base = L.xy, arm = L.zw, side = vec2(-arm.y, arm.x);
+  vec2 q = p.xz - base;
+  vec2 lq = vec2(dot(q, arm), dot(q, side));            // along the arm, across it
+  lb = sdBox(vec3(lq.x - 1.3, p.y - 4.1, lq.y), vec3(1.75, 4.0, 0.45));
+  float pole = max(length(q) - 0.09, max(p.y - LAMP_H, 0.15 - p.y));      // capped cylinder (approx.)
+  float armD = sdBox(vec3(lq.x - 1.3, p.y - (LAMP_H - 0.12), lq.y), vec3(1.3, 0.05, 0.05));
+  float headD = sdBox(vec3(lq.x - 2.5, p.y - (LAMP_H - 0.25), lq.y), vec3(0.36, 0.08, 0.17));
   float d = min(pole, armD);
   return headD < d ? vec2(headD, 8.0) : vec2(d, 7.0);
 }
@@ -290,15 +272,9 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
 #else
   vec3 acc = vec3(0.0);
   if (uLampEmit <= 0.0) return acc;
-  ivec2 cn = ivec2(floor(uCamPos.xz / C + 0.5));
-  for (int j = -6 + ZERO; j <= 6; j++) for (int i = -6 + ZERO; i <= 6; i++){
-    // every part of a light is within ~8.5 m of its intersection: skip those clearly away from the ray
-    vec2 nc = vec2(cn + ivec2(i, j)) * C;
-    vec3 v0 = vec3(nc.x, 7.7, nc.y) - ro;
-    float a0 = dot(v0, rd);
-    if (a0 < -9.0 || a0 > tMax + 9.0 || length(v0 - rd * a0) > 9.0 + 2.0 * fa * max(a0, 1.0)) continue;
-    vec3 head; vec2 base, arm;
-    if (!lampAt(cn + ivec2(i, j), head, base, arm)) continue;
+  for (int i = ZERO; i < 128; i++){
+    if (i >= uLampN) break;
+    vec3 head = lampHead(texelFetch(uLampTex, ivec2(i, 0), 0));
     vec3 v = head - vec3(0.0, 0.08, 0.0) - ro;
     float along = dot(v, rd);
     if (along <= 0.3 || along > tMax + 0.3 || v.y <= 0.0) continue;
@@ -321,13 +297,12 @@ float lampIrradiance(vec3 p, vec3 n){
   return 0.0;
 #else
   float E = 0.0;
-  ivec2 c0 = ivec2(floor(p.xz / C));
-  for (int j = 0 + ZERO; j < 2; j++) for (int i = 0 + ZERO; i < 2; i++){
-    ivec2 node = c0 + ivec2(i, j);
-    if (!lampShown(node)) continue;
-    vec3 head; vec2 base, arm;
-    if (!lampAt(node, head, base, arm)) continue;
-    vec3 v = p - (head - vec3(0.0, 0.1, 0.0));      // from the lens, just under the head
+  int base; ivec4 cn; float top; vec2 lo;
+  if (!cellAt(p.xz, base, cn, top, lo)) return 0.0;
+  for (int i = ZERO; i < 15; i++){
+    if (i >= cn.y) break;
+    vec4 L = wT(base + cn.x * 3 + i);
+    vec3 v = p - (lampHead(L) - vec3(0.0, 0.1, 0.0));      // from the lens, just under the head
     float d2 = dot(v, v);
     if (d2 > 160.0 || v.y > -0.05) continue;
     float id = inversesqrt(d2);
@@ -337,85 +312,116 @@ float lampIrradiance(vec3 p, vec3 n){
   return E;
 #endif
 }
+
 vec2 map(vec3 p){
-  // Buildings only: the ground and the sidewalk slabs are found exactly by groundHit().
-  // The four lots around the nearest intersection: buildings never leave their lot, so nothing outside
-  // these four is closer than the edge of this 88 m square (at least 22 m away).
-  vec2 nodeF = floor(p.xz / C + 0.5);
-  ivec2 node = ivec2(nodeF);
+  // Buildings and street lights listed for the cell p is in. The ground is found exactly by groundHit().
+  int base; ivec4 cn; float top; vec2 lo;
+  bool loaded = cellAt(p.xz, base, cn, top, lo);
+  // anything not listed here stays PAD away from the cell (or from the empty square of cells around it)
+  float r = float(max(cn.w - 1, 0)) * RC;
+  gRegLo = lo - r; gRegHi = lo + RC + r;
+  gBound = min(min(p.x - gRegLo.x, gRegHi.x - p.x), min(p.z - gRegLo.y, gRegHi.y - p.z)) + PAD;
+  gTop = cn.w > 0 ? -1e9 : top;
+  if (cn.w > 0) return vec2(gBound, -1.0);
+  if (p.y > top + 1.0) return vec2(min(p.y - top, gBound), -1.0);
   vec2 res = vec2(1e9, -1.0);
-  for (int j = -1 + ZERO; j <= 0; j++) for (int i = -1 + ZERO; i <= 0; i++){
-    ivec2 cell = node + ivec2(i, j);
-    vec2 lp = p.xz - (vec2(cell) + 0.5) * C;
-    vec4 r = cityT(cell, 0);
-    if (r.z <= r.x) continue;                                      // an open plaza
-    if (length(max(max(r.xy - lp, lp - r.zw), 0.0)) >= res.x) continue;   // its footprint is farther than what we have
-    vec4 tw = cityT(cell, 1), m = cityT(cell, 2);
-    float d = sdBox(vec3(lp.x - tw.x, p.y - (m.y + m.x*0.5), lp.y - tw.y), vec3(tw.z, m.x*0.5, tw.w));
-    float dp = 1e9;
-    if (m.y > 0.0){
-      vec2 rc = 0.5*(r.xy + r.zw), rh = 0.5*(r.zw - r.xy);
-      dp = sdBox(vec3(lp.x - rc.x, p.y - m.y*0.5, lp.y - rc.y), vec3(rh.x, m.y*0.5, rh.y));
-    }
-    // door niches, cut into the walls that carry them (a tower's podium), looked up only close to them
-    float host = m.y > 0.0 ? dp : d;
+  for (int i = ZERO; i < 31; i++){
+    if (i >= cn.x) break;
+    int k = base + i * 3;
+    vec4 a = wT(k), b = wT(k + 1);
+    vec2 q = p.xz - a.xy;
+    vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));   // along the frontage; away from the road
+    if (length(max(abs(l) - b.xy, 0.0)) >= res.x) continue;  // its footprint is farther than what we have
+    float d, dp = 1e9;
+    if (b.w > 0.0){
+      // a tower on a podium: the podium covers the footprint, the tower is set back 2.5 m all round
+      dp = sdBox(vec3(l.x, p.y - b.w * 0.5, l.y), vec3(b.x, b.w * 0.5, b.y));
+      float th = (b.z - b.w) * 0.5;
+      d = sdBox(vec3(l.x, p.y - b.w - th, l.y), vec3(b.x - 2.5, th, b.y - 2.5));
+    } else d = sdBox(vec3(l.x, p.y - b.z * 0.5, l.y), vec3(b.x, b.z * 0.5, b.y));
+#ifndef NO_DOORS
+    // the door niche, cut into the front wall (a tower's podium), looked up only close to it
+    float host = b.w > 0.0 ? dp : d;
     if (host < 0.6 && p.y < 3.5){
-      host = max(host, -doorNiches(cell, lp, p.y, r));
-      if (m.y > 0.0) dp = host; else d = host;
+      vec4 c = wT(k + 2);
+      if (c.w >= 0.0){
+        float Wn, Hn; doorDims(int(c.w), Wn, Hn);
+        host = max(host, -sdBox(vec3(l.x - c.z, p.y - (0.15 + 0.5 * Hn), l.y + b.y), vec3(0.5 * Wn, 0.5 * Hn, 0.25)));
+        if (b.w > 0.0) dp = host; else d = host;
+      }
     }
-    if (d < res.x) res = vec2(d, m.z < 0.5 ? 2.0 : (m.z < 1.5 ? 3.0 : 4.0));
-    if (dp < res.x) res = vec2(dp, 5.0);
+#endif
+    float id = float(k) * 16.0;
+    if (d < res.x) res = vec2(d, id + 2.0);
+    if (dp < res.x) res = vec2(dp, id + 5.0);
   }
-  float nodeInf = max(abs(p.x - nodeF.x * C), abs(p.z - nodeF.y * C));
-  // It is not a distance to anything, so it is kept apart from res.x (shadows need the real distance).
-  // Above the tallest building (~140 m) nothing can be closer than p.y - 140.
-  gBound = max(C - nodeInf, p.y - 140.0);
-  // Street lights: one per intersection (grid node), only the nearest node's can be close.
-  // Lights of other nodes are at least 38 - (distance to this node) away.
-  float lb;
-  vec2 ld = lampSDF(p, node, lb);
-  if (ld.x < res.x) res = ld;
-  if (lb > 0.5) gBound = min(gBound, lb);
-  else gBound = min(gBound, max(ld.x, 0.02));   // near a light: never step past its thin arm or pole
-  gBound = min(gBound, max(38.2 - nodeInf, 0.5));
+  for (int i = ZERO; i < 15; i++){
+    if (i >= cn.y) break;
+    vec4 L = wT(base + cn.x * 3 + i);
+    if (distance(L.xy, uCamPos.xz) > uLampR) continue;     // only lights near the camera have poles
+    float lb;
+    vec2 ld = lampSDF(p, L, lb);
+    if (lb < res.x && ld.x < res.x) res = ld;
+  }
   return res;
 }
 
-// Exact hit with the flat ground: road at y = 0 and sidewalk slabs (|x|,|z| <= 17 in each block,
-// 0.15 m high), including their curb sides. Marching toward a flat surface at a shallow angle takes
-// hundreds of steps; this takes one calculation. Returns the distance, the material and the normal.
+/* The road pieces at P: signed distance to the nearest road edge (< 0 on a road), the direction from that
+   road's centre line toward P (g), and the road frame there:
+   fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 if main). */
+float roadAt(vec2 P, out vec2 g, out vec4 fr){
+  g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0);
+  int base; ivec4 cn; float top; vec2 lo;
+  if (!cellAt(P, base, cn, top, lo)) return 1e9;
+  float best = 1e9;
+  vec2 d1 = vec2(0.0); bool crossing = false;
+  for (int i = ZERO; i < 31; i++){
+    if (i >= cn.z) break;
+    int k = base + cn.x * 3 + cn.y + i * 2;
+    vec4 a = wT(k), b = wT(k + 1);
+    vec2 ab = a.zw - a.xy;
+    float L = max(length(ab), 1e-4);
+    vec2 dir = ab / L, nrm = vec2(-dir.y, dir.x);
+    float s = clamp(dot(P - a.xy, dir), 0.0, L);
+    vec2 dv = P - a.xy - dir * s;
+    float dc = length(dv), d = dc - b.x;
+    if (d < 0.0){
+      if (dot(d1, d1) == 0.0) d1 = dir;
+      else if (abs(dot(dir, d1)) < 0.7) crossing = true;   // inside two roads that cross
+    }
+    if (d < best){
+      best = d;
+      g = dc > 1e-5 ? dv / dc : nrm;
+      fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * b.w);
+    }
+  }
+  if (crossing) fr.z = -1.0;
+  return best;
+}
+
+// Exact hit with the ground: roads and water at y = 0, sidewalks and lots at 0.15 (on land, off the roads),
+// and the curbs between. Returns the distance, the material and the normal.
 float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
   gm = 0.0; gn = vec3(0.0, 1.0, 0.0);
   if (rd.y > -1e-6) return 1e9;
-  float t15 = (0.15 - ro.y) / rd.y;
-  if (t15 > 0.0){
-    vec2 P = ro.xz + rd.xz * t15;
-    ivec2 cl = ivec2(floor(P / C));
-    vec2 lp = P - (vec2(cl) + 0.5) * C;
-    if (onSlab(lp, int(cityT(cl, 3).x + 0.5))){ gm = cityT(cl, 2).z < 0.0 ? 6.0 : 1.0; return t15; }
-  }
-  float t0 = -ro.y / rd.y, ta = max(t15, 0.0), best = t0;
-  vec2 d = vec2(abs(rd.x) < 1e-9 ? 1e-9 : rd.x, abs(rd.z) < 1e-9 ? 1e-9 : rd.z);
-  // between y = 0.15 and the road, the ray may run into the side of a slab (a curb)
-  for (int k = 0 + ZERO; k < 4; k++){
-    vec2 P = ro.xz + rd.xz * mix(ta, t0, (float(k) + 0.5) / 4.0);
-    ivec2 cl = ivec2(floor(P / C));
-    vec2 cen = (vec2(cl) + 0.5) * C;
-    int fl = int(cityT(cl, 3).x + 0.5);
-    for (int q = 0 + ZERO; q < 9; q++){
-      vec4 sb;
-      if (!slabBox(fl, q, sb)) continue;
-      vec2 t1 = (cen + sb.xy - ro.xz) / d, t2 = (cen + sb.zw - ro.xz) / d;
-      vec2 tn = min(t1, t2), tf = max(t1, t2);
-      float tin = max(tn.x, tn.y), tout = min(tf.x, tf.y);
-      if (tin <= tout && tin >= ta && tin < best){
-        best = tin; gm = cityT(cl, 2).z < 0.0 ? 6.0 : 1.0;
-        gn = tn.x > tn.y ? vec3(-sign(rd.x), 0.0, 0.0) : vec3(0.0, 0.0, -sign(rd.z));
-      }
+  float t15 = (0.15 - ro.y) / rd.y, t0 = -ro.y / rd.y, h = max(length(rd.xz), 1e-6);
+  float t = max(t15, 0.0);
+  // from where the ray passes the sidewalk height down to the road: while over a road, move on to where it
+  // could leave it (the distance to the road edge); on leaving it, that is a curb
+  for (int k = ZERO; k < 12; k++){
+    vec2 P = ro.xz + rd.xz * t;
+    if (!isLand(P)){ gm = 9.0; return t0; }
+    vec2 g; vec4 fr;
+    float dR = roadAt(P, g, fr);
+    if (dR > 0.0){
+      if (k == 0){ gm = dR < 3.0 ? 1.0 : 6.0; return t; }
+      gm = 1.0; gn = vec3(-g.x, 0.0, -g.y); return t;
     }
+    t += max(-dR / h, 0.02);
+    if (t >= t0) break;
   }
-  if (best == t0){ gm = 0.0; gn = vec3(0.0, 1.0, 0.0); }
-  return best;
+  gm = 0.0;
+  return t0;
 }
 
 vec3 calcN(vec3 p, float t){
@@ -451,6 +457,8 @@ float softShadow(vec3 ro, vec3 rd, float jit){
     res = min(res, uShadowK*dd / max(t - y, 1e-3));
     ph = h;
     st = clamp(min(h, gBound), 0.04, 6.0);
+    float j = rayJump(p, rd);
+    if (j > st){ st = j; ph = -1.0; }     // above everything here: nothing to come close to on the way
     t += st;
     if (res < 0.002 || t > 400.0) break;
   }
@@ -872,49 +880,36 @@ Surf doorLeaf(int code, float a, float y, vec2 f, vec3 wp){
   return s;
 }
 // Which door surface (if any) p is on. Also sets gDoorU when p is on a wall right beside a door.
-// The loop only finds the door; the shading happens once, after it.
-bool doorSurf(ivec2 cell, vec2 lp, vec3 p, vec3 n, Bld b, vec2 f, out Surf s){
+bool doorSurf(Bld b, vec3 p, vec3 n, vec2 f, out Surf s){
 #ifdef NO_DOORS
   s = blank(); return false;
 #else
   s = blank();
-  vec4 dO = cityT(cell, 4);
-  if (min(min(dO.x, dO.y), min(dO.z, dO.w)) > 900.0) return false;
-  vec4 dC = cityT(cell, 5), r = b.rect;
-  vec2 cen = (vec2(cell) + 0.5) * C;
+  if (b.door < 0) return false;
+  vec2 v = vec2(-b.u.y, b.u.x);                       // away from the road (the front faces -v)
+  vec2 q = p.xz - b.c;
+  float lx = dot(q, b.u), lz = dot(q, v);
   float y = p.y - 0.15;
-  int found = -1, code = 0;
-  float a = 0.0, dpt = 0.0, along = 0.0, hw = 0.0, Hn = 0.0;
-  vec2 out2 = vec2(0.0);
-  for (int k = ZERO; k < 4; k++){
-    if (dO[k] > 900.0) continue;
-    int cd = int(dC[k] + 0.5);
-    float Wn, H; doorDims(cd, Wn, H);
-    bool xf = k < 2;                                    // the wall faces west or east
-    float al = xf ? lp.y : lp.x, acr = xf ? lp.x : lp.y;
-    float face = k == 0 ? r.x : (k == 1 ? r.z : (k == 2 ? r.y : r.w));
-    float dp = (k == 0 || k == 2) ? acr - face : face - acr;   // depth into the wall
-    float ak = al - dO[k];
-    if (k == 1 || k == 2) ak = -ak;                     // + = to the right, seen from the street
-    if (abs(ak) > 0.5*Wn + 1.6 || y > H + 0.5 || dp > 0.3 || dp < -0.05) continue;
-    gDoorU = (xf ? cen.y : cen.x) + dO[k]; gDoorHW = 0.5*Wn;
-    code = cd; a = ak; dpt = dp; along = al; hw = 0.5*Wn; Hn = H;
-    out2 = k == 0 ? vec2(-1.0, 0.0) : (k == 1 ? vec2(1.0, 0.0) : (k == 2 ? vec2(0.0, -1.0) : vec2(0.0, 1.0)));
-    if (dp < 0.02 || (abs(ak) <= hw + 0.02 && y <= H + 0.02)){ found = k; break; }
-  }
-  if (found < 0) return false;
+  float Wn, Hn; doorDims(b.door, Wn, Hn);
+  float dpt = lz + b.hs.y;                            // depth into the front wall
+  float a = -(lx - b.doorOff);                        // + = to the right, seen from the street
+  float hw = 0.5 * Wn;
+  if (abs(a) > hw + 1.6 || y > Hn + 0.5 || dpt > 0.3 || dpt < -0.05) return false;
+  gDoorU = dot(b.c, b.u) + b.doorOff; gDoorHW = hw;   // in the wall's u (along b.u on the front face)
+  vec2 out2 = -v;
+  if (!(dpt < 0.02 || (abs(a) <= hw + 0.02 && y <= Hn + 0.02))) return false;
   vec3 trim = b.kind > 1.5 ? vec3(0.06, 0.06, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; dark metal on podiums
   if (dpt < 0.02){
     // on the wall: a 10 cm surround around the opening
     if (abs(a) < hw + 0.1 && y < Hn + 0.1 && dot(n.xz, out2) > 0.7){
-      s.alb = trim * (1.0 + 0.08 * fbmG(vec2(along, p.y), 0.05, 0.002, max(f.x, f.y))); return true;
+      s.alb = trim * (1.0 + 0.08 * fbmG(vec2(lx, p.y), 0.05, 0.002, max(f.x, f.y))); return true;
     }
     return false;
   }
-  if (dpt > 0.22 && dot(n.xz, out2) > 0.7){ s = doorLeaf(code, a, y, f, p); return true; }
+  if (dpt > 0.22 && dot(n.xz, out2) > 0.7){ s = doorLeaf(b.door, a, y, f, p); return true; }
   // inside the opening: the step, and the reveals around it
   if (n.y > 0.7){ s.alb = vec3(0.46, 0.45, 0.43); return true; }
-  s.alb = (code >> 6) == 1 ? doorPaint(1, (code >> 2) & 3) : trim * 0.85; s.refl = 0.06; return true;
+  s.alb = (b.door >> 6) == 1 ? doorPaint(1, (b.door >> 2) & 3) : trim * 0.85; s.refl = 0.06; return true;
 #endif
 }
 
@@ -961,7 +956,10 @@ Surf plaza(vec2 uv, vec2 f){
   return s;
 }
 
-Surf road(vec2 uv, vec2 lp, vec2 f){
+// The footprint (given along world x and z) measured along a unit direction d
+float fpAlong(vec2 f, vec2 d){ return length(f * d); }
+// fr: the road frame at this point (see roadAt); dir: the road's direction
+Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   Surf s = blank();
   float fn = max(f.x, f.y);
   vec3 c = vec3(0.045, 0.045, 0.048);
@@ -972,15 +970,19 @@ Surf road(vec2 uv, vec2 lp, vec2 f){
   c *= 1.0 + 0.25*fbmG(uv, 6.0, 1.0, fn);                 // patch repairs
   float vd = pits(uv, 0.02, 0.001, 0.003, 0.45, 103u, f); // voids between stones
   c = mix(c, c*0.35, vd);
-  bool alongZ = abs(lp.x) > 17.0 && abs(lp.y) <= 17.0;
-  bool alongX = abs(lp.y) > 17.0 && abs(lp.x) <= 17.0;
   float paint = 0.0;
-  if (alongZ){
-    float cross = step(14.5, abs(lp.y));
-    paint = mix(pulseF(uv.x + 0.06, C, 0.12, f.x) * pulseF(uv.y, 9.0, 3.0, f.y), pulseF(uv.x, 1.0, 0.5, f.x), cross);
-  } else if (alongX){
-    float cross = step(14.5, abs(lp.x));
-    paint = mix(pulseF(uv.y + 0.06, C, 0.12, f.y) * pulseF(uv.x, 9.0, 3.0, f.x), pulseF(uv.y, 1.0, 0.5, f.y), cross);
+  if (fr.z > 0.0){                                        // not inside a crossing
+    float fa = fpAlong(f, dir), fc = fpAlong(f, vec2(-dir.y, dir.x));
+    float sA = fr.x, ac = fr.y, hw = fr.z, L = mod(fr.w, 1000.0);
+    bool major = fr.w >= 1000.0;
+    float e = min(sA, L - sA);                            // distance from the nearer end (a crossing)
+    if (e > 7.5 && e < 10.5) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);                // zebra crossing
+    else if (e >= 10.5){
+      if (major){
+        paint = max(boxF(ac, 0.08, 0.20, fc), boxF(ac, -0.20, -0.08, fc));            // double centre line
+        paint = max(paint, (boxF(abs(ac), 0.5*hw - 0.06, 0.5*hw + 0.06, fc)) * pulseF(sA, 9.0, 3.0, fa));   // lane lines
+      } else paint = boxF(ac, -0.06, 0.06, fc) * pulseF(sA, 9.0, 3.0, fa);             // dashed centre line
+    }
   }
   s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint);
   s.h = -0.002*vd - 0.0008*stones.y;
@@ -988,25 +990,42 @@ Surf road(vec2 uv, vec2 lp, vec2 f){
   return s;
 }
 
+// open water: dark, reflecting, with a little ripple
+Surf water(vec2 uv, vec2 f){
+  Surf s = blank();
+  s.alb = vec3(0.02, 0.04, 0.05); s.glass = 1.0; s.refl = 0.02;
+  s.interior = vec3(0.015, 0.045, 0.05);
+  float wR = gate(1.5, sqrt(f.x*f.y));
+  s.tilt = vec2(vnoise(uv * 0.35) - 0.5, vnoise(uv.yx * 0.35 + 17.0) - 0.5) * 0.06 * wR;
+  return s;
+}
+
 Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 #ifdef NO_MATERIALS
   return blank();
 #else
-  ivec2 cell = ivec2(floor((p.xz - n.xz * 0.05) / C));
-  vec2 lp = p.xz - (vec2(cell) + 0.5) * C;
-  Bld b = getBld(cell);
+  float m = matId(mat);
   bool top = n.y > 0.7;
-  if (mat < 0.5) return road(uv, lp, f);
-  if (mat < 1.5){ if (top) return sidewalk(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
-  if (mat > 6.5) return lampSurf(mat, n, uv, f);
-  if (mat > 5.5){ if (top) return plaza(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
+  if (m < 1.5){
+    // road or sidewalk: patterns follow the road
+    vec2 g; vec4 fr;
+    roadAt(p.xz - n.xz * 0.05, g, fr);
+    vec2 dir = vec2(-g.y, g.x);
+    if (m < 0.5) return road(uv, fr, dir, f);
+    if (top) return sidewalk(vec2(fr.x, fr.y), vec2(fpAlong(f, dir), fpAlong(f, g)));
+    return roof(uv * vec2(1.0, 3.0), f);                 // a curb face
+  }
+  if (m > 8.5) return water(uv, f);
+  if (m > 6.5) return lampSurf(m, n, uv, f);
+  if (m > 5.5){ if (top) return plaza(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
+  Bld b = getBld(bldOf(mat));
   gDoorU = 1e9;
-  if (p.y < 3.6 && (mat < 3.5 || mat > 4.5)){ Surf ds; if (doorSurf(cell, lp, p, n, b, f, ds)) return ds; }
+  if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
   if (top) return roof(uv, f);
-  if (mat < 2.5) return brickWall(uv, p.y, f, b);
-  if (mat < 3.5) return concreteWall(uv, p.y, f, b);
-  if (mat < 4.5) return glassWall(uv, p.y - b.podH, f, b);
-  return stonePodium(uv, p.y, f, b);
+  if (m > 4.5) return stonePodium(uv, p.y, f, b);
+  if (b.kind < 0.5) return brickWall(uv, p.y, f, b);
+  if (b.kind < 1.5) return concreteWall(uv, p.y, f, b);
+  return glassWall(uv, p.y - b.podH, f, b);
 #endif
 }
 
@@ -1016,28 +1035,31 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
    materials. Glass seen inside a reflection shows only a dim blur of the sky (no second bounce). */
 vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   glassy = 0.0;
-  if (mat < 0.5) return vec3(0.05);                                   // road
-  if (mat < 1.5) return vec3(0.34, 0.33, 0.31);                       // sidewalk
-  if (mat > 7.5) return vec3(0.08);                                   // lamp head
-  if (mat > 6.5) return vec3(0.13);                                   // pole
-  if (mat > 5.5) return vec3(0.40, 0.38, 0.35);                       // plaza
+  float m = matId(mat);
+  if (m < 0.5) return vec3(0.05);                                     // road
+  if (m < 1.5) return vec3(0.34, 0.33, 0.31);                         // sidewalk
+  if (m > 8.5){ glassy = 0.9; return vec3(0.02, 0.04, 0.05); }        // water
+  if (m > 7.5) return vec3(0.08);                                     // lamp head
+  if (m > 6.5) return vec3(0.13);                                     // pole
+  if (m > 5.5) return vec3(0.40, 0.38, 0.35);                         // paved lot
   if (n.y > 0.7) return vec3(0.32);                                   // roofs
-  Bld b = getBld(ivec2(floor((p.xz - n.xz * 0.05) / C)));
+  Bld b = getBld(bldOf(mat));
   float v = p.y;
-  if (mat < 2.5){
+  if (m > 4.5){                                                       // podium
+    glassy = pulseF(v - 0.5, 100.0, 3.2, f.y) * (1.0 - pulseF(uv.x, 2.4, 0.1, f.x)) * 0.9;
+    return vec3(0.60, 0.56, 0.50);
+  }
+  if (b.kind < 0.5){
     int pi = int(b.var * 3.999);
     vec3 base = pi == 0 ? vec3(0.36, 0.11, 0.07) : (pi == 1 ? vec3(0.30, 0.16, 0.10) : (pi == 2 ? vec3(0.50, 0.36, 0.24) : vec3(0.22, 0.12, 0.09)));
     float off = b.var * 7.0;
     glassy = pulseF(uv.x + off, 3.0, 1.2, f.x) * pulseF(v - 0.9, 3.2, 1.8, f.y) * 0.8;
     return base * 0.88 + 0.06;                                        // bricks and mortar, averaged
   }
-  if (mat < 3.5){ glassy = pulseF(v - 1.0, 3.2, 1.5, f.y) * 0.9; return mix(vec3(0.50, 0.49, 0.46), vec3(0.60, 0.56, 0.48), b.var) * 0.85; }
-  if (mat < 4.5){                                                     // glass curtain wall: mullions 1.5 m, floors 3.2 m
-    glassy = 0.9 * (1.0 - pulseF(uv.x, 1.5, 0.07, f.x)) * (1.0 - pulseF(v, 3.2, 0.1, f.y));
-    return vec3(0.31);
-  }
-  glassy = pulseF(v - 0.5, 100.0, 3.2, f.y) * (1.0 - pulseF(uv.x, 2.4, 0.1, f.x)) * 0.9;   // podium
-  return vec3(0.60, 0.56, 0.50);
+  if (b.kind < 1.5){ glassy = pulseF(v - 1.0, 3.2, 1.5, f.y) * 0.9; return mix(vec3(0.50, 0.49, 0.46), vec3(0.60, 0.56, 0.48), b.var) * 0.85; }
+  v -= b.podH;                                                        // glass curtain wall: mullions 1.5 m, floors 3.2 m
+  glassy = 0.9 * (1.0 - pulseF(uv.x, 1.5, 0.07, f.x)) * (1.0 - pulseF(v, 3.2, 0.1, f.y));
+  return vec3(0.31);
 }
 // ro: a point just off the glass; rd: reflected direction; cone: spread (radians) of what one cell sees
 // after the bounce (receptor footprint plus the waviness of real glass); t0: distance already travelled.
@@ -1059,7 +1081,9 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
     // coarser than the main rays (reflections are small and blurred): at least 0.4% of the distance per step
     float st = min(h.x, gBound);
     forced = st < 0.004 * t;
-    tPrev = t; t += forced ? 0.004 * t : st;
+    tPrev = t;
+    float j = rayJump(q, rd);
+    if (j > max(st, 0.004 * t)){ forced = false; t += j; } else t += forced ? 0.004 * t : st;
     if (t > tMax){ reached = true; break; }
   }
   // a forced step may have gone into the wall: search back for its surface, so shading and the shadow
@@ -1078,7 +1102,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   vec3 n = gHit ? gn : calcN(p, t + t0);
   float mat = gHit ? gm : h.y;
   vec3 an = abs(n);
-  vec2 uv = an.y > 0.7 ? p.xz : (an.x > an.z ? vec2(p.z, p.y) : vec2(p.x, p.y));
+  vec2 uv = an.y > 0.7 ? p.xz : vec2(dot(p.xz, normalize(vec2(-n.z, n.x))), p.y);
   vec2 f = vec2(cone * (t + t0) + 0.005);
   vec3 alb; float glassy; vec3 inter = vec3(0.04);
   // Every mode uses the simple colours: calling the full material code here as well doubled the shader
@@ -1090,7 +1114,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   vec3 amb = mix(vec3(0.30, 0.28, 0.26), vec3(0.42, 0.52, 0.68), n.y * 0.5 + 0.5) * ao * uAmbTint;
   vec3 c = alb * (max(dot(n, uKeyDir), 0.0) * shd * vec3(2.6, 2.4, 2.1) * uKeyCol + amb * 0.9 * uAmbK);
   if (uLampK > 0.0) c += alb * vec3(1.0, 0.62, 0.24) * lampIrradiance(p, n) * uLampK;
-  if (mat > 7.5 && n.y < -0.7) c += vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(-rd.y);
+  if (matId(mat) > 7.5 && matId(mat) < 8.5 && n.y < -0.7) c += vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(-rd.y);
   // windows of other buildings: dim rooms, and the sky reflected as real glass does (~6% head-on, more at a slant)
   vec3 R2 = reflect(rd, n);
   float F2 = 0.06 + 0.94 * pow(1.0 - max(dot(n, -rd), 0.0), 5.0);
@@ -1189,7 +1213,9 @@ void main(){
     big = h.x > 0.85 * ph && 0.02 * t > h.x;
     if (big) st = 0.02 * t;
     ph = h.x; tPrev = t;
-    t += min(st, gBound);
+    float adv = min(st, gBound), j = rayJump(p, rd);
+    if (j > adv){ adv = j; big = false; }   // nothing to hit before leaving the region (or reaching its top)
+    t += adv;
     if (t > tMax){ ranOut = false; break; }
   }
   // A ray skimming along a wall takes tiny steps and can run out of budget. If it is still touching
@@ -1229,8 +1255,11 @@ void main(){
     vec3 a = abs(n);
     vec2 uv; vec3 T, B;
     if (a.y > 0.7){ uv = p.xz; T = vec3(1,0,0); B = vec3(0,0,1); }
-    else if (a.x > a.z){ uv = vec2(p.z, p.y); T = vec3(0,0,1); B = vec3(0,1,0); }
-    else { uv = vec2(p.x, p.y); T = vec3(1,0,0); B = vec3(0,1,0); }
+    else {
+      // walls (at any angle): u runs along the wall, v up
+      vec2 tx = normalize(vec2(-n.z, n.x));
+      uv = vec2(dot(p.xz, tx), p.y); T = vec3(tx.x, 0.0, tx.y); B = vec3(0.0, 1.0, 0.0);
+    }
 
     // Footprint of one cell/receptor on the surface. Seen at a slant it stretches along the
     // viewing direction only; across it, it stays the same width (anisotropic filtering).
@@ -1240,7 +1269,7 @@ void main(){
     if (uAttn == 1){
       float rad = max(0.75, 0.06 * length(uAttnP - uCamPos));
       float aw = 1.0 - smoothstep(rad, 2.5*rad, distance(p, uAttnP));
-      if (uAttnBld == 1 && h.y > 1.5 && h.y < 5.5 && floor((p.xz - n.xz * 0.05) / C) == uAttnCell) aw = 1.0;
+      if (uAttnBld == 1 && h.y >= 16.0 && distance(wT(bldOf(h.y)).xy, uAttnB) < 0.05) aw = 1.0;
       recAng = uAcuity * (1.0 + eVis / (uE2 * mix(1.0 / sqrt(uAttnK), uAttnK, aw)));
     }
     float dfA = defocusAng(t);
