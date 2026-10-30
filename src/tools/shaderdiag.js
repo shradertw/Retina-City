@@ -1,19 +1,16 @@
-/* Compile-time diagnostic: compiles the scene shader once per variant, each with some features switched
-   off, one after another, and lists the times. Each source gets a unique comment so the browser's shader
-   cache cannot skip the work. */
+/* Compile-time diagnostic: compiles each of the five scene passes one after another and lists the times,
+   then the old single scene shader for comparison. Each source gets a unique comment so the browser's
+   shader cache cannot skip the work. */
 import { VS } from '../shaders/common.js';
 import { SCENE_FS } from '../shaders/scene.js';
 
 const VARIANTS = [
-  ['Everything', []],
-  ['Without reflections', ['NO_REFL']],
-  ['Without doors', ['NO_DOORS']],
-  ['Without street-light glow', ['NO_SPRITES']],
-  ['Without sun shadows', ['NO_SHADOW']],
-  ['Without surface materials', ['NO_MATERIALS']],
-  ['Without street-light lighting', ['NO_LAMPLIGHT']],
-  ['Without stars, moon, clouds', ['NO_SKYDETAIL']],
-  ['All of the above off', ['NO_REFL', 'NO_DOORS', 'NO_SPRITES', 'NO_SHADOW', 'NO_MATERIALS', 'NO_LAMPLIGHT', 'NO_SKYDETAIL']],
+  ['Pass 1: the ray', ['PASS_GEOM']],
+  ['Pass 2: materials', ['PASS_MAT']],
+  ['Pass 3: shadow, light', ['PASS_LIGHT']],
+  ['Pass 4: reflections', ['PASS_REFL']],
+  ['Pass 5: combine, sky', ['PASS_COMPOSE']],
+  ['Old single shader', []],
 ];
 const out = document.getElementById('out');
 const line = (t) => { out.textContent += t + '\n'; };
@@ -44,6 +41,10 @@ async function run(){
     out.textContent = out.textContent.replace(name.padEnd(32, ' ') + 'compiling…', name.padEnd(32, ' ') + (ms / 1000).toFixed(1) + ' s' + (ok ? '' : '  FAILED: ' + (gl.getShaderInfoLog(fs) || gl.getProgramInfoLog(p)).slice(0, 200)));
     gl.deleteProgram(p); gl.deleteShader(fs);
     await paint();
+    if (rows.length === 5){
+      const sum = rows.reduce((a, r) => a + r[1], 0);
+      line('-'.repeat(40)); line('Five passes together'.padEnd(32, ' ') + (sum / 1000).toFixed(1) + ' s'); line('');
+    }
   }
   line('');
   line('Done. A screenshot of this page is all I need.');

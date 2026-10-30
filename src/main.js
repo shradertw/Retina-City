@@ -10,7 +10,7 @@ import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
 import { BUILD } from './version.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
-import { SCENE_FS } from './shaders/scene.js';
+import { SCENE_FS, SCENE_GEOM_FS, SCENE_MAT_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
 import { $, D2R, sstep } from './core/util.js';
 import { onSlab, groundAt, lampJS, lampBasesJS, lampLuxJS, collide, bldCache, bldAt, sdBox3, mapJS, groundJS, castJS } from './world/query.js';
@@ -28,6 +28,10 @@ const errBox = (msg) => { const d = document.createElement("div"); d.className =
 const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
 if (!gl){ errBox("This page needs WebGL2. Try a current Chrome, Edge or Firefox with hardware acceleration enabled."); return; }
 const floatFB = !!gl.getExtension("EXT_color_buffer_float");
+// The scene is drawn in five smaller passes (much quicker to compile on Windows). They need float
+// render targets; without them, or with ?single in the address, one big shader does it all.
+const MULTI = floatFB && !new URLSearchParams(location.search).has("single");
+let scenePasses = [];
 
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
 // Loading: all shaders compile at once; the city plan is generated on this thread meanwhile.
@@ -56,12 +60,15 @@ load.set("Shaders and city plan", "working…");
 await nextPaint();
 try {
   const t0 = performance.now();
-  const P = await compilePrograms(gl, VS, { sceneP: SCENE_FS, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
+  const sceneSrc = MULTI ? { sceneGeomP: SCENE_GEOM_FS, sceneMatP: SCENE_MAT_FS, sceneLightP: SCENE_LIGHT_FS,
+    sceneReflP: SCENE_REFL_FS, sceneComposeP: SCENE_COMPOSE_FS } : { sceneP: SCENE_FS };
+  const P = await compilePrograms(gl, VS, { ...sceneSrc, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
     dofP: DOF_FS, meterP: METER_FS, downP: DOWN_FS, gdownP: GDOWN_FS, bdownP: BDOWN_FS, bupP: BUP_FS, streakP: STREAK_FS,
     afterP: AFTER_FS, sqavgP: SQAVG_FS, lidglowP: LIDGLOW_FS },
     () => { const t = performance.now(); buildCity(); load.set("City plan", performance.now() - t); },
     { serial: new URLSearchParams(location.search).has("serial"), onEach: (name, ms) => load.set("  " + name.replace(/P$/, ""), ms) });
-  ({ sceneP, resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
+  scenePasses = MULTI ? [P.sceneGeomP, P.sceneMatP, P.sceneLightP, P.sceneReflP, P.sceneComposeP] : [P.sceneP];
+  ({ resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
   load.set("Shaders and city plan", performance.now() - t0);
 }
 catch (e){ errBox("Shader error:\n" + e.message); window.__shaderError = e.message; load.fail(); return; }
@@ -95,13 +102,35 @@ function makeTarget(w, h, opts = {}){
   return { tex, fbo, w, h };
 }
 function freeTarget(t){ if (t){ gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); } }
+// Per-cell results of the scene passes, same layout as the cell texture they belong to.
+// Full float, nearest only: read back exactly with texelFetch.
+function makeGBuf(w, h){
+  const tex = () => {
+    const t = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.RGBA32F, w, h);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    return t;
+  };
+  const fbo = (texs) => {
+    const f = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+    texs.forEach((t, i) => gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0 + i, gl.TEXTURE_2D, t, 0));
+    gl.drawBuffers(texs.map((_, i) => gl.COLOR_ATTACHMENT0 + i));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    return f;
+  };
+  // textures in sampler-unit order: uG0 uM0 uM1 uM2 uL0 uRf (units 4-9)
+  const t = [tex(), tex(), tex(), tex(), tex(), tex()];
+  return { t, w, h, fbo: [fbo([t[0]]), fbo([t[1], t[2], t[3]]), fbo([t[4]]), fbo([t[5]])] };
+}
+function freeGBuf(g){ if (g){ g.t.forEach((t) => gl.deleteTexture(t)); g.fbo.forEach((f) => gl.deleteFramebuffer(f)); } }
 
 let dofT = null, dofMaxR = 0, diploMaxD = 1;   // diploMaxD: largest |1/distance - 1/focus| seen by the probes
 // eye light meter: rendered to one pixel and read back asynchronously (no frame stall)
 let meterT = null, meterPbo = null, meterFence = null;
 const meterBuf = new Float32Array(8);
 let W = 0, H = 0, resolveTs = [null, null], resIdx = 0, havePrev = false, hist = [null, null], histIdx = 0;
-let atlasT = null, atlasKey = "", lpT = null, lpKey = "", needReset = true;
+let atlasT = null, atlasKey = "", lpT = null, lpKey = "", needReset = true, atlasG = null, lpG = null;
 function resize(){
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = Math.max(2, Math.round(window.innerWidth * dpr * state.scale));
@@ -789,10 +818,18 @@ function samplingParams(){
 function ensureTargets(sp){
   const mips = !sp.fov;
   const key = sp.atlasW + "x" + sp.atlasH + ":" + mips;
-  if (key !== atlasKey){ freeTarget(atlasT); atlasT = makeTarget(sp.atlasW, sp.atlasH, { mips }); atlasKey = key; needReset = true; }
+  if (key !== atlasKey){
+    freeTarget(atlasT); atlasT = makeTarget(sp.atlasW, sp.atlasH, { mips });
+    freeGBuf(atlasG); atlasG = MULTI ? makeGBuf(sp.atlasW, sp.atlasH) : null;
+    atlasKey = key; needReset = true;
+  }
   if (sp.lpMode){
     const k2 = sp.Nth + "x" + sp.Nr;
-    if (k2 !== lpKey){ freeTarget(lpT); lpT = makeTarget(sp.Nth, sp.Nr, { repeat: true }); lpKey = k2; needReset = true; }
+    if (k2 !== lpKey){
+      freeTarget(lpT); lpT = makeTarget(sp.Nth, sp.Nr, { repeat: true });
+      freeGBuf(lpG); lpG = MULTI ? makeGBuf(sp.Nth, sp.Nr) : null;
+      lpKey = k2; needReset = true;
+    }
   }
 }
 // Approximate ray count: screen area divided by cell area, summed over 32 px blocks.
@@ -1293,46 +1330,67 @@ function frame(now){
   if (sig !== lastSig){ needReset = true; lastSig = sig; }
 
   pmark("CPU: movement, focus, probes");
-  /* pass 1: one ray per cell */
-  gl.useProgram(sceneP.p);
-  const su = sceneP.u;
-  gl.uniform2f(su.uRes, W, H); gl.uniform3f(su.uCamPos, ...state.pos);
-  gl.uniformMatrix3fv(su.uCamRot, false, rot);
-  gl.uniform1f(su.uXmax, xmax); gl.uniform1f(su.uPanini, d); gl.uniform1f(su.uZoom, state.zoom);
-  gl.uniform2f(su.uGaze, gaze[0], gaze[1]); gl.uniform3f(su.uGazeDir, gd[0], gd[1], gd[2]);
-  gl.uniform1f(su.uAcuity, acuityRad); gl.uniform1i(su.uMode, state.mode); gl.uniform1ui(su.uSeed, SEED);
-  gl.uniform1i(su.uFov, sp.fov ? 1 : 0); gl.uniform1i(su.uLpMode, sp.lpMode ? 1 : 0); gl.uniform1i(su.uFast, state.fast ? 1 : 0);
-  gl.uniform1f(su.uBase, sp.base); gl.uniform1f(su.uMult, sp.mult); gl.uniform1f(su.uA, sp.A); gl.uniform1f(su.uR2, sp.R2);
-  gl.uniform1f(su.uR0, sp.r0); gl.uniform1f(su.uNth, sp.Nth); gl.uniform1f(su.uS, sp.s); gl.uniform1f(su.uE2, state.e2);
-  gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
-  setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uCity, 12); gl.uniform1i(su.uZero, 0);
-  gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
-  gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, cityTex); gl.activeTexture(gl.TEXTURE0);
+  /* pass 1: one ray per cell (in five passes: ray, materials, light, reflections, all together) */
   const setFocus = (u) => {
     gl.uniform1f(u.uFocusD, state.focusD); gl.uniform1f(u.uPupil, state.pupil / 1000 * state.dofGain);
     gl.uniform1i(u.uDof, dofOn ? 1 : 0); gl.uniform1i(u.uDofCells, sp.dofCells && dofOn ? 1 : 0);
     gl.uniform1i(u.uHavePrev, havePrev ? 1 : 0); gl.uniform1i(u.uPrevDepth, 2);
   };
-  setFocus(su);
-  gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
-  gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); gl.uniform2f(su.uAttnCell, aCell[0], aCell[1]);
-  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, prevRes.tex); gl.activeTexture(gl.TEXTURE0);
-
-  gl.bindFramebuffer(gl.FRAMEBUFFER, atlasT.fbo);
-  if (floatFB){ gl.viewport(0, 0, sp.atlasW, sp.atlasH); gl.clearColor(0, 0, 0, -1); gl.clear(gl.COLOR_BUFFER_BIT); }
-  gl.enable(gl.SCISSOR_TEST);
-  gl.uniform1i(su.uLayout, 0);
-  for (let k = 0; k < sp.K; k++){
-    const l = sp.lv[k];
-    gl.viewport(l.x, l.y, l.w, l.h); gl.scissor(l.x, l.y, l.w, l.h);
-    gl.uniform1f(su.uCell, l.cell); gl.uniform1i(su.uLvl, k); gl.uniform2f(su.uLvlOff, l.x, l.y);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
-  }
-  if (sp.lpMode){
-    gl.bindFramebuffer(gl.FRAMEBUFFER, lpT.fbo);
-    gl.viewport(0, 0, sp.Nth, sp.Nr); gl.scissor(0, 0, sp.Nth, sp.Nr);
-    gl.uniform1i(su.uLayout, 1);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  const setScene = (prog) => {
+    gl.useProgram(prog.p);
+    const su = prog.u;
+    gl.uniform2f(su.uRes, W, H); gl.uniform3f(su.uCamPos, ...state.pos);
+    gl.uniformMatrix3fv(su.uCamRot, false, rot);
+    gl.uniform1f(su.uXmax, xmax); gl.uniform1f(su.uPanini, d); gl.uniform1f(su.uZoom, state.zoom);
+    gl.uniform2f(su.uGaze, gaze[0], gaze[1]); gl.uniform3f(su.uGazeDir, gd[0], gd[1], gd[2]);
+    gl.uniform1f(su.uAcuity, acuityRad); gl.uniform1i(su.uMode, state.mode); gl.uniform1ui(su.uSeed, SEED);
+    gl.uniform1i(su.uFov, sp.fov ? 1 : 0); gl.uniform1i(su.uLpMode, sp.lpMode ? 1 : 0); gl.uniform1i(su.uFast, state.fast ? 1 : 0);
+    gl.uniform1f(su.uBase, sp.base); gl.uniform1f(su.uMult, sp.mult); gl.uniform1f(su.uA, sp.A); gl.uniform1f(su.uR2, sp.R2);
+    gl.uniform1f(su.uR0, sp.r0); gl.uniform1f(su.uNth, sp.Nth); gl.uniform1f(su.uS, sp.s); gl.uniform1f(su.uE2, state.e2);
+    gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
+    setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uCity, 12); gl.uniform1i(su.uZero, 0);
+    gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
+    gl.activeTexture(gl.TEXTURE12); gl.bindTexture(gl.TEXTURE_2D, cityTex); gl.activeTexture(gl.TEXTURE0);
+    setFocus(su);
+    gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
+    gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); gl.uniform2f(su.uAttnCell, aCell[0], aCell[1]);
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, prevRes.tex); gl.activeTexture(gl.TEXTURE0);
+    gl.uniform1i(su.uG0, 4); gl.uniform1i(su.uM0, 5); gl.uniform1i(su.uM1, 6); gl.uniform1i(su.uM2, 7);
+    gl.uniform1i(su.uL0, 8); gl.uniform1i(su.uRf, 9);
+    return su;
+  };
+  // each pass reads the results of the ones before it (units 4-9; the rest unbound, so nothing is read and written at once)
+  const PASS_READS = [0, 1, 4, 5, 6];
+  const bindReads = (g, pass) => {
+    for (let i = 0; i < 6; i++){
+      gl.activeTexture(gl.TEXTURE4 + i);
+      gl.bindTexture(gl.TEXTURE_2D, g && i < PASS_READS[pass] ? g.t[i] : null);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+  };
+  for (let pass = 0; pass < scenePasses.length; pass++){
+    const su = setScene(scenePasses[pass]);
+    const pi = MULTI ? pass : 4;     // the single shader is the combine pass
+    bindReads(MULTI ? atlasG : null, pi);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, pi === 4 ? atlasT.fbo : atlasG.fbo[pi]);
+    if (pi === 4 && floatFB){ gl.viewport(0, 0, sp.atlasW, sp.atlasH); gl.clearColor(0, 0, 0, -1); gl.clear(gl.COLOR_BUFFER_BIT); }
+    gl.enable(gl.SCISSOR_TEST);
+    gl.uniform1i(su.uLayout, 0);
+    for (let k = 0; k < sp.K; k++){
+      const l = sp.lv[k];
+      gl.viewport(l.x, l.y, l.w, l.h); gl.scissor(l.x, l.y, l.w, l.h);
+      gl.uniform1f(su.uCell, l.cell); gl.uniform1i(su.uLvl, k); gl.uniform2f(su.uLvlOff, l.x, l.y);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    if (sp.lpMode){
+      bindReads(MULTI ? lpG : null, pi);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, pi === 4 ? lpT.fbo : lpG.fbo[pi]);
+      gl.viewport(0, 0, sp.Nth, sp.Nr); gl.scissor(0, 0, sp.Nth, sp.Nr);
+      gl.uniform1i(su.uLayout, 1);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+    gl.disable(gl.SCISSOR_TEST);
+    if (prof.on && MULTI) pmark("scene: " + ["ray", "materials", "light", "reflections", "combine"][pass]);
   }
   gl.disable(gl.SCISSOR_TEST);
   const blur = !sp.fov && state.mode === 0;

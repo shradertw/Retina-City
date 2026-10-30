@@ -19,6 +19,6 @@ Working with Claude.AI to make a procedural city you see the way a human eye see
 | `src/ui/` | Start screen, loading report, map, sky dials, compass |
 | `src/shaders/` | GLSL: shared pieces, the raymarched scene, and the post-processing passes |
 | `tools/build-single.mjs` | Bundles everything into one HTML file |
-| `diag.html` | Times the scene shader's compile with features switched off |
+| `diag.html` | Times the compile of each scene pass, and of the old single shader (`index.html?single` runs the old one) |
 
 Branches: `main` holds tested versions, `dev` is work in progress, `baseline-v72` is the original single-file version.

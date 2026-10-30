@@ -6,7 +6,25 @@ import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './common.js';
 export const SCENE_FS = `#version 300 es
 precision highp float;
 precision highp int;
+/* The scene is drawn in five passes over the same cells, each a smaller shader (the Direct3D compiler used
+   by browsers on Windows slows down out of proportion as one shader grows):
+     PASS_GEOM     the ray: distance, material, surface direction             -> uG0
+     PASS_MAT      materials: colour, glass, reflectivity, bumped direction   -> uM0, uM1, uM2
+     PASS_LIGHT    sun shadow, ambient occlusion, street-light illumination   -> uL0
+     PASS_REFL     what glass reflects                                        -> uRf
+     PASS_COMPOSE  everything combined, and the sky where rays hit nothing    -> the scene image
+   With none defined, one shader does it all (kept for comparison: ?single). */
+#if !defined(PASS_GEOM) && !defined(PASS_MAT) && !defined(PASS_LIGHT) && !defined(PASS_REFL) && !defined(PASS_COMPOSE)
+#define PASS_ALL
+#endif
+#ifdef PASS_MAT
+layout(location = 0) out vec4 oM0;
+layout(location = 1) out vec4 oM1;
+layout(location = 2) out vec4 oM2;
+#else
 out vec4 outColor;
+#endif
+uniform highp sampler2D uG0, uM0, uM1, uM2, uL0, uRf;   // the earlier passes' results, at this cell
 uniform vec2 uRes;
 uniform vec3 uCamPos;
 uniform mat3 uCamRot;
@@ -1088,8 +1106,19 @@ vec3 camRay(vec2 px){ return normalize(uCamRot * projDir(px)); }
 vec3 aces(vec3 x){ return clamp((x*(2.51*x + 0.03)) / (x*(2.43*x + 0.59) + 0.14), 0.0, 1.0); }
 
 
+// unit directions stored in two numbers (octahedral mapping)
+vec2 octEnc(vec3 n){
+  n /= abs(n.x) + abs(n.y) + abs(n.z);
+  return n.z >= 0.0 ? n.xy : (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+}
+vec3 octDec(vec2 e){
+  vec3 n = vec3(e, 1.0 - abs(e.x) - abs(e.y));
+  if (n.z < 0.0) n.xy = (1.0 - abs(n.yx)) * vec2(n.x >= 0.0 ? 1.0 : -1.0, n.y >= 0.0 ? 1.0 : -1.0);
+  return normalize(n);
+}
+
 void main(){
-  // 1. Which screen point does this cell stand for?
+  // 1. Which screen point does this cell stand for? (the same in every pass, so they cover the same cells)
   vec2 spx; float cell;
   if (uLayout == 0){
     vec2 ci = floor(gl_FragCoord.xy - uLvlOff);
@@ -1129,8 +1158,11 @@ void main(){
                           : degrees(acos(clamp(dot(rd, normalize(uCamRot*uGazeDir)), -1.0, 1.0))) * uZoom;
   float recAng = uAcuity * (1.0 + eVis / uE2);   // receptor size here (visual angle)
   float cellAng = cell * uPixVis / uZoom;
-
   vec3 ro = uCamPos;
+  ivec2 gp = ivec2(gl_FragCoord.xy);
+
+#if defined(PASS_GEOM) || defined(PASS_ALL)
+  // 2. The ray
   float gm; vec3 gn;
   float tG = groundHit(ro, rd, gm, gn);
   float tMax = min(tG, 1800.0);       // only buildings closer than the ground need marching
@@ -1166,18 +1198,34 @@ void main(){
   bool gHit = false;
   if (!hit && tG < 1800.0){ hit = true; gHit = true; t = tG; h = vec2(0.0, gm); }
   float depth = hit ? t : 10000.0;
+  vec3 n = vec3(0.0, 1.0, 0.0);
+  if (hit) n = gHit ? gn : calcN(ro + rd*t, t);
+#else
+  vec4 g0 = texelFetch(uG0, gp, 0);
+  float depth = g0.x, t = g0.x;
+  bool hit = depth < 9000.0;
+  vec2 h = vec2(0.0, g0.y);
+  vec3 n = octDec(g0.zw);
+#endif
 
-  vec3 col;
-  float heat = 0.0;
+#ifdef PASS_GEOM
+  outColor = vec4(depth, h.y, octEnc(n));
+#else
+  vec3 col = vec3(0.0);
   if (!hit){
+#if defined(PASS_COMPOSE) || defined(PASS_ALL)
     // below the horizon but too far to reach: ground lost in haze
     float skyAng = max(cellAng, recAng / uZoom);
     vec3 skyc = skyCol(rd, 1.0, skyAng);
     col = rd.y < 0.0 ? mix(uFogCol, skyc, 0.15) : skyc;
     col += lampSprites(ro, rd, 1e9, skyAng);
+#elif defined(PASS_MAT)
+    oM0 = vec4(0.0); oM1 = vec4(0.0); oM2 = vec4(0.0); return;
+#else
+    outColor = vec4(0.0); return;
+#endif
   } else {
     vec3 p = ro + rd*t;
-    vec3 n = gHit ? gn : calcN(p, t);
     vec3 a = abs(n);
     vec2 uv; vec3 T, B;
     if (a.y > 0.7){ uv = p.xz; T = vec3(1,0,0); B = vec3(0,0,1); }
@@ -1207,6 +1255,8 @@ void main(){
     vec2 f = vec2(length(vec2(f0/cosv*dot(sa, T), f0*dot(sb, T))),
                   length(vec2(f0/cosv*dot(sa, B), f0*dot(sb, B))));
 
+    // 3. Materials
+#if defined(PASS_MAT) || defined(PASS_ALL)
     // the material here and at two points beside it (for the surface relief), from one call site
     vec2 eps = max(f*0.5, vec2(0.0015));
     Surf s, su, sv;
@@ -1220,25 +1270,37 @@ void main(){
     // surface relief slope, capped (~60 degrees) so sharp steps cannot flip the shading normal
     float dhu = clamp((su.h - s.h)/eps.x, -1.7, 1.7), dhv = clamp((sv.h - s.h)/eps.y, -1.7, 1.7);
     vec3 N = normalize(n - (dhu + s.tilt.x)*T - (dhv + s.tilt.y)*B);
-    // Detail map: the smallest feature size the eye can make out on this surface (real units, log scale).
-    // 1 mm or finer = 1.0, 1 m or coarser = 0.0. Material-independent.
-    heat = clamp(1.0 - (log2(sqrt(f.x*f.y)) / log2(10.0) + 3.0) / 3.0, 0.0, 1.0);
+#else
+    vec4 m0 = texelFetch(uM0, gp, 0), m1 = texelFetch(uM1, gp, 0), m2 = texelFetch(uM2, gp, 0);
+    Surf s = blank();
+    s.alb = m0.rgb; s.glass = m0.a; s.refl = m1.z; s.emit = m1.w; s.interior = m2.rgb; s.h = m2.w;
+    vec3 N = octDec(m1.xy);
+#endif
+#ifdef PASS_MAT
+    oM0 = vec4(s.alb, s.glass); oM1 = vec4(octEnc(N), s.refl, s.emit); oM2 = vec4(s.interior, s.h);
+    return;
+#else
 
+    // 4. Light: the sun's shadow, ambient occlusion, street lights
+#if defined(PASS_LIGHT) || defined(PASS_ALL)
     // start offset varies per pixel and frame only while frames are blended (otherwise it would be static noise)
     float sj = dot(uJit, uJit) > 0.0 ? fract(sin(dot(spx + uJit*17.31, vec2(12.9898, 78.233))) * 43758.5453) : 0.5;
     // no shadow ray for surfaces facing away from the sun or moon: they get no direct light anyway
     float sh = (dot(uKeyCol, vec3(1.0)) > 0.0 && dot(n, uKeyDir) > -0.05) ? softShadow(p + n*0.02, uKeyDir, sj) : 0.0;
     float ao = calcAO(p, n);
-    float cavity = clamp(1.0 + s.h*4.0, 0.55, 1.0);
-    float dif = max(dot(N, uKeyDir), 0.0) * sh;
-    vec3 amb = mix(vec3(0.30, 0.28, 0.26), vec3(0.42, 0.52, 0.68), N.y*0.5 + 0.5) * ao * cavity * uAmbTint;
-    vec3 lit = s.alb * (dif * vec3(2.6, 2.4, 2.1) * uKeyCol + amb * 0.9 * uAmbK);
-    if (uLampK > 0.0) lit += s.alb * vec3(1.0, 0.62, 0.24) * lampIrradiance(p, N) * uLampK * cavity;
-    lit += s.emit * vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(rd.y) * (1.0 - smoothstep(0.5, 2.0, ang * t / 0.2));   // far: drawn as a glow instead
+    float lampE = uLampK > 0.0 ? lampIrradiance(p, N) : 0.0;
+#else
+    vec4 l0 = texelFetch(uL0, gp, 0);
+    float sh = l0.x, ao = l0.y, lampE = l0.z;
+#endif
+#ifdef PASS_LIGHT
+    outColor = vec4(sh, ao, lampE, 0.0);
+    return;
+#else
 
+    // 5. What the surface reflects
     vec3 R = reflect(rd, N);
-    float cv = max(dot(N, -rd), 0.0);
-    float F = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0);
+#if defined(PASS_REFL) || defined(PASS_ALL)
     gNoStars = true;
     // Glass traces its reflection into the city (a flat mirror keeps the cell's sharpness, plus a little glass
     // waviness); everything else reflects only the sky (spread ~1 degree: no surface is perfectly flat).
@@ -1246,6 +1308,24 @@ void main(){
     bool traced = uReflMode > 0 && s.glass > 0.02;
     vec3 refl = reflScene(p + N * 0.03, R, traced ? ang + 0.0003 : ang * 2.0, t, sh, traced);
     gNoStars = false;
+#else
+    vec3 refl = texelFetch(uRf, gp, 0).rgb * 4.0;
+#endif
+#ifdef PASS_REFL
+    outColor = vec4(clamp(refl, 0.0, 2.6e5) * 0.25, 0.0);     // stored at 1/4 scale: stays inside half-float range
+    return;
+#else
+
+    // 6. All of it together
+    float heat = clamp(1.0 - (log2(sqrt(f.x*f.y)) / log2(10.0) + 3.0) / 3.0, 0.0, 1.0);
+    float cavity = clamp(1.0 + s.h*4.0, 0.55, 1.0);
+    float dif = max(dot(N, uKeyDir), 0.0) * sh;
+    vec3 amb = mix(vec3(0.30, 0.28, 0.26), vec3(0.42, 0.52, 0.68), N.y*0.5 + 0.5) * ao * cavity * uAmbTint;
+    vec3 lit = s.alb * (dif * vec3(2.6, 2.4, 2.1) * uKeyCol + amb * 0.9 * uAmbK);
+    if (uLampK > 0.0) lit += s.alb * vec3(1.0, 0.62, 0.24) * lampE * uLampK * cavity;
+    lit += s.emit * vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(rd.y) * (1.0 - smoothstep(0.5, 2.0, ang * t / 0.2));   // far: drawn as a glow instead
+    float cv = max(dot(N, -rd), 0.0);
+    float F = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0);
     // rooms behind the glass are lit by daylight through the windows (dark at night, for now)
     vec3 glassCol = mix(s.interior * (0.6 + 0.4*ao) * min(uAmbK, 1.0), refl, clamp(F, 0.0, 1.0));
     // Rough surfaces only pick up a blurred average of the sky, and never reach full mirror
@@ -1266,9 +1346,20 @@ void main(){
       outColor = vec4(pow(col, vec3(2.2)) * 0.25, depth);
       return;
     }
+#endif
+#endif
+#endif
   }
+#if defined(PASS_COMPOSE) || defined(PASS_ALL)
   if (uMode == 2 && !hit){ outColor = vec4(vec3(0.02) * 0.25, depth); return; }
   // linear light, stored at 1/4 scale; exposure, eye adaptation and tone mapping happen at the end
   if (any(isnan(col)) || any(isinf(col))) col = vec3(0.0);
   outColor = vec4(clamp(col, 0.0, 2.6e5) * 0.9 * 0.25, depth);   // stays inside half-float range
+#endif
+#endif
 }`;
+
+// The five pass shaders: the scene source with one pass switched on.
+const pass = (name) => SCENE_FS.replace('#version 300 es', '#version 300 es\n#define PASS_' + name);
+export const SCENE_GEOM_FS = pass('GEOM'), SCENE_MAT_FS = pass('MAT'), SCENE_LIGHT_FS = pass('LIGHT'),
+  SCENE_REFL_FS = pass('REFL'), SCENE_COMPOSE_FS = pass('COMPOSE');
