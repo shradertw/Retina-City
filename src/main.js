@@ -61,6 +61,8 @@ const startPanel = initStartPanel({ onGenerate: (opts) => {
   const t = performance.now();
   const w = buildWorld(opts), roads = makeRoads(w);
   Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
+  state.lat = opts.lat;          // the sky follows the world's latitude
+  { const el = document.getElementById('lat'); if (el) el.value = state.lat; }
   // start on the sidewalk of the road nearest the centre, facing along it
   const sp0 = spawnNear(roads, 0, 0);
   if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
@@ -648,7 +650,7 @@ window.addEventListener("keydown", (e) => {
   if (e.target && e.target.id === "codeIn"){ if (k === "Enter") applyCode(e.target.value); return; }
   if (e.target && e.target.type === "number") return;      // typing a seed
   if (k === "KeyZ" && !e.repeat){ worldMap.toggle(); e.preventDefault(); return; }
-  if (worldMap.isOpen()){ if (k === "Escape") worldMap.toggle(); return; }   // the map takes no movement keys
+  if (worldMap.isOpen()){ if (k === "Escape") worldMap.toggle(); else if (k === "KeyL") worldMap.layer(e.shiftKey ? -1 : 1); return; }   // the map takes no movement keys
   if (e.target && (e.target.tagName === "INPUT")) { if (!["KeyW","KeyA","KeyS","KeyD","KeyQ","KeyE"].includes(k)) return; }
   if (k === "Digit1" || k === "Digit2" || k === "Digit3" || k === "Digit4"){
     const n = Number(k.slice(5)) - 1;
@@ -1383,7 +1385,7 @@ function frame(now){
     gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
     setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uZero, 0);
     gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
-    stream.bind(su, 10);    // render cells, lists, land, nearby lights on units 10-13
+    stream.bind(su, 10);    // render cells, lists, land, nearby lights, life on units 10-14
     setFocus(su);
     gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
     gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); if (aBld) gl.uniform2f(su.uAttnB, aBld[0], aBld[1]);

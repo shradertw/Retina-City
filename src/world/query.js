@@ -166,7 +166,7 @@ export function castJS(o, dir){
 /** a place to start: on the sidewalk of the road nearest (x, z), facing along it */
 export function spawnNear(roads, x, z){
   let best = null;
-  for (let r = 0; r <= 3 && !best; r++){
+  for (let r = 0; r <= 8 && !best; r++){
     const cx = Math.floor(x / ROAD_CHUNK), cz = Math.floor(z / ROAD_CHUNK);
     for (const e of roads.around(cx, cz, r)){
       const p = e.pts;

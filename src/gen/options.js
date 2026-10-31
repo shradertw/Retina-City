@@ -2,6 +2,7 @@
    here (plus whatever reads it). Kinds: 'range' (slider) and 'seed' (number with a dice button). */
 export const WORLD_OPTIONS = [
   { key: 'size', label: 'World size', kind: 'range', min: 1, max: 256, step: 1, def: 32, unit: 'km' },
+  { key: 'lat', label: 'Latitude', kind: 'range', min: 0, max: 70, step: 1, def: 45, unit: '°' },
   { key: 'seed', label: 'Seed', kind: 'seed', min: 0, max: 999999, def: 1337 },
 ];
 const STORE = 'retina-world-options';

@@ -9,7 +9,8 @@
    dropped, and come back when the range grows again.
 
    Textures: cells 144 x 144 (one texel per cell, wrapping), lists 4096 x 243 (3 rows per slot),
-   land 1 texel per world-grid cell (height; below 0 is water), lights near the camera 128 x 1. */
+   land 1 texel per world-grid cell (height above the water; below 0 is water), life the same (see
+   src/gen/world.js), lights near the camera 128 x 1. */
 import { RC, CN, SLOT_TEX, WTEX_W, SLOT_ROWS, chunkTag, makeCells } from '../gen/cells.js';
 import { ROAD_CHUNK, key2 } from '../gen/roads.js';
 
@@ -29,7 +30,7 @@ export function makeStream(gl){
   const listTex = tex(WTEX_W, NS * NS * SLOT_ROWS, gl.RGBA32F, gl.NEAREST);
   const lampTex = tex(LAMP_MAX, 1, gl.RGBA32F, gl.NEAREST);
   const emptyCells = new Float32Array(CN * CN * 4);
-  let landTex = null, cellsGen = null, gen = null, world = null, genId = 0, range = MAX_RANGE;
+  let landTex = null, lifeTex = null, cellsGen = null, gen = null, world = null, genId = 0, range = MAX_RANGE;
   const slots = new Array(NS * NS).fill(null);      // the pack in each slot
   const packs = new Map();                           // chunk key -> pack (the ones in slots)
   const asked = new Set(), arrived = [];             // requested from the worker; results not yet uploaded
@@ -49,7 +50,9 @@ export function makeStream(gl){
   function reset(g){
     gen = g; world = g.world; cellsGen = null; genId++;
     slots.fill(null); packs.clear(); asked.clear(); arrived.length = 0;
-    if (worker) worker.postMessage({ type: 'init', options: g.options, id: genId });
+    // the worker needs only what roads and buildings read: the land (height grid) and the seed
+    if (worker) worker.postMessage({ type: 'init', id: genId,
+      world: { size: world.size, seed: world.seed, half: world.half, res: world.res, cell: world.cell, height: world.height } });
     gl.bindTexture(gl.TEXTURE_2D, cellsTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NS * CN, NS * CN, gl.RGBA, gl.FLOAT, new Float32Array(NS * CN * NS * CN * 4));
     if (landTex) gl.deleteTexture(landTex);
@@ -57,6 +60,17 @@ export function makeStream(gl){
     landTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, landTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, world.res, world.res, 0, gl.RED, gl.FLOAT, world.height);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    // what grows where, for the open ground: life kind, fertility, humidity, temperature (one texel per grid cell)
+    if (lifeTex) gl.deleteTexture(lifeTex);
+    const N = world.res * world.res, lb = new Uint8Array(N * 4);
+    for (let k = 0; k < N; k++){
+      lb[4 * k] = world.life[k]; lb[4 * k + 1] = Math.round(world.fert[k] * 255); lb[4 * k + 2] = Math.round(world.humid[k] * 255);
+      lb[4 * k + 3] = Math.max(0, Math.min(255, Math.round((world.temp[k] + 30) / 70 * 255)));
+    }
+    lifeTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, lifeTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, world.res, world.res, 0, gl.RGBA, gl.UNSIGNED_BYTE, lb);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     lamps.n = 0; lamps.at = [Infinity, Infinity];
     stats.built = stats.dropped = 0; stats.buildMs = 0;
@@ -160,14 +174,14 @@ export function makeStream(gl){
     gl.bindTexture(gl.TEXTURE_2D, lampTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LAMP_MAX, 1, gl.RGBA, gl.FLOAT, lamps.data);
   }
-  /** bind the textures to units from u0 (cells, lists, land, lights) and set a program's uniforms */
+  /** bind the textures to units from u0 (cells, lists, land, lights, life) and set a program's uniforms */
   function bind(u, u0){
-    const t = [cellsTex, listTex, landTex, lampTex];
-    for (let i = 0; i < 4; i++){ gl.activeTexture(gl.TEXTURE0 + u0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]); }
+    const t = [cellsTex, listTex, landTex, lampTex, lifeTex];
+    for (let i = 0; i < 5; i++){ gl.activeTexture(gl.TEXTURE0 + u0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]); }
     gl.activeTexture(gl.TEXTURE0);
-    gl.uniform1i(u.uCells, u0); gl.uniform1i(u.uList, u0 + 1); gl.uniform1i(u.uLand, u0 + 2); gl.uniform1i(u.uLampTex, u0 + 3);
+    gl.uniform1i(u.uCells, u0); gl.uniform1i(u.uList, u0 + 1); gl.uniform1i(u.uLand, u0 + 2); gl.uniform1i(u.uLampTex, u0 + 3); gl.uniform1i(u.uLife, u0 + 4);
     gl.uniform1i(u.uLampN, lamps.n); gl.uniform1f(u.uLampR, lamps.r);
-    if (world) gl.uniform1f(u.uWorldHalf, world.half);
+    if (world){ gl.uniform1f(u.uWorldHalf, world.half); gl.uniform1f(u.uWorldRes, world.res); }
   }
   return { reset, update, ready, setRange, bind, packs, stats, get gen(){ return gen; } };
 }

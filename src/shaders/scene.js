@@ -198,6 +198,12 @@ uniform highp sampler2D uCells, uList, uLand, uLampTex;
 uniform int uLampN;          // street lights in uLampTex (nearest the camera first)
 uniform float uLampR;        // lights farther than this are not in uLampTex: drawn neither as poles nor glows
 uniform float uWorldHalf;    // the world square: -half..half on both axes
+uniform highp sampler2D uLife;   // per world-grid cell: life kind / 255, fertility, humidity, temperature (see src/gen/world.js)
+uniform float uWorldRes;
+vec4 lifeAt(vec2 xz){
+  ivec2 c = ivec2(clamp(floor((xz + uWorldHalf) / (2.0 * uWorldHalf) * uWorldRes), 0.0, uWorldRes - 1.0));
+  return texelFetch(uLife, c, 0);
+}
 const float RC = 32.0, PAD = 8.0, LAMP_H = 8.0;
 const int SLOT_TEX = 12288;
 vec4 wT(int i){ return texelFetch(uList, ivec2(i & 4095, i >> 12), 0); }
@@ -975,15 +981,30 @@ Surf sidewalk(vec2 uv, vec2 f){
 }
 
 /* ---- open ground inside the blocks ----
-   Property-sized patches (~70 m, irregular edges), each one of: 0 concrete plaza, 1 grass,
-   2 grass with bare patches, 3 dirt. */
-float lotKind(vec2 p){ return floor(grains(p / 70.0, 131u).x * 4.0); }
+   Property-sized patches (~70 m, irregular edges), each one of: 0 concrete plaza, 1 grass, 2 grass with bare
+   patches, 3 dirt, 4 sand, 5 snow, 6 stony ground. Which ones, and how often, depends on the life map there
+   (life kinds as in src/gen/world.js: 2 beach, 3 ice, 4 tundra, 5 boreal forest, 6 cold steppe, 7 grassland,
+   8 temperate forest, 9 desert, 10 savanna, 11 rainforest, 12 bare rock). */
+float lotKind(vec2 p){
+  float r = grains(p / 70.0, 131u).x;
+  int L = int(lifeAt(p).r * 255.0 + 0.5);
+  if (r < 0.2) return 0.0;                                  // a fifth paved, everywhere
+  r = (r - 0.2) / 0.8;
+  if (L == 2) return 4.0;
+  if (L == 3) return 5.0;
+  if (L == 12) return 6.0;
+  if (L == 9) return r < 0.65 ? 4.0 : 3.0;
+  if (L == 4 || L == 6) return r < 0.5 ? 2.0 : 3.0;
+  if (L == 10) return r < 0.25 ? 1.0 : (r < 0.75 ? 2.0 : 3.0);
+  return r < 0.55 ? 1.0 : (r < 0.85 ? 2.0 : 3.0);           // forests and grassland
+}
 
 // Grass: blades a few mm wide and a few cm long lying in two crossing directions, dark gaps between them,
 // each blade its own shade from yellow-green to deep green; clumps and drifts of colour over metres.
-vec3 grassCol(vec2 uv, vec2 f, out float h){
+vec3 grassCol(vec2 uv, vec2 f, float dry, out float h){
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
   vec3 c = mix(vec3(0.060, 0.110, 0.030), vec3(0.120, 0.160, 0.045), vnoise(uv / 1.7 + 2.0));
+  c = mix(c, vec3(0.17, 0.15, 0.07), dry * 0.75);          // dry climates: yellowed grass
   c *= 1.0 + 0.30 * fbmG(uv, 0.5, 0.03, fn);
   float wB = gate(0.006, fe);
   h = 0.0;
@@ -1004,25 +1025,26 @@ vec3 grassCol(vec2 uv, vec2 f, out float h){
 }
 // Dirt: brown soil, darker where damp, broken into clods with dark cracks between them, fine grit,
 // and scattered light pebbles.
-vec3 dirtCol(vec2 uv, vec2 f, out float h){
+// (also sand, snow and stony ground: soil colours c0/c1, how lumpy (clodK) and how stony (pebK))
+vec3 dirtCol(vec2 uv, vec2 f, vec3 c0, vec3 c1, float clodK, float pebK, out float h){
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  vec3 c = mix(vec3(0.33, 0.24, 0.155), vec3(0.20, 0.145, 0.095), smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
+  vec3 c = mix(c0, c1, smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
   // soil is lumpy, not tiled: mottling at every scale, then soft clods whose edges only show as faint
   // shadows where the noise breaks them up
   c *= 1.0 + 0.30 * fbmG(uv, 0.4, 0.002, fn);
   vec2 clod = grainLayer(uv * vec2(1.0, 1.3), 0.03, 151u, fe);
   float edge = clod.y * smoothstep(0.45, 0.7, vnoise(uv / 0.07 + 4.0));
   vec2 grit = grainLayer(uv, 0.002, 153u, fe);             // grit: ~2 mm
-  c *= (1.0 + 0.25*clod.x - 0.30*edge) * (1.0 + 0.30*grit.x - 0.15*grit.y);
+  c *= (1.0 + clodK * (0.25*clod.x - 0.30*edge)) * (1.0 + 0.30*grit.x - 0.15*grit.y);
   float wP = gate(0.02, fe);                                // pebbles: ~1 cm, in a sixth of 6 cm cells
   float peb = 0.0;
   if (wP > 0.0){
     vec4 g = grains(fineP(uv, 0.06) / 0.06, 155u);
-    peb = step(g.w, 0.16) * (1.0 - smoothstep(0.08, 0.13 + 0.3 * fe / 0.06, g.z)) * wP;
+    peb = step(g.w, 0.16 * pebK) * (1.0 - smoothstep(0.08, 0.13 + 0.3 * fe / 0.06, g.z)) * wP;
   }
-  peb += 0.015 * (1.0 - wP);                                // unresolved: their average
+  peb += 0.015 * pebK * (1.0 - wP);                         // unresolved: their average
   c = mix(c, vec3(0.36, 0.32, 0.27) * (0.85 + 0.3 * grit.x), peb);
-  h = -0.004 * edge + 0.004 * peb;
+  h = -0.004 * edge * clodK + 0.004 * peb;
   return c;
 }
 // Concrete plaza: 1.5 m cast slabs with sawn joints, each slab a slightly different tone, a fine broom
@@ -1046,13 +1068,20 @@ Surf plazaSlabs(vec2 uv, vec2 f){
 Surf lot(vec2 uv, vec2 f){
   float k = lotKind(uv);
   if (k < 0.5) return plazaSlabs(uv, f);
+  float dry = 1.0 - smoothstep(0.2, 0.6, lifeAt(uv).b);   // from the humidity there
   // grass, dirt, or both: on mixed ground bare patches come and go over a few metres
   float gw = k < 1.5 ? 1.0 : (k > 2.5 ? 0.0 : smoothstep(0.38, 0.62, 0.65 * vnoise(uv / 9.0 + 3.1) + 0.35 * vnoise(uv / 2.5 + 11.7)));
+  // the bare ground: soil, sand, snow or stones
+  vec3 c0 = vec3(0.33, 0.24, 0.155), c1 = vec3(0.20, 0.145, 0.095);
+  float clodK = 1.0, pebK = 1.0;
+  if (k > 3.5 && k < 4.5){ c0 = vec3(0.66, 0.58, 0.43); c1 = vec3(0.58, 0.50, 0.36); clodK = 0.0; pebK = 0.3; }
+  else if (k > 4.5 && k < 5.5){ c0 = vec3(0.86, 0.88, 0.92); c1 = vec3(0.78, 0.80, 0.86); clodK = 0.3; pebK = 0.0; }
+  else if (k > 5.5){ c0 = vec3(0.36, 0.34, 0.32); c1 = vec3(0.26, 0.25, 0.24); clodK = 0.5; pebK = 4.0; }
   Surf s = blank();
   vec3 c = vec3(0.0); float h = 0.0, hh;
-  if (gw > 0.0){ c += gw * grassCol(uv, f, hh); h += gw * hh; }
-  if (gw < 1.0){ c += (1.0 - gw) * dirtCol(uv, f, hh); h += (1.0 - gw) * hh; }
-  s.alb = c; s.h = h; s.refl = 0.02;
+  if (gw > 0.0){ c += gw * grassCol(uv, f, dry, hh); h += gw * hh; }
+  if (gw < 1.0){ c += (1.0 - gw) * dirtCol(uv, f, c0, c1, clodK, pebK, hh); h += (1.0 - gw) * hh; }
+  s.alb = c; s.h = h; s.refl = k > 4.5 && k < 5.5 ? 0.08 : 0.02;
   return s;
 }
 
@@ -1150,7 +1179,8 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   if (m > 6.5) return vec3(0.13);                                     // pole
   if (m > 5.5){                                                       // open ground
     float k = lotKind(p.xz);
-    return k < 0.5 ? vec3(0.52, 0.51, 0.48) : (k < 1.5 ? vec3(0.08, 0.12, 0.04) : (k < 2.5 ? vec3(0.15, 0.14, 0.08) : vec3(0.25, 0.19, 0.13)));
+    return k < 0.5 ? vec3(0.52, 0.51, 0.48) : k < 1.5 ? vec3(0.08, 0.12, 0.04) : k < 2.5 ? vec3(0.15, 0.14, 0.08)
+         : k < 3.5 ? vec3(0.25, 0.19, 0.13) : k < 4.5 ? vec3(0.60, 0.52, 0.38) : k < 5.5 ? vec3(0.82, 0.84, 0.88) : vec3(0.30, 0.29, 0.28);
   }
   if (n.y > 0.7) return vec3(0.32);                                   // roofs
   Bld b = getBld(bldOf(mat));
