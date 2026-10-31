@@ -212,7 +212,7 @@ bool cellAt(vec2 xz, out int base, out ivec4 n, out float top, out vec2 lo){
 bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHalf)).r > 0.0; }
 
 // Materials (the second number map() returns): 0 road, 1 sidewalk (and curbs), 2 building, 5 podium,
-// 6 paved lot, 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
+// 6 open ground (grass, dirt), 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
 // texel, so the material pass can read the building's data.
 float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
@@ -951,18 +951,21 @@ Surf sidewalk(vec2 uv, vec2 f){
   return s;
 }
 
-Surf plaza(vec2 uv, vec2 f){
+// Open ground inside the blocks (between and behind buildings): worn grass and bare dirt in patches
+// tens of metres across, with dry spots in the grass and pebbles in the dirt.
+Surf lot(vec2 uv, vec2 f){
   Surf s = blank();
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  float jc = 1.0 - (1.0 - pulseF(uv.x, 0.5, 0.004, f.x)) * (1.0 - pulseF(uv.y, 0.5, 0.004, f.y));
-  float wC = gate(0.5, fe);                               // two-tone checker pavers
-  float ch = mod(floor(uv.x/0.5) + floor(uv.y/0.5), 2.0);
-  vec3 c = mix(vec3(0.46, 0.40, 0.34), mix(vec3(0.58, 0.52, 0.44), vec3(0.34, 0.28, 0.24), ch), wC);
-  vec2 pg = gHOnly ? vec2(0.0) : grainLayer(uv, 0.002, 91u, fe);     // fine stone grain
-  c *= 1.0 + 0.20*pg.x;
-  c *= 1.0 + 0.08*fbmG(uv, 0.015, 0.0002, fn);
-  s.alb = mix(c, c*0.6, jc);
-  s.h = -0.003*jc;
+  float n = 0.65 * vnoise(uv / 23.0 + 3.1) + 0.35 * vnoise(uv / 6.5 + 11.7);
+  float gw = smoothstep(0.40, 0.60, n);                   // 1 = grass, 0 = dirt
+  vec3 grass = vec3(0.085, 0.13, 0.045) * (1.0 + 0.35 * fbmG(uv, 0.6, 0.004, fn));
+  grass = mix(grass, vec3(0.20, 0.18, 0.09), 0.55 * smoothstep(0.55, 0.85, vnoise(uv / 2.7 + 5.3)));   // dry patches
+  vec3 dirt = vec3(0.26, 0.20, 0.14) * (1.0 + 0.25 * fbmG(uv, 1.2, 0.003, fn));
+  vec2 g = grainLayer(uv, 0.009, 113u, fe);               // grass tufts / pebbles: ~1 cm
+  vec3 c = mix(dirt * (1.0 + 0.45*g.x - 0.3*g.y), grass * (1.0 + 0.6*g.x - 0.45*g.y), gw);
+  s.alb = c;
+  s.h = -0.003 * g.y;
+  s.refl = 0.02;
   return s;
 }
 
@@ -1027,7 +1030,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
   }
   if (m > 8.5) return water(uv, f);
   if (m > 6.5) return lampSurf(m, n, uv, f);
-  if (m > 5.5){ if (top) return plaza(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
+  if (m > 5.5){ if (top) return lot(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
   Bld b = getBld(bldOf(mat));
   gDoorU = 1e9;
   if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
@@ -1051,7 +1054,7 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   if (m > 8.5){ glassy = 0.9; return vec3(0.02, 0.04, 0.05); }        // water
   if (m > 7.5) return vec3(0.08);                                     // lamp head
   if (m > 6.5) return vec3(0.13);                                     // pole
-  if (m > 5.5) return vec3(0.40, 0.38, 0.35);                         // paved lot
+  if (m > 5.5) return vec3(0.15, 0.15, 0.09);                         // grass and dirt
   if (n.y > 0.7) return vec3(0.32);                                   // roofs
   Bld b = getBld(bldOf(mat));
   float v = p.y;
