@@ -983,20 +983,23 @@ vec3 grassCol(vec2 uv, vec2 f, out float h){
 // and scattered light pebbles.
 vec3 dirtCol(vec2 uv, vec2 f, out float h){
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  vec3 c = mix(vec3(0.30, 0.225, 0.155), vec3(0.19, 0.14, 0.095), smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
-  c *= 1.0 + 0.20 * fbmG(uv, 1.0, 0.05, fn);
-  vec2 clod = grainLayer(uv, 0.035, 151u, fe);             // clods: ~3.5 cm
+  vec3 c = mix(vec3(0.33, 0.24, 0.155), vec3(0.20, 0.145, 0.095), smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
+  // soil is lumpy, not tiled: mottling at every scale, then soft clods whose edges only show as faint
+  // shadows where the noise breaks them up
+  c *= 1.0 + 0.30 * fbmG(uv, 0.4, 0.002, fn);
+  vec2 clod = grainLayer(uv * vec2(1.0, 1.3), 0.03, 151u, fe);
+  float edge = clod.y * smoothstep(0.45, 0.7, vnoise(uv / 0.07 + 4.0));
   vec2 grit = grainLayer(uv, 0.002, 153u, fe);             // grit: ~2 mm
-  c *= (1.0 + 0.35*clod.x - 0.55*clod.y) * (1.0 + 0.30*grit.x - 0.15*grit.y);
-  float wP = gate(0.02, fe);                                // pebbles: 1-2 cm, in a third of 6 cm cells
+  c *= (1.0 + 0.25*clod.x - 0.30*edge) * (1.0 + 0.30*grit.x - 0.15*grit.y);
+  float wP = gate(0.02, fe);                                // pebbles: ~1 cm, in a sixth of 6 cm cells
   float peb = 0.0;
   if (wP > 0.0){
     vec4 g = grains(fineP(uv, 0.06) / 0.06, 155u);
-    peb = step(g.w, 0.33) * (1.0 - smoothstep(0.10, 0.17 + 0.3 * fe / 0.06, g.z)) * wP;
+    peb = step(g.w, 0.16) * (1.0 - smoothstep(0.08, 0.13 + 0.3 * fe / 0.06, g.z)) * wP;
   }
-  peb += 0.05 * (1.0 - wP);                                 // unresolved: their average
-  c = mix(c, vec3(0.46, 0.43, 0.38) * (0.85 + 0.3 * grit.x), peb);
-  h = -0.006 * clod.y + 0.005 * peb;
+  peb += 0.015 * (1.0 - wP);                                // unresolved: their average
+  c = mix(c, vec3(0.36, 0.32, 0.27) * (0.85 + 0.3 * grit.x), peb);
+  h = -0.004 * edge + 0.004 * peb;
   return c;
 }
 // Concrete plaza: 1.5 m cast slabs with sawn joints, each slab a slightly different tone, a fine broom
