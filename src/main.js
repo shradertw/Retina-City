@@ -1,5 +1,5 @@
 import { SEED } from './world/hash.js';
-import { makeStream } from './world/stream.js';
+import { makeStream, MAX_RANGE } from './world/stream.js';
 import { compilePrograms, nextPaint } from './core/gpu.js';
 import { loadReport } from './ui/loading.js';
 import { initStartPanel } from './ui/startpanel.js';
@@ -10,7 +10,7 @@ import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
 import { BUILD } from './version.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
-import { SCENE_FS, SCENE_REFL_FULL_FS, SCENE_GEOM_FS, SCENE_MAT_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
+import { SCENE_FS, SCENE_REFL_FULL_FS, SCENE_MATG_FS, SCENE_MATB_FS, SCENE_GEOM_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
 import { $, D2R, sstep } from './core/util.js';
 import { groundAt, lampLuxJS, collide, castJS, hit, setWorldData, spawnNear } from './world/query.js';
@@ -28,7 +28,7 @@ const errBox = (msg) => { const d = document.createElement("div"); d.className =
 const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, powerPreference: "high-performance" });
 if (!gl){ errBox("This page needs WebGL2. Try a current Chrome, Edge or Firefox with hardware acceleration enabled."); return; }
 const floatFB = !!gl.getExtension("EXT_color_buffer_float");
-// The scene is drawn in five smaller passes (much quicker to compile on Windows). They need float
+// The scene is drawn in six smaller passes (much quicker to compile on Windows). They need float
 // render targets; without them, or with ?single in the address, one big shader does it all.
 const MULTI = floatFB && !new URLSearchParams(location.search).has("single");
 let scenePasses = [];
@@ -65,7 +65,7 @@ const startPanel = initStartPanel({ onGenerate: (opts) => {
   const sp0 = spawnNear(roads, 0, 0);
   if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
   stream.reset(current); setWorldData(stream.packs, w);
-  if (!generatedOnce){ const t1 = performance.now(); stream.update(state.pos, state.yaw); load.set("Chunks near you", performance.now() - t1); }
+  if (!generatedOnce) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
   load.set("World (" + opts.size + " km)", performance.now() - t);
   window.__lastWorldMs = performance.now() - t;
   if (generatedOnce){ generatedOnce(); generatedOnce = null; }
@@ -76,20 +76,25 @@ window.__gen = current;
 load.set("Page and modules", performance.now());
 await firstGenerate;
 const tGenerate = performance.now() - (window.__lastWorldMs || 0);
-load.set("Shaders and chunks", "working…");
+load.set("Shaders", "working…");
 await nextPaint();
 try {
   const t0 = performance.now();
-  const sceneSrc = MULTI ? { sceneGeomP: SCENE_GEOM_FS, sceneMatP: SCENE_MAT_FS, sceneLightP: SCENE_LIGHT_FS,
+  const sceneSrc = MULTI ? { sceneGeomP: SCENE_GEOM_FS, sceneMatGP: SCENE_MATG_FS, sceneMatBP: SCENE_MATB_FS, sceneLightP: SCENE_LIGHT_FS,
     sceneReflP: SCENE_REFL_FS, sceneComposeP: SCENE_COMPOSE_FS } : { sceneP: SCENE_FS };
   const P = await compilePrograms(gl, VS, { ...sceneSrc, resolveP: RESOLVE_FS, accumP: ACCUM_FS, presentP: PRESENT_FS,
     dofP: DOF_FS, meterP: METER_FS, downP: DOWN_FS, gdownP: GDOWN_FS, bdownP: BDOWN_FS, bupP: BUP_FS, streakP: STREAK_FS,
     afterP: AFTER_FS, sqavgP: SQAVG_FS, lidglowP: LIDGLOW_FS },
-    () => { const t = performance.now(); stream.update(state.pos, state.yaw); load.set("Chunks near you (" + stream.stats.built + ")", performance.now() - t); },
+    () => stream.update(state.pos, state.yaw),    // ask for the chunks around the start: built in the background meanwhile
     { serial: new URLSearchParams(location.search).has("serial"), onEach: (name, ms) => load.set("  " + name.replace(/P$/, ""), ms) });
-  scenePasses = MULTI ? [P.sceneGeomP, P.sceneMatP, P.sceneLightP, P.sceneReflP, P.sceneComposeP] : [P.sceneP];
+  scenePasses = MULTI ? [P.sceneGeomP, P.sceneMatGP, P.sceneMatBP, P.sceneLightP, P.sceneReflP, P.sceneComposeP] : [P.sceneP];
   ({ resolveP, accumP, presentP, dofP, meterP, downP, gdownP, bdownP, bupP, streakP, afterP, sqavgP, lidglowP } = P);
-  load.set("Shaders and chunks", performance.now() - t0);
+  load.set("Shaders", performance.now() - t0);
+  // the chunks were built in the background during the compile; wait for any still on their way
+  const t1 = performance.now();
+  await stream.ready(state.pos, state.yaw);
+  load.set("Chunks near you (" + stream.stats.built + (stream.stats.worker ? ", in the background" : "") + ")", stream.stats.buildMs);
+  if (performance.now() - t1 > 20) load.set("  waiting for them after the shaders", performance.now() - t1);
 }
 catch (e){ errBox("Shader error:\n" + e.message); window.__shaderError = e.message; load.fail(); return; }
 const tSetup = performance.now();
@@ -1214,6 +1219,20 @@ function runAfterimages(fx, afterOn){
 
 }
 
+/* Visible range: how far the eye can see from here, so only chunks that can be seen are kept. Two rays per
+   frame, in 16 directions around the player (alternately from the eye and from 30 m above it, which also
+   covers what reflections high on a facade can see), each until it meets something. The range is the
+   farthest of them plus 400 m (at least 900 m); it grows at once and shrinks slowly. Flying high: everything. */
+const vis = { d: new Float32Array(16).fill(MAX_RANGE), k: 0, range: MAX_RANGE };
+function updateRange(dt){
+  for (let n = 0; n < 2; n++){
+    const k = vis.k++ % 16, a = k * Math.PI / 8, up = (k & 1) ? 30 : 0;
+    vis.d[k] = castJS([state.pos[0], state.pos[1] + up, state.pos[2]], [Math.sin(a), 0, Math.cos(a)]);
+  }
+  const target = state.pos[1] > 60 ? MAX_RANGE : Math.max(Math.max(...vis.d) + 400, 900);
+  vis.range = target > vis.range ? target : vis.range - Math.min(vis.range - target, 150 * dt);
+  stream.setRange(vis.range);
+}
 function frame(now){
   // while the map covers the screen, the city is paused (nothing to see, and the map gets the machine)
   if (worldMap.isOpen()){ last = now; requestAnimationFrame(frame); return; }
@@ -1222,6 +1241,7 @@ function frame(now){
   step(dt);
   advanceSky(dt);
   // chunks coming into reach: at most ~3 ms of building per frame (always at least one)
+  updateRange(dt);
   if (stream.update(state.pos, state.yaw, 3)) pmark("CPU: new chunks");
   const sp = samplingParams();
   ensureTargets(sp);
@@ -1343,7 +1363,7 @@ function frame(now){
   if (sig !== lastSig){ needReset = true; lastSig = sig; }
 
   pmark("CPU: movement, focus, probes");
-  /* pass 1: one ray per cell (in five passes: ray, materials, light, reflections, all together) */
+  /* pass 1: one ray per cell (in six passes: ray, ground materials, building materials, light, reflections, all together) */
   const setFocus = (u) => {
     gl.uniform1f(u.uFocusD, state.focusD); gl.uniform1f(u.uPupil, state.pupil / 1000 * state.dofGain);
     gl.uniform1i(u.uDof, dofOn ? 1 : 0); gl.uniform1i(u.uDofCells, sp.dofCells && dofOn ? 1 : 0);
@@ -1372,22 +1392,27 @@ function frame(now){
     gl.uniform1i(su.uL0, 8); gl.uniform1i(su.uRf, 9);
     return su;
   };
-  // each pass reads the results of the ones before it (units 4-9; the rest unbound, so nothing is read and written at once)
-  const PASS_READS = [0, 1, 4, 5, 6];
+  // Each pass: which result it writes (index into the G-buffer framebuffers; -1 = the scene image) and how
+  // many of the earlier results it reads (units 4-9; the rest unbound, so nothing is read and written at once).
+  // The two material halves write the same targets, each only on its own cells.
+  const PASSES = MULTI ? [
+    { name: "ray", out: 0, reads: 0 }, { name: "materials: ground", out: 1, reads: 1 }, { name: "materials: buildings", out: 1, reads: 1 },
+    { name: "light", out: 2, reads: 4 }, { name: "reflections", out: 3, reads: 5 }, { name: "combine", out: -1, reads: 6 }]
+    : [{ name: "scene", out: -1, reads: 0 }];
   const bindReads = (g, pass) => {
     for (let i = 0; i < 6; i++){
       gl.activeTexture(gl.TEXTURE4 + i);
-      gl.bindTexture(gl.TEXTURE_2D, g && i < PASS_READS[pass] ? g.t[i] : null);
+      gl.bindTexture(gl.TEXTURE_2D, g && i < PASSES[pass].reads ? g.t[i] : null);
     }
     gl.activeTexture(gl.TEXTURE0);
   };
   ensureFullRefl();
   for (let pass = 0; pass < scenePasses.length; pass++){
-    const su = setScene(pass === 3 && reflFullP && wantFullRefl() ? reflFullP : scenePasses[pass]);
-    const pi = MULTI ? pass : 4;     // the single shader is the combine pass
-    bindReads(MULTI ? atlasG : null, pi);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, pi === 4 ? atlasT.fbo : atlasG.fbo[pi]);
-    if (pi === 4 && floatFB){ gl.viewport(0, 0, sp.atlasW, sp.atlasH); gl.clearColor(0, 0, 0, -1); gl.clear(gl.COLOR_BUFFER_BIT); }
+    const P = PASSES[pass], last = P.out < 0;
+    const su = setScene(P.name === "reflections" && reflFullP && wantFullRefl() ? reflFullP : scenePasses[pass]);
+    bindReads(MULTI ? atlasG : null, pass);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, last ? atlasT.fbo : atlasG.fbo[P.out]);
+    if (last && floatFB){ gl.viewport(0, 0, sp.atlasW, sp.atlasH); gl.clearColor(0, 0, 0, -1); gl.clear(gl.COLOR_BUFFER_BIT); }
     gl.enable(gl.SCISSOR_TEST);
     gl.uniform1i(su.uLayout, 0);
     for (let k = 0; k < sp.K; k++){
@@ -1397,14 +1422,14 @@ function frame(now){
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     if (sp.lpMode){
-      bindReads(MULTI ? lpG : null, pi);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, pi === 4 ? lpT.fbo : lpG.fbo[pi]);
+      bindReads(MULTI ? lpG : null, pass);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, last ? lpT.fbo : lpG.fbo[P.out]);
       gl.viewport(0, 0, sp.Nth, sp.Nr); gl.scissor(0, 0, sp.Nth, sp.Nr);
       gl.uniform1i(su.uLayout, 1);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     gl.disable(gl.SCISSOR_TEST);
-    if (prof.on && MULTI) pmark("scene: " + ["ray", "materials", "light", "reflections", "combine"][pass]);
+    if (prof.on && MULTI) pmark("scene: " + P.name);
   }
   gl.disable(gl.SCISSOR_TEST);
   const blur = !sp.fov && state.mode === 0;

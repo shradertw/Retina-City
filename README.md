@@ -14,11 +14,11 @@ Working with Claude.AI to make a procedural city you see the way a human eye see
 | `src/main.js` | WebGL setup, controls, view codes, the frame loop and the eye's processing passes |
 | `src/core/` | Shared state and small helpers |
 | `src/world/` | The seeded hash, the chunk stream that keeps the area around the player on the GPU, and the world evaluated in JavaScript (collision, focus ray) |
-| `src/gen/` | The world generator: options, land and ocean, roads and buildings in 512 m chunks, and the 32 m render cells the shaders read |
+| `src/gen/` | The world generator: options, land and ocean, roads and buildings in 512 m chunks, and the 32 m render cells the shaders read (built in a background worker) |
 | `src/sky/` | Sun and moon positions, light levels, the day/night cycle |
 | `src/ui/` | Start screen, loading report, map, sky dials, compass |
 | `src/shaders/` | GLSL: shared pieces, the raymarched scene, and the post-processing passes |
 | `tools/build-single.mjs` | Bundles everything into one HTML file |
-| `diag.html` | Times the compile of each scene pass, and of the old single shader (`index.html?single` runs the single shader) |
+| `diag.html` | Times the compile of each scene pass, of the Full reflections pass, and of the old single shader (`index.html?single` runs the single shader) |
 
 Branches: `main` holds tested versions, `dev` is work in progress, `baseline-v72` is the original single-file version.

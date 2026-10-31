@@ -6,14 +6,20 @@ import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './common.js';
 export const SCENE_FS = `#version 300 es
 precision highp float;
 precision highp int;
-/* The scene is drawn in five passes over the same cells, each a smaller shader (the Direct3D compiler used
+/* The scene is drawn in five passes (six: materials come in two halves) over the same cells, each a smaller shader (the Direct3D compiler used
    by browsers on Windows slows down out of proportion as one shader grows):
      PASS_GEOM     the ray: distance, material, surface direction             -> uG0
      PASS_MAT      materials: colour, glass, reflectivity, bumped direction   -> uM0, uM1, uM2
+                   (as two passes: MAT_GROUND, then MAT_BLD)
      PASS_LIGHT    sun shadow, ambient occlusion, street-light illumination   -> uL0
      PASS_REFL     what glass reflects                                        -> uRf
      PASS_COMPOSE  everything combined, and the sky where rays hit nothing    -> the scene image
    With none defined, one shader does it all (kept for comparison: ?single). */
+// The materials pass comes in two halves, each shading only its own cells: the ground (roads, sidewalks,
+// open ground, water) and the buildings (walls, windows, doors, roofs, street lights).
+#if defined(MAT_GROUND) || defined(MAT_BLD)
+#define PASS_MAT
+#endif
 #if !defined(PASS_GEOM) && !defined(PASS_MAT) && !defined(PASS_LIGHT) && !defined(PASS_REFL) && !defined(PASS_COMPOSE)
 #define PASS_ALL
 #endif
@@ -195,18 +201,19 @@ uniform float uWorldHalf;    // the world square: -half..half on both axes
 const float RC = 32.0, PAD = 8.0, LAMP_H = 8.0;
 const int SLOT_TEX = 12288;
 vec4 wT(int i){ return texelFetch(uList, ivec2(i & 4095, i >> 12), 0); }
-// The cell at xz: list start (global texel), counts, empty rings around it, tallest top. False if not loaded.
-bool cellAt(vec2 xz, out int base, out ivec4 n, out float top, out vec2 lo){
+// The cell at xz: list start (global texel), counts, empty rings around it, tallest top in the cell and in its
+// 128 m block. False if not loaded.
+bool cellAt(vec2 xz, out int base, out ivec4 n, out vec2 top, out vec2 lo){
   vec2 cf = floor(xz / RC);
   lo = cf * RC;
   vec2 ch = floor(cf / 16.0), sl = mod(ch, 9.0);
   vec4 v = texelFetch(uCells, ivec2(mod(cf, 144.0)), 0);
-  base = 0; n = ivec4(0, 0, 0, 1); top = 0.0;
+  base = 0; n = ivec4(0, 0, 0, 1); top = vec2(0.0);
   if (v.z != (ch.x + 512.0) * 1024.0 + ch.y + 513.0) return false;
   int k = int(v.y);
   base = int(sl.y * 9.0 + sl.x) * SLOT_TEX + int(v.x);
   n = ivec4(k & 63, (k >> 6) & 63, (k >> 12) & 63, k >> 18);
-  top = v.w;
+  top = vec2(mod(v.w, 1024.0), floor(v.w / 1024.0)) * 0.25;
   return true;
 }
 bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHalf)).r > 0.0; }
@@ -216,6 +223,7 @@ bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHal
 // texel, so the material pass can read the building's data.
 float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
+bool isBldMat(float m){ float k = matId(m); return (k > 1.5 && k < 5.5) || (k > 6.5 && k < 8.5); }
 struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; };
 Bld getBld(int k){
   vec4 a = wT(k), b = wT(k + 1), c = wT(k + 2);
@@ -297,7 +305,7 @@ float lampIrradiance(vec3 p, vec3 n){
   return 0.0;
 #else
   float E = 0.0;
-  int base; ivec4 cn; float top; vec2 lo;
+  int base; ivec4 cn; vec2 top; vec2 lo;
   if (!cellAt(p.xz, base, cn, top, lo)) return 0.0;
   for (int i = ZERO; i < 15; i++){
     if (i >= cn.y) break;
@@ -315,16 +323,23 @@ float lampIrradiance(vec3 p, vec3 n){
 
 vec2 map(vec3 p){
   // Buildings and street lights listed for the cell p is in. The ground is found exactly by groundHit().
-  int base; ivec4 cn; float top; vec2 lo;
+  int base; ivec4 cn; vec2 top; vec2 lo;
   bool loaded = cellAt(p.xz, base, cn, top, lo);
   // anything not listed here stays PAD away from the cell (or from the empty square of cells around it)
   float r = float(max(cn.w - 1, 0)) * RC;
   gRegLo = lo - r; gRegHi = lo + RC + r;
   gBound = min(min(p.x - gRegLo.x, gRegHi.x - p.x), min(p.z - gRegLo.y, gRegHi.y - p.z)) + PAD;
-  gTop = cn.w > 0 ? -1e9 : top;
+  gTop = cn.w > 0 ? -1e9 : top.x;
   // nothing measured: a distance nothing can be nearer than, marked -2 (shadow edges must not use it)
   if (cn.w > 0) return vec2(gBound, -2.0);
-  if (p.y > top + 1.0) return vec2(min(p.y - top, gBound), -2.0);
+  if (p.y > top.y + 1.0){
+    // above everything in the 128 m block: the whole block is the region a ray can cross
+    gRegLo = floor(p.xz / 128.0) * 128.0; gRegHi = gRegLo + 128.0;
+    gBound = min(min(p.x - gRegLo.x, gRegHi.x - p.x), min(p.z - gRegLo.y, gRegHi.y - p.z)) + PAD;
+    gTop = top.y;
+    return vec2(min(p.y - top.y, gBound), -2.0);
+  }
+  if (p.y > top.x + 1.0) return vec2(min(p.y - top.x, gBound), -2.0);
   vec2 res = vec2(1e9, -1.0);
   for (int i = ZERO; i < 31; i++){
     if (i >= cn.x) break;
@@ -372,7 +387,7 @@ vec2 map(vec3 p){
    fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 if main). */
 float roadAt(vec2 P, out vec2 g, out vec4 fr){
   g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0);
-  int base; ivec4 cn; float top; vec2 lo;
+  int base; ivec4 cn; vec2 top; vec2 lo;
   if (!cellAt(P, base, cn, top, lo)) return 1e9;
   float best = 1e9;
   vec2 d1 = vec2(0.0); bool crossing = false;
@@ -1083,6 +1098,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 #else
   float m = matId(mat);
   bool top = n.y > 0.7;
+#ifndef MAT_BLD
   if (m < 1.5){
     // road or sidewalk: patterns follow the road
     vec2 g; vec4 fr;
@@ -1093,8 +1109,12 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
     return roof(uv * vec2(1.0, 3.0), f);                 // a curb face
   }
   if (m > 8.5) return water(uv, f);
+  if (m > 5.5 && m < 6.5){ if (top) return lot(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
+#endif
+#ifdef MAT_GROUND
+  return blank();
+#else
   if (m > 6.5) return lampSurf(m, n, uv, f);
-  if (m > 5.5){ if (top) return lot(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
   Bld b = getBld(bldOf(mat));
   gDoorU = 1e9;
   if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
@@ -1103,6 +1123,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
   if (b.kind < 0.5) return brickWall(uv, p.y, f, b);
   if (b.kind < 1.5) return concreteWall(uv, p.y, f, b);
   return glassWall(uv, p.y - b.podH, f, b);
+#endif
 #endif
 }
 
@@ -1327,6 +1348,11 @@ void main(){
   vec2 h = vec2(0.0, g0.y);
   vec3 n = octDec(g0.zw);
 #endif
+#if defined(MAT_GROUND)
+  if (hit && isBldMat(h.y)) discard;
+#elif defined(MAT_BLD)
+  if (!hit || !isBldMat(h.y)) discard;
+#endif
 
 #ifdef PASS_GEOM
   outColor = vec4(depth, h.y, octEnc(n));
@@ -1489,5 +1515,7 @@ void main(){
 const pass = (name) => SCENE_FS.replace('#version 300 es', '#version 300 es\n#define PASS_' + name);
 // reflections with the full materials: compiled only when that quality is chosen
 export const SCENE_REFL_FULL_FS = SCENE_FS.replace('#version 300 es', '#version 300 es\n#define PASS_REFL\n#define REFL_FULL');
+export const SCENE_MATG_FS = SCENE_FS.replace('#version 300 es', '#version 300 es\n#define MAT_GROUND');
+export const SCENE_MATB_FS = SCENE_FS.replace('#version 300 es', '#version 300 es\n#define MAT_BLD');
 export const SCENE_GEOM_FS = pass('GEOM'), SCENE_MAT_FS = pass('MAT'), SCENE_LIGHT_FS = pass('LIGHT'),
   SCENE_REFL_FS = pass('REFL'), SCENE_COMPOSE_FS = pass('COMPOSE');

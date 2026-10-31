@@ -6,7 +6,8 @@ import { SCENE_FS } from '../shaders/scene.js';
 
 const VARIANTS = [
   ['Pass 1: the ray', ['PASS_GEOM']],
-  ['Pass 2: materials', ['PASS_MAT']],
+  ['Pass 2a: materials, ground', ['MAT_GROUND']],
+  ['Pass 2b: materials, buildings', ['MAT_BLD']],
   ['Pass 3: shadow, light', ['PASS_LIGHT']],
   ['Pass 4: reflections', ['PASS_REFL']],
   ['Pass 5: combine, sky', ['PASS_COMPOSE']],
@@ -42,9 +43,9 @@ async function run(){
     out.textContent = out.textContent.replace(name.padEnd(32, ' ') + 'compiling…', name.padEnd(32, ' ') + (ms / 1000).toFixed(1) + ' s' + (ok ? '' : '  FAILED: ' + (gl.getShaderInfoLog(fs) || gl.getProgramInfoLog(p)).slice(0, 200)));
     gl.deleteProgram(p); gl.deleteShader(fs);
     await paint();
-    if (rows.length === 5){
+    if (rows.length === 6){
       const sum = rows.reduce((a, r) => a + r[1], 0);
-      line('-'.repeat(40)); line('Five passes together'.padEnd(32, ' ') + (sum / 1000).toFixed(1) + ' s'); line('');
+      line('-'.repeat(40)); line('Six passes together'.padEnd(32, ' ') + (sum / 1000).toFixed(1) + ' s'); line('');
     }
   }
   line('');

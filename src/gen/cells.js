@@ -15,8 +15,11 @@
      light     (pole x, z, arm direction x, z)
      road      (start x, z, end x, z)
                (half width, distance along the road at the start, road length, 1 = main road)
-     cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, top)
-               counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings */
+     cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, tops)
+               counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings
+               tops: the cell's tallest top and its 128 m block's (4 x 4 cells), in quarter metres rounded
+               up: cell + 1024 x block. A ray above the block's top can cross the whole block at once.
+   A pack also carries the chunk's own street lights (x, z, arm x, z), for the glows seen from afar. */
 import { rnd } from '../world/hash.js';
 import { ROAD_CHUNK, SAMPLES } from './roads.js';
 
@@ -95,6 +98,8 @@ export function makeCells(roads, blocks){
     }
     // write the cells and their lists
     const cells = new Float32Array(CN * CN * 4), data = new Float32Array(SLOT_TEX * 4), tag = chunkTag(cx, cz);
+    const stop = new Float32Array((CN / 4) * (CN / 4));
+    for (let j = 0; j < CN; j++) for (let i = 0; i < CN; i++){ const b = (j >> 2) * (CN / 4) + (i >> 2); stop[b] = Math.max(stop[b], top[j * CN + i]); }
     let off = 0;
     for (let j = 0; j < CN; j++) for (let i = 0; i < CN; i++){
       const k = j * CN + i;
@@ -113,12 +118,15 @@ export function makeCells(roads, blocks){
           }
         }
       }
-      cells[4 * k] = off; cells[4 * k + 1] = nB + 64 * nL + 4096 * nR + 262144 * e; cells[4 * k + 2] = tag; cells[4 * k + 3] = top[k];
+      cells[4 * k] = off; cells[4 * k + 1] = nB + 64 * nL + 4096 * nR + 262144 * e; cells[4 * k + 2] = tag;
+      cells[4 * k + 3] = Math.min(Math.ceil(top[k] * 4), 1023) + 1024 * Math.min(Math.ceil(stop[(j >> 2) * (CN / 4) + (i >> 2)] * 4), 1023);
       for (let n = 0; n < nB; n++){ data.set(lb[k][n], off * 4); off += 3; }
       for (let n = 0; n < nL; n++){ data.set(ll[k][n], off * 4); off += 1; }
       for (let n = 0; n < nR; n++){ data.set(lr[k][n], off * 4); off += 2; }
     }
-    return { cx, cz, cells, data, used: off, ms: performance.now() - t0 };
+    const own = blocks.chunk(cx, cz).lamps, lamps = new Float32Array(own.length * 4);
+    own.forEach((l, n) => lamps.set([l.x, l.z, l.ax, l.az], n * 4));
+    return { cx, cz, cells, data, lamps, used: off, ms: performance.now() - t0 };
   }
   return { pack };
 }

@@ -10,15 +10,16 @@ let packs = new Map(), world = null;
 export function setWorldData(p, w){ packs = p; world = w; }
 
 /* the cell at (x, z): its pack and list, or null where nothing is loaded */
-const C = { d: null, s: 0, nB: 0, nL: 0, nR: 0, e: 1, top: 0, x0: 0, z0: 0 };
+const C = { d: null, s: 0, nB: 0, nL: 0, nR: 0, e: 1, top: 0, stop: 0, x0: 0, z0: 0 };
 function cellJS(x, z){
   const gx = Math.floor(x / RC), gz = Math.floor(z / RC);
   const cx = Math.floor(gx / CN), cz = Math.floor(gz / CN);
   C.x0 = gx * RC; C.z0 = gz * RC;
   const p = packs.get(key2(cx, cz));
-  if (!p){ C.d = null; C.nB = C.nL = C.nR = 0; C.e = 1; C.top = 0; return C; }
+  if (!p){ C.d = null; C.nB = C.nL = C.nR = 0; C.e = 1; C.top = C.stop = 0; return C; }
   const k = ((gz - cz * CN) * CN + gx - cx * CN) * 4, v = p.cells[k + 1];
-  C.d = p.data; C.s = p.cells[k]; C.nB = v & 63; C.nL = (v >> 6) & 63; C.nR = (v >> 12) & 63; C.e = v >> 18; C.top = p.cells[k + 3];
+  C.d = p.data; C.s = p.cells[k]; C.nB = v & 63; C.nL = (v >> 6) & 63; C.nR = (v >> 12) & 63; C.e = v >> 18;
+  const t = p.cells[k + 3]; C.top = (t % 1024) * 0.25; C.stop = Math.floor(t / 1024) * 0.25;
   return C;
 }
 export const isLandJS = (x, z) => !world || world.isLand(x, z);
@@ -45,6 +46,12 @@ export function mapJS(x, y, z){
   R.bound = Math.min(x - R.lo[0], R.hi[0] - x, z - R.lo[1], R.hi[1] - z) + PAD;
   R.top = c.e > 0 ? -1e9 : c.top; R.bld = -1; R.d = c.d;
   if (c.e > 0) return R.bound;
+  if (y > c.stop + 1){
+    // above everything in the 128 m block: the whole block is the region
+    R.lo[0] = Math.floor(x / 128) * 128; R.lo[1] = Math.floor(z / 128) * 128; R.hi[0] = R.lo[0] + 128; R.hi[1] = R.lo[1] + 128;
+    R.bound = Math.min(x - R.lo[0], R.hi[0] - x, z - R.lo[1], R.hi[1] - z) + PAD; R.top = c.stop;
+    return Math.min(y - c.stop, R.bound);
+  }
   if (y > c.top + 1) return Math.min(y - c.top, R.bound);
   let best = 1e9;
   for (let n = 0; n < c.nB; n++){
