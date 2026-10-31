@@ -212,7 +212,7 @@ bool cellAt(vec2 xz, out int base, out ivec4 n, out float top, out vec2 lo){
 bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHalf)).r > 0.0; }
 
 // Materials (the second number map() returns): 0 road, 1 sidewalk (and curbs), 2 building, 5 podium,
-// 6 open ground (grass, dirt), 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
+// 6 open ground (plaza, grass, dirt), 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
 // texel, so the material pass can read the building's data.
 float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
@@ -951,21 +951,82 @@ Surf sidewalk(vec2 uv, vec2 f){
   return s;
 }
 
-// Open ground inside the blocks (between and behind buildings): worn grass and bare dirt in patches
-// tens of metres across, with dry spots in the grass and pebbles in the dirt.
-Surf lot(vec2 uv, vec2 f){
+/* ---- open ground inside the blocks ----
+   Property-sized patches (~70 m, irregular edges), each one of: 0 concrete plaza, 1 grass,
+   2 grass with bare patches, 3 dirt. */
+float lotKind(vec2 p){ return floor(grains(p / 70.0, 131u).x * 4.0); }
+
+// Grass: blades a few mm wide and a few cm long lying in two crossing directions, dark gaps between them,
+// each blade its own shade from yellow-green to deep green; clumps and drifts of colour over metres.
+vec3 grassCol(vec2 uv, vec2 f, out float h){
+  float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
+  vec3 c = mix(vec3(0.060, 0.110, 0.030), vec3(0.120, 0.160, 0.045), vnoise(uv / 1.7 + 2.0));
+  c *= 1.0 + 0.30 * fbmG(uv, 0.5, 0.03, fn);
+  float wB = gate(0.006, fe);
+  h = 0.0;
+  if (wB > 0.0){
+    vec2 q = fineP(uv, 0.01);
+    vec2 r = vec2(0.5*q.x - 0.866*q.y, 0.866*q.x + 0.5*q.y);
+    float blade = 0.0, tone = 0.0;
+    for (int k = ZERO; k < 2; k++){
+      vec4 g = grains((k == 0 ? q : r) * vec2(220.0, 30.0), 141u + uint(k));   // cells ~4.5 mm x 33 mm
+      float b = smoothstep(0.04, 0.22, g.y);
+      if (b > blade){ blade = b; tone = g.x; }
+    }
+    vec3 bc = mix(vec3(0.75, 0.85, 0.45), vec3(1.25, 1.15, 0.80), tone);   // per-blade shade
+    c = mix(c, c * mix(0.35, 1.0, blade) * bc, wB);
+    h = 0.004 * blade * wB;
+  }
+  return c;
+}
+// Dirt: brown soil, darker where damp, broken into clods with dark cracks between them, fine grit,
+// and scattered light pebbles.
+vec3 dirtCol(vec2 uv, vec2 f, out float h){
+  float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
+  vec3 c = mix(vec3(0.30, 0.225, 0.155), vec3(0.19, 0.14, 0.095), smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
+  c *= 1.0 + 0.20 * fbmG(uv, 1.0, 0.05, fn);
+  vec2 clod = grainLayer(uv, 0.035, 151u, fe);             // clods: ~3.5 cm
+  vec2 grit = grainLayer(uv, 0.002, 153u, fe);             // grit: ~2 mm
+  c *= (1.0 + 0.35*clod.x - 0.55*clod.y) * (1.0 + 0.30*grit.x - 0.15*grit.y);
+  float wP = gate(0.02, fe);                                // pebbles: 1-2 cm, in a third of 6 cm cells
+  float peb = 0.0;
+  if (wP > 0.0){
+    vec4 g = grains(fineP(uv, 0.06) / 0.06, 155u);
+    peb = step(g.w, 0.33) * (1.0 - smoothstep(0.10, 0.17 + 0.3 * fe / 0.06, g.z)) * wP;
+  }
+  peb += 0.05 * (1.0 - wP);                                 // unresolved: their average
+  c = mix(c, vec3(0.46, 0.43, 0.38) * (0.85 + 0.3 * grit.x), peb);
+  h = -0.006 * clod.y + 0.005 * peb;
+  return c;
+}
+// Concrete plaza: 1.5 m cast slabs with sawn joints, each slab a slightly different tone, a fine broom
+// finish across it, fine sand in the surface, and weathering stains.
+Surf plazaSlabs(vec2 uv, vec2 f){
   Surf s = blank();
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  float n = 0.65 * vnoise(uv / 23.0 + 3.1) + 0.35 * vnoise(uv / 6.5 + 11.7);
-  float gw = smoothstep(0.40, 0.60, n);                   // 1 = grass, 0 = dirt
-  vec3 grass = vec3(0.085, 0.13, 0.045) * (1.0 + 0.35 * fbmG(uv, 0.6, 0.004, fn));
-  grass = mix(grass, vec3(0.20, 0.18, 0.09), 0.55 * smoothstep(0.55, 0.85, vnoise(uv / 2.7 + 5.3)));   // dry patches
-  vec3 dirt = vec3(0.26, 0.20, 0.14) * (1.0 + 0.25 * fbmG(uv, 1.2, 0.003, fn));
-  vec2 g = grainLayer(uv, 0.009, 113u, fe);               // grass tufts / pebbles: ~1 cm
-  vec3 c = mix(dirt * (1.0 + 0.45*g.x - 0.3*g.y), grass * (1.0 + 0.6*g.x - 0.45*g.y), gw);
-  s.alb = c;
-  s.h = -0.003 * g.y;
-  s.refl = 0.02;
+  float jc = 1.0 - (1.0 - pulseF(uv.x, 1.5, 0.008, f.x)) * (1.0 - pulseF(uv.y, 1.5, 0.008, f.y));
+  float sv = hf(h2(ivec2(floor(uv / 1.5)), uSeed + 171u));
+  vec3 c = vec3(0.58, 0.57, 0.54) * mix(1.0, 0.92 + 0.16 * sv, gate(1.5, fe));
+  float wBr = gate(0.004, f.y);                             // broom lines, ~4 mm apart, across the slab
+  c *= 1.0 + 0.10 * wBr * (vnoise(vec2(uv.x * 3.0, fineP(uv, 0.01).y * 260.0)) - 0.5);
+  vec2 sand = gHOnly ? vec2(0.0) : grainLayer(uv, 0.0015, 161u, fe);
+  c *= 1.0 + 0.12 * sand.x;
+  c *= 1.0 - 0.18 * smoothstep(0.55, 0.9, vnoise(uv / 4.0 + 21.0)) * (0.6 + 0.4 * fbmG(uv, 0.8, 0.05, fn));   // stains
+  s.alb = mix(c, c * 0.5, jc);
+  s.h = -0.005 * jc;
+  s.refl = 0.04;
+  return s;
+}
+Surf lot(vec2 uv, vec2 f){
+  float k = lotKind(uv);
+  if (k < 0.5) return plazaSlabs(uv, f);
+  // grass, dirt, or both: on mixed ground bare patches come and go over a few metres
+  float gw = k < 1.5 ? 1.0 : (k > 2.5 ? 0.0 : smoothstep(0.38, 0.62, 0.65 * vnoise(uv / 9.0 + 3.1) + 0.35 * vnoise(uv / 2.5 + 11.7)));
+  Surf s = blank();
+  vec3 c = vec3(0.0); float h = 0.0, hh;
+  if (gw > 0.0){ c += gw * grassCol(uv, f, hh); h += gw * hh; }
+  if (gw < 1.0){ c += (1.0 - gw) * dirtCol(uv, f, hh); h += (1.0 - gw) * hh; }
+  s.alb = c; s.h = h; s.refl = 0.02;
   return s;
 }
 
@@ -1054,7 +1115,10 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   if (m > 8.5){ glassy = 0.9; return vec3(0.02, 0.04, 0.05); }        // water
   if (m > 7.5) return vec3(0.08);                                     // lamp head
   if (m > 6.5) return vec3(0.13);                                     // pole
-  if (m > 5.5) return vec3(0.15, 0.15, 0.09);                         // grass and dirt
+  if (m > 5.5){                                                       // open ground
+    float k = lotKind(p.xz);
+    return k < 0.5 ? vec3(0.52, 0.51, 0.48) : (k < 1.5 ? vec3(0.08, 0.12, 0.04) : (k < 2.5 ? vec3(0.15, 0.14, 0.08) : vec3(0.25, 0.19, 0.13)));
+  }
   if (n.y > 0.7) return vec3(0.32);                                   // roofs
   Bld b = getBld(bldOf(mat));
   float v = p.y;
