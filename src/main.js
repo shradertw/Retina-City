@@ -10,7 +10,7 @@ import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
 import { BUILD } from './version.js';
 import { VS, FS, LUMA, LIDS, PROJ, CELLFN } from './shaders/common.js';
-import { SCENE_FS, SCENE_GEOM_FS, SCENE_MAT_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
+import { SCENE_FS, SCENE_REFL_FULL_FS, SCENE_GEOM_FS, SCENE_MAT_FS, SCENE_LIGHT_FS, SCENE_REFL_FS, SCENE_COMPOSE_FS } from './shaders/scene.js';
 import { state } from './core/state.js';
 import { $, D2R, sstep } from './core/util.js';
 import { groundAt, lampLuxJS, collide, castJS, hit, setWorldData, spawnNear } from './world/query.js';
@@ -32,6 +32,22 @@ const floatFB = !!gl.getExtension("EXT_color_buffer_float");
 // render targets; without them, or with ?single in the address, one big shader does it all.
 const MULTI = floatFB && !new URLSearchParams(location.search).has("single");
 let scenePasses = [];
+// The "Full" reflection pass (full materials in reflections) is compiled only the first time it is chosen.
+let reflFullP = null, reflFullState = 0;     // 0 not yet, 1 compiling, 2 ready, -1 failed
+const wantFullRefl = () => MULTI && state.reflOn && state.reflMode === 3;
+function note(text, ms){
+  const el = $("note"); el.textContent = text; el.hidden = !text;
+  clearTimeout(note.t); if (ms) note.t = setTimeout(() => { el.hidden = true; }, ms);
+}
+function ensureFullRefl(){
+  if (!wantFullRefl() || reflFullState !== 0) return;
+  reflFullState = 1;
+  note("Compiling full reflections… (the view pauses for a few seconds)");
+  // let the note show before the browser gets busy
+  nextPaint().then(() => compilePrograms(gl, VS, { reflFullP: SCENE_REFL_FULL_FS }))
+    .then((P) => { reflFullP = P.reflFullP; reflFullState = 2; note("Full reflections ready", 2500); })
+    .catch((e) => { reflFullState = -1; console.error(e); note("Full reflections could not be compiled (using Simple + shadows materials)", 6000); });
+}
 
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
 // The start screen: world options and Generate. Nothing heavy happens before Generate is pressed: the first
@@ -1365,8 +1381,9 @@ function frame(now){
     }
     gl.activeTexture(gl.TEXTURE0);
   };
+  ensureFullRefl();
   for (let pass = 0; pass < scenePasses.length; pass++){
-    const su = setScene(scenePasses[pass]);
+    const su = setScene(pass === 3 && reflFullP && wantFullRefl() ? reflFullP : scenePasses[pass]);
     const pi = MULTI ? pass : 4;     // the single shader is the combine pass
     bindReads(MULTI ? atlasG : null, pi);
     gl.bindFramebuffer(gl.FRAMEBUFFER, pi === 4 ? atlasT.fbo : atlasG.fbo[pi]);

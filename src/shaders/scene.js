@@ -1151,11 +1151,13 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   float tG = traced ? groundHit(ro, rd, gm, gn) : 1e9;
   float tMax = min(tG, uReflReach);
   int steps = uReflMode == 3 ? 220 : 110;
-  float t = 0.05, tPrev = 0.05; vec2 h = vec2(1e9, -1.0); bool hit = false, reached = false, forced = false;
+  float t = 0.05, tPrev = 0.05; vec2 h = vec2(1e9, -1.0); bool hit = false, reached = false, forced = false, escaped = !traced;
+  int used = 0;
   for (int i = 0 + ZERO; i < 220; i++){
     if (i >= steps || !traced) break;
+    used = i;
     vec3 q = ro + rd * t;
-    if (q.y > 150.0 && rd.y > 0.0) break;
+    if (q.y > 150.0 && rd.y > 0.0){ escaped = true; break; }
     h = map(q);
     if (h.x < 0.0015 * t + 0.01){ hit = true; break; }
     // coarser than the main rays (reflections are small and blurred): at least 0.4% of the distance per step
@@ -1175,8 +1177,13 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   }
   vec3 sky = skyCol(rd, sunVis, max(cone, 0.015));
   if (!hit && rd.y < 0.0) sky = mix(sky, vec3(0.10, 0.10, 0.11), 0.6);   // out of reach, below the horizon
+  // Where the ray ran out of steps it is not known what it would have met: near and below the horizon most
+  // likely distant city in haze, higher up the sky. Hits found with the last steps fade toward the same
+  // colour, so the edge of what the steps can reach is soft instead of a cut.
+  vec3 beyond = mix(uFogCol * 0.7, sky, smoothstep(0.0, 0.2, rd.y));
+  float late = hit ? smoothstep(0.6, 1.0, float(used) / float(steps)) : 0.0;
   bool gHit = !hit && reached && tG <= uReflReach;
-  if (!hit && !gHit) return sky;
+  if (!hit && !gHit) return (reached || escaped) ? sky : beyond;
   if (gHit) t = tG;
   vec3 p = ro + rd * t;
   vec3 n = gHit ? gn : calcN(p, t + t0);
@@ -1185,9 +1192,15 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   vec2 uv = an.y > 0.7 ? p.xz : vec2(dot(p.xz, normalize(vec2(-n.z, n.x))), p.y);
   vec2 f = vec2(cone * (t + t0) + 0.005);
   vec3 alb; float glassy; vec3 inter = vec3(0.04);
-  // Every mode uses the simple colours: calling the full material code here as well doubled the shader
-  // the Direct3D compiler has to digest (~55 s more on Windows). "Full" adds ambient occlusion.
+  // Simple colours, except in "Full" (REFL_FULL): the full material code roughly doubles this pass's
+  // compile on Windows, so that version is only compiled when "Full" is chosen.
+#ifdef REFL_FULL
+  // "Full": the same materials as everything seen directly (a larger shader, compiled only when chosen)
+  Surf rs = surfAt(mat, p, n, uv, f);
+  alb = rs.alb; glassy = rs.glass; inter = rs.interior;
+#else
   alb = reflAlbedo(mat, p, n, uv, f, glassy);
+#endif
   float shd = 1.0;
   if (uReflMode >= 2) shd = (dot(uKeyCol, vec3(1.0)) > 0.0 && dot(n, uKeyDir) > -0.05) ? softShadow(p + n * max(0.05, 0.0015 * t), uKeyDir, 0.5) : 0.0;
   float ao = uReflMode == 3 ? calcAO(p, n) : 1.0;
@@ -1201,6 +1214,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   c = mix(c, mix(inter * min(uAmbK, 1.0), skyBase(vec3(R2.x, max(R2.y, 0.0), R2.z)), F2), glassy);
   c = mix(c, uFogCol, 1.0 - exp(-(t + t0) * 0.0007));
   c += lampSprites(ro, rd, t, cone);
+  c = mix(c, beyond, late);
   return mix(c, sky, smoothstep(0.75 * uReflReach, uReflReach, t));   // fade out toward the reach limit
 #endif
 }
@@ -1378,7 +1392,10 @@ void main(){
     gHOnly = false;
     // surface relief slope, capped (~60 degrees) so sharp steps cannot flip the shading normal
     float dhu = clamp((su.h - s.h)/eps.x, -1.7, 1.7), dhv = clamp((sv.h - s.h)/eps.y, -1.7, 1.7);
-    vec3 N = normalize(n - (dhu + s.tilt.x)*T - (dhv + s.tilt.y)*B);
+    // Pane and water waviness: seen at a grazing angle a small tilt swings the reflection a long way across
+    // the scene (and makes it flicker), so it calms down there.
+    vec2 tl = s.tilt * smoothstep(0.05, 0.45, abs(dot(n, rd)));
+    vec3 N = normalize(n - (dhu + tl.x)*T - (dhv + tl.y)*B);
 #else
     vec4 m0 = texelFetch(uM0, gp, 0), m1 = texelFetch(uM1, gp, 0), m2 = texelFetch(uM2, gp, 0);
     Surf s = blank();
@@ -1470,5 +1487,7 @@ void main(){
 
 // The five pass shaders: the scene source with one pass switched on.
 const pass = (name) => SCENE_FS.replace('#version 300 es', '#version 300 es\n#define PASS_' + name);
+// reflections with the full materials: compiled only when that quality is chosen
+export const SCENE_REFL_FULL_FS = SCENE_FS.replace('#version 300 es', '#version 300 es\n#define PASS_REFL\n#define REFL_FULL');
 export const SCENE_GEOM_FS = pass('GEOM'), SCENE_MAT_FS = pass('MAT'), SCENE_LIGHT_FS = pass('LIGHT'),
   SCENE_REFL_FS = pass('REFL'), SCENE_COMPOSE_FS = pass('COMPOSE');

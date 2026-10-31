@@ -352,7 +352,7 @@
       <div class="seg" role="group" aria-label="Reflection quality">
         <button id="refl1" aria-pressed="false" title="Base colours, sun and sky light, no shadows">Simple</button>
         <button id="refl2" aria-pressed="true" title="As Simple, plus one shadow ray per reflection">Simple + shadows</button>
-        <button id="refl3" aria-pressed="false" title="As Simple + shadows, plus ambient occlusion (full materials in reflections will return later)">+ Occlusion</button>
+        <button id="refl3" aria-pressed="false" title="Shadows, ambient occlusion and the full materials in reflections (compiled the first time it is chosen: a pause of several seconds)">Full</button>
       </div>
       <div class="row">
         <label for="reflReach">Reflection reach</label><output id="reflReachOut"></output>
@@ -438,6 +438,7 @@
 <canvas class="worldmap" id="map" hidden aria-label="Overhead map of the generated world"></canvas>
 <div class="mapinfo" id="mapInfo" hidden></div>
 <div class="crossnote" id="crossnote">Seed 1337 · Eye mode</div>
+<div class="note" id="note" hidden></div>
 
 <script type="module" src="src/main.js"></script>
 </body>

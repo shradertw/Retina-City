@@ -1,5 +1,5 @@
 /* Compile-time diagnostic: compiles each of the five scene passes one after another and lists the times,
-   then the old single scene shader for comparison. Each source gets a unique comment so the browser's
+   then the reflections pass as compiled for "Full" (only when chosen), and the old single scene shader. Each source gets a unique comment so the browser's
    shader cache cannot skip the work. */
 import { VS } from '../shaders/common.js';
 import { SCENE_FS } from '../shaders/scene.js';
@@ -10,6 +10,7 @@ const VARIANTS = [
   ['Pass 3: shadow, light', ['PASS_LIGHT']],
   ['Pass 4: reflections', ['PASS_REFL']],
   ['Pass 5: combine, sky', ['PASS_COMPOSE']],
+  ['Pass 4 with Full reflections', ['PASS_REFL', 'REFL_FULL']],
   ['Old single shader', []],
 ];
 const out = document.getElementById('out');

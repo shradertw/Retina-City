@@ -146,4 +146,5 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .compass { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(10px + env(safe-area-inset-bottom, 0px));
   width: min(560px, max(220px, calc(100vw - 420px))); height: 40px; opacity: 0.5; pointer-events: none; }
 @media (max-width: 640px){ .compass { bottom: calc(52px + env(safe-area-inset-bottom, 0px)); width: calc(100vw - 32px); } }
+.note { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); font-family: var(--mono); font-size: 11px; color: var(--text, #ddd); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; z-index: 5; }
 .crossnote { position: fixed; right: calc(12px + env(safe-area-inset-right, 0px)); bottom: calc(12px + env(safe-area-inset-bottom, 0px)); font-family: var(--mono); font-size: 10px; color: var(--muted); background: var(--panel); border: 1px solid var(--line); border-radius: 4px; padding: 5px 8px; }
