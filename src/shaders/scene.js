@@ -322,8 +322,9 @@ vec2 map(vec3 p){
   gRegLo = lo - r; gRegHi = lo + RC + r;
   gBound = min(min(p.x - gRegLo.x, gRegHi.x - p.x), min(p.z - gRegLo.y, gRegHi.y - p.z)) + PAD;
   gTop = cn.w > 0 ? -1e9 : top;
-  if (cn.w > 0) return vec2(gBound, -1.0);
-  if (p.y > top + 1.0) return vec2(min(p.y - top, gBound), -1.0);
+  // nothing measured: a distance nothing can be nearer than, marked -2 (shadow edges must not use it)
+  if (cn.w > 0) return vec2(gBound, -2.0);
+  if (p.y > top + 1.0) return vec2(min(p.y - top, gBound), -2.0);
   vec2 res = vec2(1e9, -1.0);
   for (int i = ZERO; i < 31; i++){
     if (i >= cn.x) break;
@@ -445,7 +446,16 @@ float softShadow(vec3 ro, vec3 rd, float jit){
   for (int i = 0 + ZERO; i < 128; i++){
     vec3 p = ro + rd*t;
     if (p.y > 150.0) break;
-    float h = map(p).x;
+    vec2 hm = map(p);
+    float h = hm.x;
+    if (hm.y < -1.5){
+      // only a bound here (empty space, or above every roof in the cell): it says nothing about how close
+      // the ray passes to anything, so it does not shape the shadow's edge
+      st = max(clamp(min(h, gBound), 0.04, 6.0), rayJump(p, rd));
+      ph = -1.0; t += st;
+      if (t > 400.0) break;
+      continue;
+    }
     // Two samples a step st apart, each with a clear sphere around it: estimate where along
     // the step the ray came closest to the surface, and how close (dd).
     float y = 0.0, dd = h;
