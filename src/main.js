@@ -5,6 +5,7 @@ import { loadReport } from './ui/loading.js';
 import { initStartPanel } from './ui/startpanel.js';
 import { initMap } from './ui/map.js';
 import { buildWorld } from './gen/world.js';
+import { runAge2 } from './gen/history.js';
 import { makeRoads } from './gen/roads.js';
 import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
@@ -70,6 +71,9 @@ const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: (opt
   stream.reset(current); setWorldData(stream.packs, w);
   if (window.__ready) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
   load.set("World (" + opts.size + " km)", performance.now() - t);
+  const t2 = performance.now();
+  current.history = runAge2(w);
+  load.set("History: age 2, " + current.history.alive + " settlements", performance.now() - t2);
   if (!worldMap.isOpen()) worldMap.toggle();                     // show the new world
 } });
 const worldMap = initMap();

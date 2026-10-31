@@ -227,7 +227,7 @@ export function worldFromData(d){
 const DX = [1, -1, 0, 0, 1, 1, -1, -1], DZ = [0, 0, 1, -1, 1, -1, 1, -1];
 const clamp01 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
 // distance (m) from every cell to the nearest cell where src(k) is true (two passes, 8 neighbours)
-function chamfer(res, cell, src){
+export function chamfer(res, cell, src){
   const N = res * res, d = new Float32Array(N), a = cell, b = cell * Math.SQRT2;
   for (let k = 0; k < N; k++) d[k] = src(k) ? 0 : 1e9;
   for (let j = 0; j < res; j++) for (let i = 0; i < res; i++){

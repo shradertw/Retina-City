@@ -6,6 +6,7 @@ import { current } from '../gen/current.js';
 import { state } from '../core/state.js';
 import { ROAD_CHUNK, SAMPLES } from '../gen/roads.js';
 import { LIFE, METALS } from '../gen/world.js';
+import { radiusKm } from '../gen/history.js';
 
 const SHOW_STREETS = false;
 // map layers: what each shows, and its legend
@@ -26,6 +27,17 @@ export function initMap(){
   const cv = /** @type {HTMLCanvasElement} */ (document.getElementById('map'));
   const info = document.getElementById('mapInfo');
   const ctx = cv.getContext('2d');
+  const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
+  const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
+  let step = -1, playing = false, playT = 0, lastHist = null;
+  const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + step * h.yearsPerStep; };
+  yearIn.addEventListener('input', () => { step = Number(yearIn.value); playing = false; playBtn.textContent = 'Play'; showYear(); });
+  playBtn.addEventListener('click', () => {
+    playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play';
+    if (playing && step >= current.history.steps) step = 0;
+    playT = performance.now();
+  });
+  for (const el of [timeBox, yearIn, playBtn]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
   let open = false, cx = 0, cz = 0, scale = 0.25, landImg = null, landFor = null, landLayer = -1, drag = null, layer = 0;
   const W = () => cv.width, H = () => cv.height;
   const dpr = () => Math.min(window.devicePixelRatio || 1, 2);
@@ -133,6 +145,36 @@ export function initMap(){
         }
       }
     }
+    // settlements at the chosen year: their ground, coloured by when they were founded (older = deeper amber)
+    const hist = current.history;
+    if (hist){
+      if (hist !== lastHist){ lastHist = hist; step = hist.steps; yearIn.max = String(hist.steps); playing = false; playBtn.textContent = 'Play'; timeBox.hidden = false; }
+      if (playing && performance.now() - playT > 120){ playT = performance.now(); step++; if (step >= hist.steps){ step = hist.steps; playing = false; playBtn.textContent = 'Play'; } }
+      yearIn.value = String(step); showYear();
+      ctx.lineWidth = 1 * d; ctx.font = (10 * d) + 'px "Martian Mono", ui-monospace, monospace';
+      const labels = [];
+      for (const st of hist.settlements){
+        const pop = st.popAt[step];
+        if (!(pop > 0)) continue;
+        const r = Math.max(radiusKm(pop) * 1000 * scale * d, 2 * d), sx = toX(st.xAt[step] * 1000), sz = toY(st.zAt[step] * 1000);
+        if (sx < -r || sz < -r || sx > W() + r || sz > H() + r) continue;
+        const age = 1 - st.born / hist.steps;
+        ctx.fillStyle = `rgba(${Math.round(255 - 40 * age)},${Math.round(200 - 90 * age)},${Math.round(120 - 80 * age)},0.85)`;
+        ctx.strokeStyle = 'rgba(20,14,8,0.8)';
+        ctx.beginPath(); ctx.arc(sx, sz, r, 0, 6.2832); ctx.fill(); ctx.stroke();
+        labels.push([pop, st.name, sx, sz, r]);
+      }
+      // names: biggest first, as many as fit without crowding
+      labels.sort((a, b) => b[0] - a[0]);
+      const placed = [];
+      ctx.fillStyle = '#f4ead2'; ctx.strokeStyle = 'rgba(10,8,6,0.85)'; ctx.lineWidth = 3 * d;
+      for (const [pop, name, sx, sz, r] of labels){
+        const tx = sx + r + 3 * d, ty = sz + 3 * d, tw = ctx.measureText(name).width;
+        if (placed.some(([x, y, w2]) => Math.abs(y - ty) < 12 * d && tx < x + w2 && x < tx + tw)) continue;
+        if (placed.length > 120) break;
+        ctx.strokeText(name, tx, ty); ctx.fillText(name, tx, ty); placed.push([tx, ty, tw]);
+      }
+    }
     // metal deposits
     if (LAYERS[layer].key === 'metals'){
       for (const m of w.metals){
@@ -159,7 +201,9 @@ export function initMap(){
     const m = nice.find((v) => v * scale >= 90) || 50000, bw = m * scale * d, by = H() - 28 * d, bx = 20 * d;
     ctx.fillStyle = '#e8e4d6'; ctx.fillRect(bx, by, bw, 2 * d);
     ctx.font = (11 * d) + 'px "Martian Mono", ui-monospace, monospace'; ctx.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx, by - 6 * d);
+    const hs = current.history;
     info.textContent = `World ${current.options.size} km · seed ${current.options.seed}` + (pending ? ` · generating ${pending} chunks…` : '')
+      + (hs ? ` · ${hs.settlements.filter((t) => t.popAt[step] > 0).length} settlements in year ${step * hs.yearsPerStep}` : '')
       + ' · scroll to zoom · drag to pan · double-click: back to you · Z to close'
       + `\nLayer (L): ${LAYERS[layer].name} — ${LAYERS[layer].legend}` + hover;
   }
@@ -180,8 +224,20 @@ export function initMap(){
     const x = cx + (e.clientX * d - W() / 2) / (scale * d), z = cz - (e.clientY * d - H() / 2) / (scale * d);
     if (!w || Math.abs(x) > w.half || Math.abs(z) > w.half){ hover = ''; return; }
     const k = w.gridIndex(x, z), wt = w.water[k];
+    const h = current.history;
+    let town = '';
+    if (h && step >= 0){
+      let best = null, bd = 1e9;
+      for (const st of h.settlements){
+        const pop = st.popAt[step]; if (!(pop > 0)) continue;
+        const dd = Math.hypot(st.xAt[step] * 1000 - x, st.zAt[step] * 1000 - z), lim = Math.max(radiusKm(pop) * 1000, 6 / scale);
+        if (dd < lim && dd < bd){ bd = dd; best = st; }
+      }
+      if (best) town = `\n${best.name}: ${Math.round(best.popAt[step]).toLocaleString()} people · founded year ${best.born * h.yearsPerStep}`
+        + (best.died && best.died <= step ? '' : best.died ? (best.mergedInto >= 0 ? ` · merges into ${h.settlements[best.mergedInto].name} in year ${best.died * h.yearsPerStep}` : ` · gone by year ${best.died * h.yearsPerStep}`) : '');
+    }
     hover = `\nHere: ${wt === 1 ? 'sea' : wt === 2 ? 'lake' : wt === 3 ? 'river' : LIFE[w.life[k]]} · height ${Math.round(w.elev[k])} m · ${w.temp[k].toFixed(1)} °C`
-      + ` · humidity ${(w.humid[k] * 100).toFixed(0)}% · fertility ${(w.fert[k] * 100).toFixed(0)}%`;
+      + ` · humidity ${(w.humid[k] * 100).toFixed(0)}% · fertility ${(w.fert[k] * 100).toFixed(0)}%` + town;
   });
   cv.addEventListener('pointerup', () => { drag = null; });
   cv.addEventListener('dblclick', () => { cx = state.pos[0]; cz = state.pos[2]; });
@@ -194,7 +250,7 @@ export function initMap(){
     toggle(){
       if (!current.world) return false;
       open = !open;
-      cv.hidden = !open; info.hidden = !open;
+      cv.hidden = !open; info.hidden = !open; timeBox.hidden = !open || !current.history;
       if (open){ cx = state.pos[0]; cz = state.pos[2]; if (document.pointerLockElement) document.exitPointerLock(); state.keys.clear(); draw(); }
       return open;
     },
