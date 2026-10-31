@@ -1,18 +1,20 @@
 /* The start screen's world options, built from the list in gen/options.js, and its title, which follows
-   what is ready: "New world" until a world is generated, "Loading…" while shaders still compile, then
+   what is ready: "New world" until a world is generated; then the map is open and the 3D view is loaded only
+   when asked for (a click on the card: its shaders take a while to compile); "Loading…" meanwhile; then
    "Click to enter the city". */
 import { WORLD_OPTIONS, loadWorldOptions, saveWorldOptions } from '../gen/options.js';
 
-/** @param {{ onGenerate: (opts: Record<string, number>) => void }} hooks */
+/** @param {{ onGenerate: (opts: Record<string, number>) => void, onLoad3D: () => void }} hooks */
 export function initStartPanel(hooks){
   const box = document.getElementById('worldOptions'), btn = document.getElementById('generate');
   const title = document.getElementById('startTitle');
   const opts = loadWorldOptions();
-  let shadersReady = false, worldReady = false;
+  let shadersReady = false, worldReady = false, loading = false;
   const startEl = document.getElementById('start');
   const showTitle = () => {
-    title.textContent = !worldReady ? 'New world' : !shadersReady ? 'Loading…' : 'Click to enter the city';
-    startEl.classList.toggle('ready', worldReady && shadersReady);   // the hand cursor only when a click will enter
+    title.textContent = !worldReady ? 'New world' : shadersReady ? 'Click to enter the city'
+      : loading ? 'Loading the 3D city…' : 'World ready · Z: map · click here to load the 3D city';
+    startEl.classList.toggle('ready', worldReady && (shadersReady || !loading));   // the hand cursor only when a click does something
   };
   for (const o of WORLD_OPTIONS){
     const row = document.createElement('div'); row.className = 'wopt';
@@ -46,6 +48,11 @@ export function initStartPanel(hooks){
       hooks.onGenerate({ ...opts });
       worldReady = true; btn.disabled = false; btn.textContent = 'Generate again'; showTitle();
     }, 30);
+  });
+  startEl.addEventListener('click', () => {
+    if (!worldReady || shadersReady || loading) return;
+    loading = true; showTitle();
+    hooks.onLoad3D();
   });
   showTitle();
   return {

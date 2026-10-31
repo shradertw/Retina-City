@@ -7,6 +7,7 @@ import { state } from '../core/state.js';
 import { ROAD_CHUNK, SAMPLES } from '../gen/roads.js';
 import { LIFE, METALS } from '../gen/world.js';
 
+const SHOW_STREETS = false;
 // map layers: what each shows, and its legend
 const LAYERS = [
   { key: 'terrain', name: 'Terrain', legend: 'green low land to brown and grey high ground, shaded from the north-west; blue water, rivers' },
@@ -98,6 +99,8 @@ export function initMap(){
     list.sort((a, b) => a[2] - b[2]);
     if (list.length > 4000) list.length = 4000;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // the placeholder streets and buildings are left off while the world history is being built (step 4)
+    if (!SHOW_STREETS) list.length = 0;
     for (const [x, z] of list){
       const fresh = !current.roads.cached(x, z) || (showBuildings && !current.blocks.cached(x, z));
       if (fresh && performance.now() - t0 > 20){ pending++; continue; }
@@ -138,7 +141,7 @@ export function initMap(){
       }
     }
     // chunk borders
-    if (scale >= 0.03 && scale < 2){
+    if (SHOW_STREETS && scale >= 0.03 && scale < 2){
       ctx.strokeStyle = 'rgba(240,178,92,0.18)'; ctx.lineWidth = 1;
       ctx.beginPath();
       for (let x = c0x; x <= c1x + 1; x++){ ctx.moveTo(toX(x * ROAD_CHUNK), toY(Math.max(z0, -w.half))); ctx.lineTo(toX(x * ROAD_CHUNK), toY(Math.min(z1, w.half))); }

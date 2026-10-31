@@ -50,14 +50,15 @@ function ensureFullRefl(){
 }
 
 let sceneP, resolveP, accumP, presentP, dofP, meterP, downP, downT = null, gdownP, bdownP, bupP, streakP, glareH = null, glareD = [], glareU = [], streakT = null, streakA = null, streakB = null, afterP, afterT = null, sqavgP, sqAvgT = null, lidglowP, lidGlowT = null, sqAvgI = 0, sqDt = 0;
-// The start screen: world options and Generate. Nothing heavy happens before Generate is pressed: the first
-// press builds the world, then compiles the shaders while the chunks around the start point are built.
+// The start screen: world options and Generate. Generate builds the world and opens the map; the 3D view
+// (whose shaders take a while to compile) loads only when asked for, with the chunks around the start point
+// built in the background meanwhile.
 const stream = makeStream(gl);
 window.__stream = stream;
 const load = loadReport({ onReady: () => startPanel.setShadersReady() });
-let generatedOnce = null;
-const firstGenerate = new Promise((resolve) => { generatedOnce = resolve; });
-const startPanel = initStartPanel({ onGenerate: (opts) => {
+let wantLoad = null;
+const load3D = new Promise((resolve) => { wantLoad = resolve; });
+const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: (opts) => {
   const t = performance.now();
   const w = buildWorld(opts), roads = makeRoads(w);
   Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
@@ -67,17 +68,24 @@ const startPanel = initStartPanel({ onGenerate: (opts) => {
   const sp0 = spawnNear(roads, 0, 0);
   if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
   stream.reset(current); setWorldData(stream.packs, w);
-  if (!generatedOnce) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
+  if (window.__ready) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
   load.set("World (" + opts.size + " km)", performance.now() - t);
-  window.__lastWorldMs = performance.now() - t;
-  if (generatedOnce){ generatedOnce(); generatedOnce = null; }
+  if (!worldMap.isOpen()) worldMap.toggle();                     // show the new world
 } });
 const worldMap = initMap();
 $("buildStamp").textContent = "Build " + BUILD;
 window.__gen = current;
 load.set("Page and modules", performance.now());
-await firstGenerate;
-const tGenerate = performance.now() - (window.__lastWorldMs || 0);
+// Until the 3D view is loaded, only the map's keys work (Z map, L layer, Esc close); the full key handling
+// starts with the 3D view.
+window.addEventListener("keydown", (e) => {
+  if (window.__ready || (e.target && e.target.type === "number")) return;
+  if (e.code === "KeyZ" && !e.repeat) worldMap.toggle();
+  else if (worldMap.isOpen() && e.code === "Escape") worldMap.toggle();
+  else if (worldMap.isOpen() && e.code === "KeyL") worldMap.layer(e.shiftKey ? -1 : 1);
+});
+await load3D;
+const tGenerate = performance.now();
 load.set("Shaders", "working…");
 await nextPaint();
 try {
@@ -1565,7 +1573,7 @@ function frame(now){
   pmark("final image + overlays");
   pend();
   window.__frames = (window.__frames || 0) + 1;
-  if (window.__frames === 1){ load.set("Setup and first frame", performance.now() - tSetup); load.set("Total from Generate", performance.now() - tGenerate); load.ready(); }
+  if (window.__frames === 1){ load.set("Setup and first frame", performance.now() - tSetup); load.set("Total for the 3D view", performance.now() - tGenerate); load.ready(); }
   requestAnimationFrame(frame);
 }
 
