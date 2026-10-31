@@ -225,6 +225,14 @@ float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
 bool isBldMat(float m){ float k = matId(m); return (k > 1.5 && k < 5.5) || (k > 6.5 && k < 8.5); }
 struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; };
+// Coordinates on a building's wall: along the face (from the building's own exact directions, measured from its
+// centre) and up. Taking the direction from the surface normal instead is slightly noisy pixel to pixel, and
+// multiplied by a position a kilometre out that noise moves the window pattern by a metre: jagged teeth.
+vec2 wallUV(vec2 c, vec2 u, vec3 p, vec3 n){
+  vec2 ax = abs(dot(n.xz, u)) > 0.7 ? vec2(-u.y, u.x) : u;
+  if (dot(ax, vec2(-n.z, n.x)) < 0.0) ax = -ax;            // the same way round as the u used elsewhere
+  return vec2(dot(p.xz - c, ax), p.y);
+}
 Bld getBld(int k){
   vec4 a = wT(k), b = wT(k + 1), c = wT(k + 2);
   Bld r; r.c = a.xy; r.u = a.zw; r.hs = b.xy; r.top = b.z; r.podH = b.w; r.kind = c.x; r.var = c.y; r.doorOff = c.z; r.door = int(c.w);
@@ -920,7 +928,7 @@ bool doorSurf(Bld b, vec3 p, vec3 n, vec2 f, out Surf s){
   float a = -(lx - b.doorOff);                        // + = to the right, seen from the street
   float hw = 0.5 * Wn;
   if (abs(a) > hw + 1.6 || y > Hn + 0.5 || dpt > 0.3 || dpt < -0.05) return false;
-  gDoorU = dot(b.c, b.u) + b.doorOff; gDoorHW = hw;   // in the wall's u (along b.u on the front face)
+  gDoorU = b.doorOff; gDoorHW = hw;                   // in the wall's u (wallUV: along b.u on the front face)
   vec2 out2 = -v;
   if (!(dpt < 0.02 || (abs(a) <= hw + 0.02 && y <= Hn + 0.02))) return false;
   vec3 trim = b.kind > 1.5 ? vec3(0.06, 0.06, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; dark metal on podiums
@@ -1116,6 +1124,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 #else
   if (m > 6.5) return lampSurf(m, n, uv, f);
   Bld b = getBld(bldOf(mat));
+  if (!top) uv = wallUV(b.c, b.u, p, n);
   gDoorU = 1e9;
   if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
   if (top) return roof(uv, f);
@@ -1145,6 +1154,7 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   }
   if (n.y > 0.7) return vec3(0.32);                                   // roofs
   Bld b = getBld(bldOf(mat));
+  uv = wallUV(b.c, b.u, p, n);
   float v = p.y;
   if (m > 4.5){                                                       // podium
     glassy = pulseF(v - 0.5, 100.0, 3.2, f.y) * (1.0 - pulseF(uv.x, 2.4, 0.1, f.x)) * 0.9;
@@ -1208,6 +1218,13 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   if (gHit) t = tG;
   vec3 p = ro + rd * t;
   vec3 n = gHit ? gn : calcN(p, t + t0);
+  // The march stops within ~1.5 cm of the surface. Meeting a wall almost edge-on, that gap is tens of
+  // centimetres along the wall, and window edges in the reflection come out jagged (and crawl as the view
+  // moves). One step along the ray to the wall's plane puts the point on the surface.
+  if (!gHit){
+    float c = -dot(rd, n);
+    if (c > 0.01){ t += clamp(h.x / c, -1.0, 1.0); p = ro + rd * t; }
+  }
   float mat = gHit ? gm : h.y;
   vec3 an = abs(n);
   vec2 uv = an.y > 0.7 ? p.xz : vec2(dot(p.xz, normalize(vec2(-n.z, n.x))), p.y);
