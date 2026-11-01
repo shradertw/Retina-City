@@ -6,7 +6,7 @@ import { initStartPanel } from './ui/startpanel.js';
 import { initMap } from './ui/map.js';
 import { buildWorld, worldFromData } from './gen/world.js';
 import { runHistory } from './gen/history.js';
-import { makeRoads } from './gen/roads.js';
+import { makeRoads, roadNetwork } from './gen/roads.js';
 import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
 import { BUILD } from './version.js';
@@ -82,12 +82,13 @@ function generateWorld(opts, progress){
 const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: async (opts, progress) => {
   const t = performance.now();
   const { world: w, history } = await generateWorld(opts, progress);
-  const roads = makeRoads(w);
-  Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts, history });
+  const net = roadNetwork(history), roads = makeRoads(w, net);
+  Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts, history, net });
   state.lat = opts.lat;          // the sky follows the world's latitude
   { const el = document.getElementById('lat'); if (el) el.value = state.lat; }
-  // start on the sidewalk of the road nearest the centre, facing along it
-  const sp0 = spawnNear(roads, 0, 0);
+  // start in the largest town: on the sidewalk of the road nearest its middle, facing along it
+  const big = history.settlements.filter((t) => t.alive).sort((a, b) => b.pop - a.pop)[0];
+  const sp0 = spawnNear(roads, big ? big.x * 1000 : 0, big ? big.z * 1000 : 0);
   if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
   stream.reset(current); setWorldData(stream.packs, w);
   if (window.__ready) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
@@ -1416,7 +1417,7 @@ function frame(now){
     gl.uniform1f(su.uPixVis, sp.pixVis); gl.uniform2f(su.uJit, jit[0], jit[1]);
     setSkyUniforms(su, sky); gl.uniform1f(su.uEyeScale, eyeScale); gl.uniform1i(su.uZero, 0);
     gl.uniform1i(su.uReflMode, state.reflOn ? state.reflMode : 0); gl.uniform1f(su.uReflReach, state.reflReach);
-    stream.bind(su, 10);    // render cells, lists, land, nearby lights, life on units 10-14
+    stream.bind(su, 10);    // render cells, lists, land, nearby lights, life, land use on units 10-15
     setFocus(su);
     gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
     gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); if (aBld) gl.uniform2f(su.uAttnB, aBld[0], aBld[1]);

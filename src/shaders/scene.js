@@ -200,6 +200,13 @@ uniform float uLampR;        // lights farther than this are not in uLampTex: dr
 uniform float uWorldHalf;    // the world square: -half..half on both axes
 uniform highp sampler2D uLife;   // per world-grid cell: life kind / 255, fertility, humidity, temperature (see src/gen/world.js)
 uniform float uWorldRes;
+uniform highp sampler2D uUse;    // land use from the history, per farm plot: 0 wild, 1 farmland, 2 town
+uniform float uUseCell;          // plot size (m)
+float useAt(vec2 xz){
+  ivec2 n = textureSize(uUse, 0), c = ivec2(floor((xz + uWorldHalf) / uUseCell));
+  if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, n))) return 0.0;
+  return floor(texelFetch(uUse, c, 0).r * 255.0 + 0.5);
+}
 vec4 lifeAt(vec2 xz){
   ivec2 c = ivec2(clamp(floor((xz + uWorldHalf) / (2.0 * uWorldHalf) * uWorldRes), 0.0, uWorldRes - 1.0));
   return texelFetch(uLife, c, 0);
@@ -398,9 +405,12 @@ vec2 map(vec3 p){
 
 /* The road pieces at P: signed distance to the nearest road edge (< 0 on a road), the direction from that
    road's centre line toward P (g), and the road frame there:
-   fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 if main). */
-float roadAt(vec2 P, out vec2 g, out vec4 fr){
-  g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0);
+   fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 x kind)
+   (kinds as in src/gen/cells.js: 0 street, 1 main, 2 farm track, 3 road; + 8 for country roads).
+   dC and gC: the same distance and direction for town roads only, the ones with curbs (country roads lie
+   level with the fields). */
+float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
+  g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0); dC = 1e9; gC = g;
   int base; ivec4 cn; vec2 top; vec2 lo;
   if (!cellAt(P, base, cn, top, lo)) return 1e9;
   float best = 1e9;
@@ -419,11 +429,12 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr){
       if (dot(d1, d1) == 0.0) d1 = dir;
       else if (abs(dot(dir, d1)) < 0.7) crossing = true;   // inside two roads that cross
     }
+    vec2 gd = dc > 1e-5 ? dv / dc : nrm;
     if (d < best){
-      best = d;
-      g = dc > 1e-5 ? dv / dc : nrm;
+      best = d; g = gd;
       fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * b.w);
     }
+    if (b.w < 7.5 && d < dC){ dC = d; gC = gd; }
   }
   if (crossing) fr.z = -1.0;
   return best;
@@ -441,11 +452,12 @@ float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
   for (int k = ZERO; k < 12; k++){
     vec2 P = ro.xz + rd.xz * t;
     if (!isLand(P)){ gm = 9.0; return t0; }
-    vec2 g; vec4 fr;
-    float dR = roadAt(P, g, fr);
+    vec2 g, gC; vec4 fr; float dR;
+    float dA = roadAt(P, g, fr, dR, gC);
     if (dR > 0.0){
-      if (k == 0){ gm = dR < 3.0 ? 1.0 : 6.0; return t; }
-      gm = 1.0; gn = vec3(-g.x, 0.0, -g.y); return t;
+      // the raised level: a country road (level with the fields), a sidewalk, or open ground
+      if (k == 0){ gm = dA < 0.0 ? 0.0 : dR < 3.0 ? 1.0 : 6.0; return t; }
+      gm = 1.0; gn = vec3(-gC.x, 0.0, -gC.y); return t;
     }
     t += max(-dR / h, 0.02);
     if (t >= t0) break;
@@ -988,8 +1000,10 @@ Surf sidewalk(vec2 uv, vec2 f){
 float lotKind(vec2 p){
   float r = grains(p / 70.0, 131u).x;
   int L = int(lifeAt(p).r * 255.0 + 0.5);
-  if (r < 0.2) return 0.0;                                  // a fifth paved, everywhere
-  r = (r - 0.2) / 0.8;
+  if (useAt(p) > 1.5){                                      // in towns a fifth is paved
+    if (r < 0.2) return 0.0;
+    r = (r - 0.2) / 0.8;
+  }
   if (L == 2) return 4.0;
   if (L == 3) return 5.0;
   if (L == 12) return 6.0;
@@ -1065,7 +1079,35 @@ Surf plazaSlabs(vec2 uv, vec2 f){
   s.refl = 0.04;
   return s;
 }
+// Farmland: each plot one crop, in rows ~0.75 m apart along one of the plot's sides: ripe grain, a green
+// crop, ploughed soil, or pasture (grass).
+Surf field(vec2 uv, vec2 f){
+  Surf s = blank();
+  vec2 pc = floor((uv + uWorldHalf) / uUseCell);
+  uint hp = h2(ivec2(pc), uSeed + 191u);
+  float crop = floor(rnd(hp, 1u) * 4.0);
+  bool alongX = rnd(hp, 2u) < 0.5;
+  float across = alongX ? uv.y : uv.x, fa = alongX ? f.y : f.x;
+  float row = pulseF(across, 0.75, 0.3, fa);               // the bare strip between rows
+  float hh = 0.0;
+  vec3 c;
+  if (crop < 0.5){                                          // ripe grain
+    c = vec3(0.58, 0.48, 0.22) * (1.0 + 0.25 * fbmG(uv, 1.5, 0.01, max(f.x, f.y))) * (1.0 + 0.15 * (vnoise(uv / 6.0) - 0.5));
+    c = mix(c, c * 0.65, row * 0.6);
+  } else if (crop < 1.5){                                   // a green crop
+    c = vec3(0.11, 0.20, 0.05) * (1.0 + 0.3 * fbmG(uv, 1.0, 0.01, max(f.x, f.y)));
+    c = mix(c, vec3(0.24, 0.18, 0.12), row);
+  } else if (crop < 2.5){                                   // ploughed: furrows of soil
+    c = dirtCol(uv, f, vec3(0.30, 0.21, 0.14), vec3(0.22, 0.16, 0.11), 0.6, 0.4, hh);
+    c *= 1.0 - 0.35 * row;
+  } else {                                                  // pasture
+    c = grassCol(uv, f, 0.2, hh);
+  }
+  s.alb = c; s.h = hh - 0.02 * row * (crop < 2.5 ? 1.0 : 0.0); s.refl = 0.02;
+  return s;
+}
 Surf lot(vec2 uv, vec2 f){
+  if (abs(useAt(uv) - 1.0) < 0.5) return field(uv, f);
   float k = lotKind(uv);
   if (k < 0.5) return plazaSlabs(uv, f);
   float dry = 1.0 - smoothstep(0.2, 0.6, lifeAt(uv).b);   // from the humidity there
@@ -1100,11 +1142,20 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   float vd = pits(uv, 0.02, 0.001, 0.003, 0.45, 103u, f); // voids between stones
   c = mix(c, c*0.35, vd);
   float paint = 0.0;
+  float kind = floor(fr.w / 1000.0), type = mod(kind, 8.0);
+  bool country = kind > 7.5;
+  if (type > 1.5 && type < 2.5){
+    // a farm track: packed gravel and dirt, no markings
+    float hh;
+    s.alb = dirtCol(uv, f, vec3(0.42, 0.37, 0.30), vec3(0.33, 0.29, 0.24), 0.3, 3.0, hh);
+    s.h = hh; s.refl = 0.02;
+    return s;
+  }
   if (fr.z > 0.0){                                        // not inside a crossing
     float fa = fpAlong(f, dir), fc = fpAlong(f, vec2(-dir.y, dir.x));
     float sA = fr.x, ac = fr.y, hw = fr.z, L = mod(fr.w, 1000.0);
-    bool major = fr.w >= 1000.0;
-    float e = min(sA, L - sA);                            // distance from the nearer end (a crossing)
+    bool major = type > 0.5 && type < 1.5;
+    float e = country ? 1e9 : min(sA, L - sA);            // distance from the nearer end (a crossing, in towns)
     if (e > 7.5 && e < 10.5) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);                // zebra crossing
     else if (e >= 10.5){
       if (major){
@@ -1138,8 +1189,8 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 #ifndef MAT_BLD
   if (m < 1.5){
     // road or sidewalk: patterns follow the road
-    vec2 g; vec4 fr;
-    roadAt(p.xz - n.xz * 0.05, g, fr);
+    vec2 g, gC; vec4 fr; float dC;
+    roadAt(p.xz - n.xz * 0.05, g, fr, dC, gC);
     vec2 dir = vec2(-g.y, g.x);
     if (m < 0.5) return road(uv, fr, dir, f);
     if (top) return sidewalk(vec2(fr.x, fr.y), vec2(fpAlong(f, dir), fpAlong(f, g)));

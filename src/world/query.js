@@ -74,12 +74,13 @@ function rayJump(p, dir){
   return t + 0.01;
 }
 
-/* the road pieces at (x, z): signed distance to the nearest road edge (< 0 on a road) */
+/* the town road pieces at (x, z): signed distance to the nearest edge (< 0 on a road below the curb) */
 export function roadJS(x, z){
   const c = cellJS(x, z);
   let best = 1e9;
   for (let n = 0; n < c.nR; n++){
     const i = (c.s + c.nB * 3 + c.nL + n * 2) * 4, d = c.d;
+    if (d[i + 7] >= 8) continue;                      // country roads lie level with the fields
     const ax = d[i], az = d[i + 1], ex = d[i + 2] - ax, ez = d[i + 3] - az;
     const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)));
     best = Math.min(best, Math.hypot(x - ax - ex * t, z - az - ez * t) - d[i + 4]);
@@ -169,6 +170,7 @@ export function spawnNear(roads, x, z){
   for (let r = 0; r <= 8 && !best; r++){
     const cx = Math.floor(x / ROAD_CHUNK), cz = Math.floor(z / ROAD_CHUNK);
     for (const e of roads.around(cx, cz, r)){
+      if (!e.town) continue;                            // a town street, with a sidewalk to stand on
       const p = e.pts;
       for (let k = 0; k + 1 < p.length / 2; k++){
         const mx = (p[2 * k] + p[2 * k + 2]) / 2, mz = (p[2 * k + 1] + p[2 * k + 3]) / 2, d = Math.hypot(mx - x, mz - z);

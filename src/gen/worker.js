@@ -10,7 +10,7 @@ let cells = null, id = 0;
 self.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'init'){
-    const w = worldFromData(m.world), roads = makeRoads(w);
+    const w = worldFromData(m.world), roads = makeRoads(w, m.net);
     cells = makeCells(roads, makeBlocks(w, roads));
     id = m.id;
     return;

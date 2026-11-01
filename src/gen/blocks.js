@@ -41,6 +41,7 @@ export function makeBlocks(world, roads){
     out = [];
     const near = roads.index(cx, cz);
     for (const e of roads.chunk(cx, cz)){
+      if (!e.town) continue;                               // buildings only along town roads
       const L = roadLength(e);
       for (const side of [-1, 1]){
         let s = 6 + 4 * hf(h2(e.id, side, sB)), n = 0;
@@ -108,6 +109,7 @@ export function makeBlocks(world, roads){
     const lamps = [];
     const ix = roads.index(cx, cz);
     for (const e of roads.chunk(cx, cz)){
+      if (!e.town || e.type === 2) continue;               // street lights only in towns
       const L = roadLength(e);
       for (let s = 10, n = 0; s < L - 4; s += 32, n++){
         const side = (hf(h2(e.id, n, sL)) < 0.5) ? -1 : 1;
@@ -125,12 +127,17 @@ export function makeBlocks(world, roads){
   }
 
   // height, kind and door (towers more likely near the centre of the world, which is the start point for now)
+  // Heights follow the town (until districts and density arrive in step 4d): a village is a few storeys;
+  // the bigger the town, the taller, and tallest toward its middle. Towers only in big towns.
   function finish(b){
-    const h = b.hash, centre = Math.max(0, 1 - Math.hypot(b.x, b.z) / 3000);
-    const r = rnd(h, 7), tower = rnd(h, 8) < 0.12 + 0.35 * centre;
-    if (tower && b.hx > 8 && b.hz > 8){ b.kind = 2; b.h = (12 + Math.floor(rnd(h, 9) * rnd(h, 9) * 30)) * 3.2; b.podH = 6.4; }
-    else if (r < 0.5){ b.kind = 0; b.h = (3 + Math.floor(rnd(h, 9) * 7)) * 3.2; }
-    else { b.kind = 1; b.h = (5 + Math.floor(rnd(h, 9) * 14)) * 3.2; }
+    const h = b.hash, t = roads.townAt ? roads.townAt(b.x, b.z) : null;
+    const size = t ? Math.min(Math.max((Math.log10(t[3]) - 2) / 3, 0), 1) : 0;          // 100 people 0 ... 100,000 people 1
+    const centre = t ? Math.max(0, 1 - Math.hypot(b.x - t[0], b.z - t[1]) / t[2]) : 0;
+    const r = rnd(h, 7), tower = size > 0.45 && rnd(h, 8) < 0.5 * (size - 0.45) * centre * centre * 4;
+    const up = size * (0.4 + 0.6 * centre);                                             // 0 village edge ... 1 big-town middle
+    if (tower && b.hx > 8 && b.hz > 8){ b.kind = 2; b.h = (8 + Math.floor(rnd(h, 9) * rnd(h, 9) * 34 * up)) * 3.2; b.podH = 6.4; }
+    else if (r < 0.55 - 0.25 * up){ b.kind = 0; b.h = (2 + Math.floor(rnd(h, 9) * (2 + 6 * up))) * 3.2; }
+    else { b.kind = 1; b.h = (2 + Math.floor(rnd(h, 9) * (3 + 14 * up))) * 3.2; }
     // a door on the front, 90% of the time (same codes as before: type x 64 + variety x 16 + colour x 4 + double x 2 + transom)
     const hd = h2(h, 1, sD);
     if (rnd(hd, 0) < 0.9 && b.hx > 2.5){

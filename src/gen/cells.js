@@ -14,7 +14,9 @@
                (kind, variety, door offset, door code)   face is at local z = -half depth. Door code -1 = none.
      light     (pole x, z, arm direction x, z)
      road      (start x, z, end x, z)
-               (half width, distance along the road at the start, road length, 1 = main road)
+               (half width, distance along the road at the start, road length, kind)
+               kind: 0 street, 1 main street or main road, 2 farm track, 3 road; + 8 for a country road
+               (level with the fields: no curb, no sidewalk)
      cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, tops)
                counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings
                tops: the cell's tallest top and its 128 m block's (4 x 4 cells), in quarter metres rounded
@@ -84,7 +86,7 @@ export function makeCells(roads, blocks){
       let s0 = 0;
       for (let k = 0; k < SAMPLES; k++){
         const ax = p[2 * k], az = p[2 * k + 1], bx = p[2 * k + 2], bz = p[2 * k + 3];
-        const rec = [ax, az, bx, bz, hw, s0, L, e.major ? 1 : 0];
+        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town ? 0 : 8)];
         s0 += Math.hypot(bx - ax, bz - az);
         visit(Math.min(ax, bx) - reach, Math.min(az, bz) - reach, Math.max(ax, bx) + reach, Math.max(az, bz) + reach, (i, j) => {
           const c = inner(i, j);
