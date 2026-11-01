@@ -120,6 +120,7 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .start.ready .genbtn { cursor: pointer; }
 .start div { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 18px 22px; max-width: 360px; text-align: left; display: grid; gap: 8px; }
 .start strong { font-size: 16px; }
+.start > div { max-height: calc(100vh - 32px); overflow-y: auto; }   /* scrolls when the History section makes it tall */
 .start p { margin: 0; color: var(--muted); font-size: 12.5px; }
 .start .wopts { display: grid; gap: 10px; margin: 4px 0 2px; }
 .start .wopt { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: 12.5px; }
