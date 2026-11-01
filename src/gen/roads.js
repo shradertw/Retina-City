@@ -3,7 +3,7 @@
      into pieces of 6 segments (24 m each) that belong to the chunk of their first point;
    - inside towns only, a placeholder street grid: every 88 m, bent by a smooth noise field so streets curve;
      every 4th line is a wider main street that is always kept; about 18% of the others are dropped to make
-     bigger blocks (district street patterns replace this in step 4e).
+     bigger blocks (district street patterns replace this in step 4e). Switched off for now (TOWN_GRID).
    Every road is a polyline of 7 points with a width. Town roads (the grid, and history roads inside a town)
    have curbs, sidewalks, buildings and street lights; country roads lie level with the fields.
    Each chunk is built from the seed, the history and its own position only: the same in any order. */
@@ -11,6 +11,7 @@ import { h2, hf } from '../world/hash.js';
 import { vnoise, salt } from './noise.js';
 
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
+const TOWN_GRID = false;                                     // the placeholder town street grid
 /** a number key for a pair of integers (faster than text keys like "3,-2") */
 export const key2 = (x, z) => (x + 524288) * 1048576 + (z + 524288);
 export const SIDEWALK = 3;                                   // sidewalk width beyond each road edge (m)
@@ -87,7 +88,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     c = [];
     const i0 = Math.ceil(cx * ROAD_CHUNK / GRID), i1 = Math.ceil((cx + 1) * ROAD_CHUNK / GRID);
     const j0 = Math.ceil(cz * ROAD_CHUNK / GRID), j1 = Math.ceil((cz + 1) * ROAD_CHUNK / GRID);
-    for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) for (let dir = 0; dir < 2; dir++){
+    if (TOWN_GRID) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) for (let dir = 0; dir < 2; dir++){
       const isMajor = major(dir === 0 ? j : i);
       if (!isMajor && hf(h2(i * 2 + dir, j, sKeep)) > 0.82) continue;
       // the grid only inside towns
