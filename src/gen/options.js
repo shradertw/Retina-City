@@ -11,6 +11,9 @@ export const WORLD_OPTIONS = [
   { key: 'farm', group: 'History', label: 'Farmland around a settlement', kind: 'range', min: 0.5, max: 6, step: 0.1, def: 2.5, unit: 'km' },
   { key: 'trade', group: 'History', label: 'Pull of bigger towns (trade)', kind: 'range', min: 0, max: 400, step: 10, def: 100, unit: '%' },
   { key: 'setbacks', group: 'History', label: 'Setbacks (fire, plague, raids)', kind: 'range', min: 0, max: 400, step: 10, def: 100, unit: '%' },
+  // farms and roads (age 3)
+  { key: 'links', group: 'History', label: 'Roads from each town to its nearest', kind: 'range', min: 1, max: 4, step: 1, def: 2, unit: 'towns' },
+  { key: 'tracks', group: 'History', label: 'Farm tracks built', kind: 'range', min: 0, max: 300, step: 10, def: 100, unit: '%' },
 ];
 const STORE = 'retina-world-options';
 // the saved choices (or defaults), checked against the list above
