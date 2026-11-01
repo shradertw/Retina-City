@@ -1418,10 +1418,14 @@ function frame(now){
     gl.uniform1i(u.uDof, dofOn ? 1 : 0); gl.uniform1i(u.uDofCells, sp.dofCells && dofOn ? 1 : 0);
     gl.uniform1i(u.uHavePrev, havePrev ? 1 : 0); gl.uniform1i(u.uPrevDepth, 2);
   };
+  // the shader measures positions from a point on the 512 m grid near the camera (precision far from the
+  // world's middle; see src/shaders/scene.js); the differences are taken here, in double precision
+  const ox = Math.floor(state.pos[0] / 512) * 512, oz = Math.floor(state.pos[2] / 512) * 512;
   const setScene = (prog) => {
     gl.useProgram(prog.p);
     const su = prog.u;
-    gl.uniform2f(su.uRes, W, H); gl.uniform3f(su.uCamPos, ...state.pos);
+    gl.uniform2f(su.uRes, W, H); gl.uniform3f(su.uCamPos, state.pos[0] - ox, state.pos[1], state.pos[2] - oz);
+    gl.uniform2f(su.uOrigin, ox, oz);
     gl.uniformMatrix3fv(su.uCamRot, false, rot);
     gl.uniform1f(su.uXmax, xmax); gl.uniform1f(su.uPanini, d); gl.uniform1f(su.uZoom, state.zoom);
     gl.uniform2f(su.uGaze, gaze[0], gaze[1]); gl.uniform3f(su.uGazeDir, gd[0], gd[1], gd[2]);
@@ -1435,7 +1439,7 @@ function frame(now){
     stream.bind(su, 10);    // render cells, lists, land, nearby lights, life, land use on units 10-15
     setFocus(su);
     gl.uniform1i(su.uAttn, state.attn && state.mode !== 1 ? 1 : 0); gl.uniform1i(su.uAttnBld, aBld ? 1 : 0);
-    gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0], aP[1], aP[2]); if (aBld) gl.uniform2f(su.uAttnB, aBld[0], aBld[1]);
+    gl.uniform1f(su.uAttnK, state.attnK); gl.uniform3f(su.uAttnP, aP[0] - ox, aP[1], aP[2] - oz); if (aBld) gl.uniform2f(su.uAttnB, aBld[0] - ox, aBld[1] - oz);
     gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, prevRes.tex); gl.activeTexture(gl.TEXTURE0);
     gl.uniform1i(su.uG0, 4); gl.uniform1i(su.uM0, 5); gl.uniform1i(su.uM1, 6); gl.uniform1i(su.uM2, 7);
     gl.uniform1i(su.uL0, 8); gl.uniform1i(su.uRf, 9);
@@ -1537,10 +1541,13 @@ function frame(now){
     gl.uniform1i(au.uFov, sp.fov ? 1 : 0); gl.uniform1f(au.uBase, sp.base); gl.uniform1f(au.uMult, sp.mult);
     gl.uniform1f(au.uA, sp.A); gl.uniform1f(au.uR2, sp.R2); gl.uniform1f(au.uPixVis, sp.pixVis);
     setFocus(au); gl.uniform1i(au.uPrevDepth, 0);
-    gl.uniformMatrix3fv(au.uCamRot, false, rot); gl.uniform3f(au.uCamPos, ...state.pos);
+    gl.uniformMatrix3fv(au.uCamRot, false, rot);
     gl.uniform1f(au.uXmax, xmax); gl.uniform1f(au.uPanini, d);
     const pc = prevCam || { rot, pos: state.pos.slice(), xmax, d };
-    gl.uniformMatrix3fv(au.uPrevRot, false, pc.rot); gl.uniform3f(au.uPrevPos, ...pc.pos);
+    // the camera's move since last frame, worked out here in double precision: far from the world's middle a
+    // 32-bit position is only good to a few millimetres, and reprojecting through it smeared the history
+    gl.uniformMatrix3fv(au.uPrevRot, false, pc.rot);
+    gl.uniform3f(au.uMove, state.pos[0] - pc.pos[0], state.pos[1] - pc.pos[1], state.pos[2] - pc.pos[2]);
     gl.uniform1f(au.uPrevXmax, pc.xmax); gl.uniform1f(au.uPrevPanini, pc.d);
     gl.uniform1f(au.uKeep, state.keep); gl.uniform1i(au.uReset, (needReset || !prevCam) ? 1 : 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);

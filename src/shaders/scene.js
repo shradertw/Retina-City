@@ -32,7 +32,14 @@ out vec4 outColor;
 #endif
 uniform highp sampler2D uG0, uM0, uM1, uM2, uL0, uRf;   // the earlier passes' results, at this cell
 uniform vec2 uRes;
-uniform vec3 uCamPos;
+uniform vec3 uCamPos;   // relative to uOrigin, like every position in this shader (see below)
+/* Positions are measured from uOrigin, a point on the 512 m chunk grid near the camera. Far from the world's
+   middle a 32-bit coordinate is only good to a few millimetres (2 mm at 30 km, 8 mm at 128 km), which broke
+   surface normals and close-up detail; measured from nearby, positions keep their full precision. The
+   stored world data (texels, maps) is in world coordinates: positions read from it have uOrigin taken off,
+   and lookups into the world maps and the texture patterns of the ground add it back (uOrigin is a multiple
+   of 512 m, so patterns stay where they are as it moves). */
+uniform vec2 uOrigin;
 uniform mat3 uCamRot;
 uniform vec2 uGaze;
 uniform vec3 uGazeDir;
@@ -216,11 +223,14 @@ vec4 lifeAt(vec2 xz){
 const float RC = 32.0, PAD = 8.0, LAMP_H = 8.0;
 const int SLOT_TEX = 12288;
 vec4 wT(int i){ return texelFetch(uList, ivec2(i & 4095, i >> 12), 0); }
+vec4 wTp(int i){ vec4 a = wT(i); a.xy -= uOrigin; return a; }          // a texel whose xy is a position
+vec4 wTpp(int i){ return wT(i) - uOrigin.xyxy; }                       // ... whose xy and zw are positions
+vec2 absXZ(vec2 xz){ return xz + uOrigin; }                            // back to world coordinates
 // The cell at xz: list start (global texel), counts, empty rings around it, tallest top in the cell and in its
 // 128 m block. False if not loaded.
 bool cellAt(vec2 xz, out int base, out ivec4 n, out vec2 top, out vec2 lo){
-  vec2 cf = floor(xz / RC);
-  lo = cf * RC;
+  vec2 cf = floor(xz / RC) + uOrigin / RC;          // (uOrigin is a whole number of cells)
+  lo = floor(xz / RC) * RC;
   vec2 ch = floor(cf / 16.0), sl = mod(ch, 9.0);
   vec4 v = texelFetch(uCells, ivec2(mod(cf, 144.0)), 0);
   base = 0; n = ivec4(0, 0, 0, 1); top = vec2(0.0);
@@ -249,7 +259,7 @@ vec2 wallUV(vec2 c, vec2 u, vec3 p, vec3 n){
   return vec2(dot(p.xz - c, ax), p.y);
 }
 Bld getBld(int k){
-  vec4 a = wT(k), b = wT(k + 1), c = wT(k + 2);
+  vec4 a = wTp(k), b = wT(k + 1), c = wT(k + 2);
   Bld r; r.c = a.xy; r.u = a.zw; r.hs = b.xy; r.top = b.z; r.podH = b.w; r.kind = c.x; r.var = c.y; r.doorOff = c.z; r.door = int(c.w);
   return r;
 }
@@ -305,7 +315,8 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
   if (uLampEmit <= 0.0) return acc;
   for (int i = ZERO; i < 128; i++){
     if (i >= uLampN) break;
-    vec3 head = lampHead(texelFetch(uLampTex, ivec2(i, 0), 0));
+    vec4 LT = texelFetch(uLampTex, ivec2(i, 0), 0); LT.xy -= uOrigin;
+    vec3 head = lampHead(LT);
     vec3 v = head - vec3(0.0, 0.08, 0.0) - ro;
     float along = dot(v, rd);
     if (along <= 0.3 || along > tMax + 0.3 || v.y <= 0.0) continue;
@@ -332,7 +343,7 @@ float lampIrradiance(vec3 p, vec3 n){
   if (!cellAt(p.xz, base, cn, top, lo)) return 0.0;
   for (int i = ZERO; i < 15; i++){
     if (i >= cn.y) break;
-    vec4 L = wT(base + cn.x * 3 + i);
+    vec4 L = wTp(base + cn.x * 3 + i);
     vec3 v = p - (lampHead(L) - vec3(0.0, 0.1, 0.0));      // from the lens, just under the head
     float d2 = dot(v, v);
     if (d2 > 160.0 || v.y > -0.05) continue;
@@ -367,7 +378,7 @@ vec2 map(vec3 p){
   for (int i = ZERO; i < 47; i++){
     if (i >= cn.x) break;
     int k = base + i * 3;
-    vec4 a = wT(k), b = wT(k + 1);
+    vec4 a = wTp(k), b = wT(k + 1);
     vec2 q = p.xz - a.xy;
     vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));   // along the frontage; away from the road
     if (length(max(abs(l) - b.xy, 0.0)) >= res.x) continue;  // its footprint is farther than what we have
@@ -396,7 +407,7 @@ vec2 map(vec3 p){
   }
   for (int i = ZERO; i < 15; i++){
     if (i >= cn.y) break;
-    vec4 L = wT(base + cn.x * 3 + i);
+    vec4 L = wTp(base + cn.x * 3 + i);
     if (distance(L.xy, uCamPos.xz) > uLampR) continue;     // only lights near the camera have poles
     float lb;
     vec2 ld = lampSDF(p, L, lb);
@@ -420,7 +431,7 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
   for (int i = ZERO; i < 47; i++){
     if (i >= cn.z) break;
     int k = base + cn.x * 3 + cn.y + i * 2;
-    vec4 a = wT(k), b = wT(k + 1);
+    vec4 a = wTpp(k), b = wT(k + 1);
     vec2 ab = a.zw - a.xy;
     float L = max(length(ab), 1e-4);
     vec2 dir = ab / L, nrm = vec2(-dir.y, dir.x);
@@ -453,7 +464,7 @@ float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
   // could leave it (the distance to the road edge); on leaving it, that is a curb
   for (int k = ZERO; k < 12; k++){
     vec2 P = ro.xz + rd.xz * t;
-    if (!isLand(P)){ gm = 9.0; return t0; }
+    if (!isLand(absXZ(P))){ gm = 9.0; return t0; }
     vec2 g, gC; vec4 fr; float dR;
     float dA = roadAt(P, g, fr, dR, gC);
     if (dR > 0.0){
@@ -673,7 +684,7 @@ vec3 skyCol(vec3 rd, float sunVis, float ang){
 #endif
     float tc = (1800.0 - uCamPos.y) / rd.y;
     if (tc > 0.0){
-      vec2 P = (uCamPos.xz + rd.xz * tc + uCloudOff) / 1400.0;
+      vec2 P = (absXZ(uCamPos.xz) + rd.xz * tc + uCloudOff) / 1400.0;
       // the cloud here, and a little toward the sun for its shading, from one call site
       float n = 0.0, n2 = 0.0;
       for (int k = ZERO; k < 2; k++){
@@ -1243,7 +1254,7 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   if (m > 7.5) return vec3(0.08);                                     // lamp head
   if (m > 6.5) return vec3(0.13);                                     // pole
   if (m > 5.5){                                                       // open ground
-    float k = lotKind(p.xz);
+    float k = lotKind(absXZ(p.xz));
     return k < 0.5 ? vec3(0.52, 0.51, 0.48) : k < 1.5 ? vec3(0.08, 0.12, 0.04) : k < 2.5 ? vec3(0.15, 0.14, 0.08)
          : k < 3.5 ? vec3(0.25, 0.19, 0.13) : k < 4.5 ? vec3(0.60, 0.52, 0.38) : k < 5.5 ? vec3(0.82, 0.84, 0.88) : vec3(0.30, 0.29, 0.28);
   }
@@ -1322,7 +1333,7 @@ vec3 reflScene(vec3 ro, vec3 rd, float cone, float t0, float sunVis, bool traced
   }
   float mat = gHit ? gm : h.y;
   vec3 an = abs(n);
-  vec2 uv = an.y > 0.7 ? p.xz : vec2(dot(p.xz, normalize(vec2(-n.z, n.x))), p.y);
+  vec2 pa = absXZ(p.xz), uv = an.y > 0.7 ? pa : vec2(dot(pa, normalize(vec2(-n.z, n.x))), p.y);
   vec2 f = vec2(cone * (t + t0) + 0.005);
   vec3 alb; float glassy; vec3 inter = vec3(0.04);
   // Simple colours, except in "Full" (REFL_FULL): the full material code roughly doubles this pass's
@@ -1486,11 +1497,11 @@ void main(){
     vec3 p = ro + rd*t;
     vec3 a = abs(n);
     vec2 uv; vec3 T, B;
-    if (a.y > 0.7){ uv = p.xz; T = vec3(1,0,0); B = vec3(0,0,1); }
+    if (a.y > 0.7){ uv = absXZ(p.xz); T = vec3(1,0,0); B = vec3(0,0,1); }
     else {
       // walls (at any angle): u runs along the wall, v up
       vec2 tx = normalize(vec2(-n.z, n.x));
-      uv = vec2(dot(p.xz, tx), p.y); T = vec3(tx.x, 0.0, tx.y); B = vec3(0.0, 1.0, 0.0);
+      uv = vec2(dot(absXZ(p.xz), tx), p.y); T = vec3(tx.x, 0.0, tx.y); B = vec3(0.0, 1.0, 0.0);
     }
 
     // Footprint of one cell/receptor on the surface. Seen at a slant it stretches along the
@@ -1501,7 +1512,7 @@ void main(){
     if (uAttn == 1){
       float rad = max(0.75, 0.06 * length(uAttnP - uCamPos));
       float aw = 1.0 - smoothstep(rad, 2.5*rad, distance(p, uAttnP));
-      if (uAttnBld == 1 && h.y >= 16.0 && distance(wT(bldOf(h.y)).xy, uAttnB) < 0.05) aw = 1.0;
+      if (uAttnBld == 1 && h.y >= 16.0 && distance(wTp(bldOf(h.y)).xy, uAttnB) < 0.05) aw = 1.0;
       recAng = uAcuity * (1.0 + eVis / (uE2 * mix(1.0 / sqrt(uAttnK), uAttnK, aw)));
     }
     float dfA = defocusAng(t);

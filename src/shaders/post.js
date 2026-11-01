@@ -115,7 +115,7 @@ uniform sampler2D uCur;
 uniform sampler2D uHist;
 uniform vec2 uRes, uGaze;
 uniform mat3 uCamRot, uPrevRot;
-uniform vec3 uCamPos, uPrevPos;
+uniform vec3 uMove;          // camera position now minus last frame's
 uniform float uPrevXmax, uPrevPanini, uKeep;
 uniform int uReset, uFov;
 uniform float uBase, uMult, uA, uR2, uPixVis;
@@ -134,8 +134,8 @@ void main(){
   vec2 px = gl_FragCoord.xy;
   vec4 c = texelFetch(uCur, ivec2(px), 0);
   if (uReset == 1){ outColor = c; return; }
-  vec3 p = uCamPos + (uCamRot * projDir(px)) * c.a;
-  vec3 v = transpose(uPrevRot) * (p - uPrevPos);
+  // the point seen here, from last frame's camera (relative to the camera: no large numbers)
+  vec3 v = transpose(uPrevRot) * (uMove + (uCamRot * projDir(px)) * c.a);
   vec2 pp = fwdProj(v / length(v));
   if (pp.x < 0.0 || pp.y < 0.0 || pp.x >= uRes.x || pp.y >= uRes.y){ outColor = c; return; }
   vec3 hst = texture(uHist, pp / uRes).rgb;

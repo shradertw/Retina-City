@@ -19,6 +19,7 @@
    For the map, the state of every block is kept at every step: district << 6 | storeys (0 = nothing). */
 import { h2, rnd } from '../world/hash.js';
 import { chamfer } from './world.js';
+import { nearRiver } from './roads.js';
 
 export const BLOCK = 64;
 export const ZONES = ['', 'housing', 'shops and offices', 'industry'];
@@ -58,7 +59,7 @@ export function makeDistricts(c){
   const usable = (i, j) => {
     if (i < 0 || j < 0 || i >= BRES || j >= BRES || at.has(j * BRES + i)) return false;
     const k = w.gridIndex(cx(i), cx(j));
-    return w.water[k] === 0 && c.slope[k] < 0.25;
+    return w.water[k] === 0 && c.slope[k] < 0.25 && !nearRiver(w, cx(i), cx(j), 20);   // rivers keep a margin
   };
   // industrial blocks counted per 4 x 4 blocks (kept up to date as blocks change), for housing near industry
   let mainDist = null;

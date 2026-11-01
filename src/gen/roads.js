@@ -240,7 +240,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
           for (let s2 = 0; s2 <= SAMPLES; s2++){
             const tt = s2 / SAMPLES, o = bow * Math.sin(Math.PI * tt);
             const [x, z] = toWorld(t, a[0] + du * tt - dv / L * o, a[1] + dv * tt + du / L * o);
-            if (!world.isLand(x, z)){ onLand = false; break; }
+            if (!world.isLand(x, z) || nearRiver(world, x, z, 20)){ onLand = false; break; }   // (no bridges on town streets yet)
             pts[2 * s2] = x; pts[2 * s2 + 1] = z;
           }
           if (!onLand) continue;
@@ -297,6 +297,46 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
   return { chunk, around, index, townAt, block, blocks: BL, cached: (cx, cz) => cache.has(key2(cx, cz)) };
 }
 
+/** Is (x, z) within clear metres of a river? Rivers are cells of the world grid (water code 3); a river is
+ *  taken to run anywhere in its cell, so this keeps clear of the whole cell plus the margin.
+ *  @param {any} world */
+export function nearRiver(world, x, z, clear = 25){
+  const c = world.cell, r = Math.ceil(clear / c) + 1;
+  const i0 = Math.floor((x + world.half) / c), j0 = Math.floor((z + world.half) / c);
+  for (let j = j0 - r; j <= j0 + r; j++) for (let i = i0 - r; i <= i0 + r; i++){
+    if (i < 0 || j < 0 || i >= world.res || j >= world.res || world.water[j * world.res + i] !== 3) continue;
+    // distance from the point to the cell's square
+    const dx = Math.max(0, Math.abs(x - (-world.half + (i + 0.5) * c)) - c / 2), dz = Math.max(0, Math.abs(z - (-world.half + (j + 0.5) * c)) - c / 2);
+    if (dx * dx + dz * dz < clear * clear) return true;
+  }
+  return false;
+}
+/** Distance from road e's centre line to a turned box (centre x, z; along (ux, uz); half sizes hx, hz). */
+export function roadToBox(e, x, z, ux, uz, hx, hz){
+  const p = e.pts; let best = 1e9;
+  const loc = (px, pz) => [(px - x) * ux + (pz - z) * uz, -(px - x) * uz + (pz - z) * ux];
+  const toBox = (u, v) => Math.hypot(Math.max(0, Math.abs(u) - hx), Math.max(0, Math.abs(v) - hz));
+  const corners = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]];
+  for (let k = 0; k < SAMPLES; k++){
+    const [au, av] = loc(p[2 * k], p[2 * k + 1]), [bu, bv] = loc(p[2 * k + 2], p[2 * k + 3]);
+    // does the segment cross the box? (clip it to the box's slabs)
+    let t0 = 0, t1 = 1;
+    const du = bu - au, dv = bv - av;
+    const clip = (d, a, h) => {
+      if (Math.abs(d) < 1e-9) return Math.abs(a) <= h;
+      let ta = (-h - a) / d, tb = (h - a) / d; if (ta > tb) [ta, tb] = [tb, ta];
+      t0 = Math.max(t0, ta); t1 = Math.min(t1, tb); return t0 <= t1;
+    };
+    if (clip(du, au, hx) && clip(dv, av, hz)) return 0;
+    best = Math.min(best, toBox(au, av), toBox(bu, bv));
+    const L2 = du * du + dv * dv || 1;
+    for (const [cu, cv] of corners){
+      const t = Math.max(0, Math.min(1, ((cu - au) * du + (cv - av) * dv) / L2));
+      best = Math.min(best, Math.hypot(cu - au - du * t, cv - av - dv * t));
+    }
+  }
+  return best;
+}
 /** distance from (x, z) to a road's centre line @param {Road} e @param {number} x @param {number} z */
 export function distToRoad(e, x, z){
   const p = e.pts; let best = 1e9;

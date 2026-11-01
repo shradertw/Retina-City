@@ -7,7 +7,7 @@
    is the same whatever order chunks are generated in. */
 import { h2, hf, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
-import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS } from './roads.js';
+import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS, nearRiver, roadToBox } from './roads.js';
 
 /**
  * @typedef {{ x: number, z: number, ux: number, uz: number, hx: number, hz: number, h: number, podH: number,
@@ -60,7 +60,6 @@ export function makeBlocks(world, roads){
   }
   const roadLength = (e) => { let L = 0; const p = e.pts; for (let k = 0; k < SAMPLES; k++) L += Math.hypot(p[2 * k + 2] - p[2 * k], p[2 * k + 3] - p[2 * k + 1]); return L; };
   // clear of every nearby road and its sidewalks?
-  const clearOfRoads = (ix, x, z, pad) => ix.near(x, z).every((e) => distToRoad(e, x, z) >= e.w / 2 + sidewalkOf(e) + pad);
 
   /** buildings proposed by the roads of chunk (cx, cz), already checked against roads @returns {Building[]} */
   function propose(cx, cz){
@@ -92,12 +91,17 @@ export function makeBlocks(world, roads){
           const b = { x: px + vx * off, z: pz + vz * off, ux: tx, uz: tz, hx: w / 2, hz: d / 2, side, kind: F.kind,
             h: F.st * (F.storeyH || 3.2), podH: F.podH || 0, prio: rnd(h, 5), door: null, hash: h };
           s += w + F.gap;
-          // the corners and side midpoints must keep clear of every road and sidewalk
+          // the whole footprint must keep clear of every road and its sidewalks (roads listed anywhere under
+          // it, tested against the box itself), stand on land, and keep 25 m from rivers
           let ok = true;
-          for (const [a, c] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]){
-            const qx = b.x + tx * b.hx * a + vx * b.hz * c, qz = b.z + tz * b.hx * a + vz * b.hz * c;
-            if (!clearOfRoads(near, qx, qz, -0.05) || !world.isLand(qx, qz)){ ok = false; break; }
+          const roadsHere = new Set();
+          const nu = Math.ceil(b.hx / 12), nv = Math.ceil(b.hz / 12);
+          for (let a = -nu; a <= nu && ok; a++) for (let c = -nv; c <= nv; c++){
+            const qx = b.x + tx * b.hx * a / nu + vx * b.hz * c / nv, qz = b.z + tz * b.hx * a / nu + vz * b.hz * c / nv;
+            for (const o of near.near(qx, qz)) roadsHere.add(o);
+            if ((Math.abs(a) === nu || Math.abs(c) === nv) && (!world.isLand(qx, qz) || nearRiver(world, qx, qz, 25))){ ok = false; break; }
           }
+          if (ok) for (const o of roadsHere) if (roadToBox(o, b.x, b.z, tx, tz, b.hx, b.hz) < o.w / 2 + sidewalkOf(o) - 0.05){ ok = false; break; }
           if (ok) out.push(b);
         }
       }
