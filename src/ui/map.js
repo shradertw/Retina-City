@@ -34,6 +34,10 @@ export function initMap(){
   const ctx = cv.getContext('2d');
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
+  // the town blocks overlay (from year 650) can be hidden; the choice is remembered
+  const blocksBox = /** @type {HTMLInputElement} */ (document.getElementById('mapBlocks'));
+  try { blocksBox.checked = localStorage.getItem('retina-map-blocks') !== '0'; } catch (_){ }
+  blocksBox.addEventListener('change', () => { try { localStorage.setItem('retina-map-blocks', blocksBox.checked ? '1' : '0'); } catch (_){ } });
   let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1;
   const ageOf = (h, s) => { let a = 0, s0 = 0; while (a < h.ages.length - 1 && s > s0 + h.ages[a].steps){ s0 += h.ages[a].steps; a++; } return h.ages[a]; };
   const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + h.year[step] + ' · ' + ageOf(h, step).name.toLowerCase(); };
@@ -44,7 +48,7 @@ export function initMap(){
     if (playing && step >= current.history.steps) step = 0;
     playT = performance.now();
   });
-  for (const el of [timeBox, yearIn, playBtn]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
+  for (const el of [timeBox, yearIn, playBtn, blocksBox]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
   let open = false, cx = 0, cz = 0, scale = 0.25, landImg = null, landFor = null, landLayer = -1, drag = null, layer = 0;
   const W = () => cv.width, H = () => cv.height;
   const dpr = () => Math.min(window.devicePixelRatio || 1, 2);
@@ -178,7 +182,7 @@ export function initMap(){
       // town blocks (from year 650), once they are big enough on screen to tell apart
       const BK = hist.blocks;
       let blocksShown = false;
-      if (BK && step >= BK.from && BK.size * scale * d >= 1.2){
+      if (blocksBox.checked && BK && step >= BK.from && BK.size * scale * d >= 1.2){
         blocksShown = true;
         const v = BK.snap[step - BK.from], bp = BK.size * scale * d, gap = bp > 6 ? bp * 0.12 : 0, paths = [];
         for (let q = 0; q < 16; q++) paths.push(null);
@@ -222,7 +226,11 @@ export function initMap(){
         const area = st.areaAt ? st.areaAt[step] : 0;
         const r = Math.max((area > 0 ? Math.sqrt(area / Math.PI) : radiusKm(pop)) * 1000 * scale * d, 2 * d), sx = toX(st.xAt[step] * 1000), sz = toY(st.zAt[step] * 1000);
         if (sx < -r || sz < -r || sx > W() + r || sz > H() + r) continue;
-        if (blocksShown && area > 0){ labels.push([pop, st.name, sx, sz, r * 0.4]); continue; }   // its blocks are drawn
+        // its blocks are drawn, or hidden on purpose (the land shows, with a dot for the town's middle)
+        if (area > 0 && (blocksShown || !blocksBox.checked)){
+          if (!blocksShown){ ctx.fillStyle = '#f4ead2'; ctx.strokeStyle = 'rgba(20,14,8,0.8)'; ctx.beginPath(); ctx.arc(sx, sz, 3 * d, 0, 6.2832); ctx.fill(); ctx.stroke(); }
+          labels.push([pop, st.name, sx, sz, blocksShown ? r * 0.4 : 3 * d]); continue;
+        }
         const age = 1 - st.born / hist.steps;
         ctx.fillStyle = `rgba(${Math.round(255 - 40 * age)},${Math.round(200 - 90 * age)},${Math.round(120 - 80 * age)},0.85)`;
         ctx.strokeStyle = 'rgba(20,14,8,0.8)';
@@ -309,7 +317,7 @@ export function initMap(){
         + (best.died && best.died <= step ? '' : best.died ? (best.mergedInto >= 0 ? ` · merges into ${h.settlements[best.mergedInto].name} in year ${h.year[best.died]}` : ` · gone by year ${h.year[best.died]}`) : '');
       // a town block here?
       const BK = h.blocks;
-      if (BK && step >= BK.from){
+      if (blocksBox.checked && BK && step >= BK.from){
         if (blockFor !== BK){ blockFor = BK; blockKey = new Map(); for (let b = 0; b < BK.n; b++) blockKey.set(BK.j[b] * BK.res + BK.i[b], b); }
         const b = blockKey.get(Math.floor((z + BK.half) / BK.size) * BK.res + Math.floor((x + BK.half) / BK.size)), v = BK.snap[step - BK.from];
         if (b !== undefined && b < v.length && v[b]){

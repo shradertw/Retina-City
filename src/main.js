@@ -528,8 +528,22 @@ function tryLock(force){
   try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(fail); } catch (_){ fail(); }
 }
 let freshLock = false;   // true until the first movement after a capture has been seen
+// Closing the map captures the mouse again. Browsers allow that only right after a key press or click, and
+// some not after Esc: if it is refused, the next click on the view captures it.
+let relockOnClick = false;
+function toggleMap(){
+  const open = worldMap.toggle();
+  if (open || !start.hidden || state.mouseGaze || state.noLock || document.pointerLockElement) return;
+  let done = false;
+  const t0 = performance.now();
+  const failed = () => { if (done || performance.now() - t0 > 1000) return; done = true; relockOnClick = true; note("Click the view to capture the mouse", 4000); };
+  document.addEventListener("pointerlockerror", failed, { once: true });   // (browsers without the promise)
+  freshLock = true;
+  try { const r = canvas.requestPointerLock(); if (r && r.catch) r.catch(failed); } catch (_){ failed(); }
+}
 document.addEventListener("pointerlockchange", () => {
   if (!document.pointerLockElement){ state.tempLock = false; freshLock = true; }
+  else { relockOnClick = false; note(""); }
 });
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
@@ -541,6 +555,7 @@ canvas.addEventListener("mousedown", (e) => {
   if (e.button === 2){ state.rmb = true; return; }          // right mouse: zoom, in every mode
   if (e.button !== 0) return;
   e.preventDefault();
+  if (relockOnClick && !document.pointerLockElement){ relockOnClick = false; note(""); tryLock(true); return; }
   // preventDefault also stops the browser from giving this page keyboard focus, so give it back
   // (otherwise, after clicking elsewhere in the host page, WASD would not reach the city)
   try { window.focus(); canvas.focus({ preventScroll: true }); } catch (_){ }
@@ -681,8 +696,8 @@ window.addEventListener("keydown", (e) => {
   if (k === state.panelKey){ setPanel(!state.panel); return; }
   if (e.target && e.target.id === "codeIn"){ if (k === "Enter") applyCode(e.target.value); return; }
   if (e.target && e.target.type === "number") return;      // typing a seed
-  if (k === "KeyZ" && !e.repeat){ worldMap.toggle(); e.preventDefault(); return; }
-  if (worldMap.isOpen()){ if (k === "Escape") worldMap.toggle(); else if (k === "KeyL") worldMap.layer(e.shiftKey ? -1 : 1); return; }   // the map takes no movement keys
+  if (k === "KeyZ" && !e.repeat){ toggleMap(); e.preventDefault(); return; }
+  if (worldMap.isOpen()){ if (k === "Escape") toggleMap(); else if (k === "KeyL") worldMap.layer(e.shiftKey ? -1 : 1); return; }   // the map takes no movement keys
   if (e.target && (e.target.tagName === "INPUT")) { if (!["KeyW","KeyA","KeyS","KeyD","KeyQ","KeyE"].includes(k)) return; }
   if (k === "Digit1" || k === "Digit2" || k === "Digit3" || k === "Digit4"){
     const n = Number(k.slice(5)) - 1;
