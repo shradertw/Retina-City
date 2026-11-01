@@ -14,6 +14,11 @@ export const WORLD_OPTIONS = [
   // farms and roads (age 3)
   { key: 'links', group: 'History', label: 'Roads from each town to its nearest', kind: 'range', min: 1, max: 4, step: 1, def: 2, unit: 'towns' },
   { key: 'tracks', group: 'History', label: 'Farm tracks built', kind: 'range', min: 0, max: 300, step: 10, def: 100, unit: '%' },
+  // districts and density (ages 4 and 5): see src/gen/districts.js
+  { key: 'growth', group: 'History', label: 'Population growth, years 650-900', kind: 'range', min: 1, max: 10, step: 0.5, def: 4, unit: '×' },
+  { key: 'industry', group: 'History', label: 'Industry share of jobs', kind: 'range', min: 0, max: 60, step: 5, def: 30, unit: '%' },
+  { key: 'up', group: 'History', label: 'Tendency to build upward', kind: 'range', min: 0, max: 200, step: 10, def: 100, unit: '%' },
+  { key: 'renew', group: 'History', label: 'Old buildings replaced', kind: 'range', min: 0, max: 300, step: 10, def: 100, unit: '%' },
 ];
 const STORE = 'retina-world-options';
 // the saved choices (or defaults), checked against the list above

@@ -25,12 +25,20 @@
               crossed, and an existing road is much cheaper to follow, so routes bundle into main roads.
               Each centre is linked to its nearest settlement or two; each settlement of LINK_POP+ people to
               its nearest neighbours; and each step each centre runs a farm track to its plot farthest from
-              any road. A road's class comes from how many routes share it. */
+              any road. A road's class comes from how many routes share it.
+
+   Ages 4 and 5, years 650-800 and 800-900 (5-year steps): districts and density (see districts.js). Farms,
+   centres and roads go on as in age 3, but towns no longer need much more farmland of their own (food comes in
+   by road). The world's people grow to `growth` times year 650's by year 900; each town's share of them follows
+   its size (slightly more than in proportion, so cities draw people from villages), water and roads, a
+   distribution centre nearby (age 4) and industry nearby (metals, water, roads; age 5). */
 import { h2, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
 import { chamfer } from './world.js';
+import { makeDistricts } from './districts.js';
 
-export const AGES = [{ name: 'Settlements', from: 0, steps: 50, years: 10 }, { name: 'Farms and roads', from: 500, steps: 30, years: 5 }];
+export const AGES = [{ name: 'Settlements', from: 0, steps: 50, years: 10 }, { name: 'Farms and roads', from: 500, steps: 30, years: 5 },
+  { name: 'Districts', from: 650, steps: 30, years: 5 }, { name: 'Density', from: 800, steps: 20, years: 5 }];
 const DENSITY = 3000;          // people per km2 of settled ground (old towns were dense)
 const FOOD2 = 90, FOOD3 = 125; // people one km2 of fully fertile land feeds, in age 2 and with age 3 farming
 const GROWTH = 0.13;           // growth per 10 years while well below the limit
@@ -46,7 +54,7 @@ export function runHistory(w, o = {}, onProgress = null){
   const t0 = performance.now(), times = {};
   let tl = t0;
   const lap = (name) => { const t = performance.now(); times[name] = (times[name] || 0) + t - tl; tl = t; };
-  const farmReach = o.farm ?? 2.5, minGap = o.gap ?? 1.2;
+  const farmReach = o.farm ?? 2.5, minGap = o.gap ?? 1.2, indK = (o.industry ?? 30) / 30, growK = o.growth ?? 4;
   const trade = 0.35 * (o.trade ?? 100) / 100, setback = 0.025 * (o.setbacks ?? 100) / 100;
   const rate = (o.settleRate ?? 100) / 100, links = Math.round(o.links ?? 2), tracks = (o.tracks ?? 100) / 100;
   const { res, cell, half } = w, N = res * res, cellKm = cell / 1000, cellKm2 = cellKm * cellKm;
@@ -89,8 +97,12 @@ export function runHistory(w, o = {}, onProgress = null){
   const at = (x, z) => w.gridIndex(x * 1000, z * 1000);
   lap('maps');
 
-  const STEPS = AGES[0].steps + AGES[1].steps, year = new Int16Array(STEPS + 1);
-  for (let s = 0; s <= STEPS; s++) year[s] = s <= AGES[0].steps ? s * AGES[0].years : AGES[1].from + (s - AGES[0].steps) * AGES[1].years;
+  const STEPS = AGES.reduce((a, g) => a + g.steps, 0), year = new Int16Array(STEPS + 1);
+  const A3 = AGES[0].steps, A4 = A3 + AGES[1].steps, A5 = A4 + AGES[2].steps;   // the last step of ages 2, 3 and 4
+  for (let s = 0, a = 0, s0 = 0; s <= STEPS; s++){
+    while (a < AGES.length - 1 && s > s0 + AGES[a].steps){ s0 += AGES[a].steps; a++; }
+    year[s] = AGES[a].from + (s - s0) * AGES[a].years;
+  }
   const list = [];
   // a coarse grid of 4 km buckets for neighbour searches
   const BK = 4, buckets = new Map(), bkey = (x, z) => Math.floor(x / BK) * 100003 + Math.floor(z / BK);
@@ -105,6 +117,8 @@ export function runHistory(w, o = {}, onProgress = null){
   // ---- age 3 state: farm plots, centres, roads ----
   const fm = Math.max(1, Math.round(200 / cell)), fres = Math.floor(res / fm), fcell = fm * cell, fcellKm2 = (fcell / 1000) ** 2;
   const plotFert = new Float32Array(fres * fres), owner = new Int32Array(fres * fres).fill(-1), plotSince = new Int16Array(fres * fres);
+  // taken: 0 free, 1 farmed, 2 built over; owner, since and until (0 = still farmed) are kept for the map
+  const taken = new Uint8Array(fres * fres), plotUntil = new Int16Array(fres * fres);
   for (let j = 0; j < fres; j++) for (let i = 0; i < fres; i++){
     let f = 0, landN = 0;
     for (let b = 0; b < fm; b++) for (let a = 0; a < fm; a++){
@@ -136,6 +150,19 @@ export function runHistory(w, o = {}, onProgress = null){
   const road = new Uint16Array(RN), roadSince = new Int16Array(RN);   // routes sharing each cell; step it was built
   let roadDist = null;                                       // metres to the nearest road cell (refreshed per step)
   const linked = new Set();
+  let dist = null, pop650 = 0;                               // districts (ages 4-5); everyone in year 650
+  // farmland under a new town block is lost
+  function clearFarm(x, z, step){
+    const i = Math.floor((x + half) / fcell), j = Math.floor((z + half) / fcell);
+    if (i < 0 || j < 0 || i >= fres || j >= fres) return;
+    const p = j * fres + i;
+    if (taken[p] === 1){
+      plotUntil[p] = step;
+      const s = list[owner[p]];
+      if (s) s.supply -= plotFert[p] * fcellKm2;
+    }
+    taken[p] = 2;
+  }
 
   // Least-cost route between two cells (A*, within a box around them), or to the nearest road (goal = -1).
   const gScore = new Float32Array(RN), from = new Int32Array(RN), stamp = new Int32Array(RN), heap = new Heap(RN * 2);
@@ -193,10 +220,11 @@ export function runHistory(w, o = {}, onProgress = null){
   const attempts = Math.max(1, Math.round(landKm2 / 400 * rate));
   let made = 0;
   for (let step = 1; step <= STEPS; step++){
-    const age3 = step > AGES[0].steps, dt = age3 ? 0.5 : 1;     // fraction of a 10-year step
+    const age3 = step > A3, modern = step > A4, dt = age3 ? 0.5 : 1;     // fraction of a 10-year step
+    const urb = modern ? Math.min(1, (year[step] - 650) / 250) : 0;      // 0-1 over ages 4 and 5
     rebucket();
     // founding (slower once roads and farms take over)
-    const tries = age3 ? Math.round(attempts * 0.3) : step <= 10 ? attempts * 2 : attempts;
+    const tries = modern ? Math.round(attempts * 0.1) : age3 ? Math.round(attempts * 0.3) : step <= 10 ? attempts * 2 : attempts;
     for (let a = 0; a < tries && total > 0; a++){
       const hA = h2(step, a, S);
       const u = rnd(hA, 1) * total;
@@ -208,13 +236,41 @@ export function runHistory(w, o = {}, onProgress = null){
       const id = made++;
       const s = { id, name: makeName(h2(id, 7, S)), x, z, born: step, died: 0, alive: true, mergedInto: -1, onRoad: false,
         pop: 20 + 60 * rnd(hA, 4), popAt: new Float32Array(STEPS + 1), xAt: new Float32Array(STEPS + 1), zAt: new Float32Array(STEPS + 1),
-        plots: [], supply: 0, fx: 0, fz: 0, market: 0, others: 0 };
+        areaAt: new Float32Array(STEPS + 1), plots: [], supply: 0, fx: 0, fz: 0, market: 0, others: 0, dCentre: 1e9 };
       list.push(s); addB(s);
     }
     lap('founding');
+    // nearest distribution centre (for ages 4-5), refreshed every 4 steps
+    if (modern && step % 4 === 0) for (const s of list){
+      if (!s.alive) continue;
+      let d = 1e9; for (const c of centres) d = Math.min(d, Math.abs(c.x - s.x) + Math.abs(c.z - s.z));
+      s.dCentre = d;
+    }
+    // from age 4: the world's people grow to growK times year 650's by year 900, and each town's share follows
+    // its size (a little more than in proportion: cities draw people from villages) and what it offers
+    let shareK = 0;
+    if (modern){
+      let sum = 0;
+      for (const s of list){
+        if (!s.alive) continue;
+        const k = at(s.x, s.z);
+        let b = 1 + 0.25 * Math.exp(-dFresh[k] / 800) + 0.3 * Math.exp(-dSea[k] / 1500) + (s.onRoad ? 0.25 : 0);
+        if (step <= A5) b += 0.3 * Math.exp(-s.dCentre / 3);
+        else b += 0.6 * indK * Math.min(1, 0.5 * (s.metalPot || 0) + 0.3 * Math.exp(-dFresh[k] / 800) + 0.3 * Math.exp(-dSea[k] / 1500) + (s.onRoad ? 0.3 : 0));
+        s.attr = Math.pow(s.pop, 1.15) * b; sum += s.attr;
+      }
+      shareK = pop650 * (1 + (growK - 1) * urb) / Math.max(1, sum);
+    }
     // growth toward what the land around can feed, shared with neighbours whose farmland overlaps
     for (const s of list){
       if (!s.alive) continue;
+      if (modern){
+        const K = Math.max(10, shareK * s.attr), hS = h2(step, s.id + 1000003, S);
+        s.pop += dt * GROWTH * 1.5 * s.pop * (1 - s.pop / K) * (0.6 + 0.8 * rnd(hS, 1));
+        if (rnd(hS, 2) < setback * dt * 0.3) s.pop *= 0.6 + 0.3 * rnd(hS, 3);
+        if (s.pop < 15){ s.alive = false; s.died = step; }
+        continue;
+      }
       const r = radiusKm(s.pop), R = r + farmReach;
       let K = (age3 ? FOOD3 : FOOD2) * foodAround(s.x, s.z, R);
       const k = at(s.x, s.z);
@@ -239,19 +295,23 @@ export function runHistory(w, o = {}, onProgress = null){
       if (rnd(hS, 2) < setback * dt) s.pop *= 0.3 + 0.4 * rnd(hS, 3);
       if (s.pop < 15){ s.alive = false; s.died = step; }
     }
-    // merging: settlements whose edges touch become one (the larger absorbs the smaller, and its farms)
+    // merging: settlements whose edges touch (from age 4, the edge of their blocks)
+    const reach = (t) => modern && t.areaAt[step - 1] > 0 ? Math.sqrt(t.areaAt[step - 1] / Math.PI) + 0.1 : radiusKm(t.pop);
+    // (the larger absorbs the smaller, and its farms)
     rebucket();
     for (const s of list){
       if (!s.alive) continue;
       for (const t of near(s.x, s.z, 6)){
         if (t === s || !t.alive || !s.alive) continue;
         const d = Math.hypot(t.x - s.x, t.z - s.z);
-        if (d > radiusKm(s.pop) + radiusKm(t.pop)) continue;
+        if (d > reach(s) + reach(t)) continue;
         const [big, small] = s.pop >= t.pop ? [s, t] : [t, s];
         const f = small.pop / (big.pop + small.pop);
-        big.x += (small.x - big.x) * f; big.z += (small.z - big.z) * f; big.pop += small.pop;
+        if (!modern){ big.x += (small.x - big.x) * f; big.z += (small.z - big.z) * f; }   // (from age 4 its middle stays)
+        big.pop += small.pop;
         small.alive = false; small.died = step; small.mergedInto = big.id;
         for (const p of small.plots) owner[p] = big.id;
+        if (dist) dist.merge(big, small);
         big.plots.push(...small.plots); big.supply += small.supply; big.fx += small.fx; big.fz += small.fz;
         small.plots = []; small.supply = 0; small.fx = small.fz = 0;
         big.onRoad = big.onRoad || small.onRoad;
@@ -260,17 +320,18 @@ export function runHistory(w, o = {}, onProgress = null){
     lap('growth');
     if (age3){
       // farms of settlements that died out fall free
-      for (const s of list) if (!s.alive && s.plots.length){ for (const p of s.plots) owner[p] = -1; s.plots = []; s.supply = 0; s.fx = s.fz = 0; }
-      // each settlement takes the best free plots within reach until they feed its people
-      for (const s of list){
+      for (const s of list) if (!s.alive && s.plots.length){ for (const p of s.plots) if (taken[p] === 1){ taken[p] = 0; plotUntil[p] = step; } s.plots = []; s.supply = 0; s.fx = s.fz = 0; }
+      // each settlement takes the best free plots within reach until they feed its people (from age 4, when
+      // food comes in by road, only every 4th step)
+      if (!modern || step % 4 === 2) for (const s of list){
         if (!s.alive) continue;
-        const need = s.pop / FOOD3;                        // km2 of fully fertile land
+        const need = (modern ? Math.min(s.pop, 3000) : s.pop) / FOOD3;      // km2 of fully fertile land
         if (s.supply >= need) continue;
-        const R = radiusKm(s.pop) + farmReach, ci = Math.floor(toI(s.x) / fm), cj = Math.floor(toI(s.z) / fm), m = Math.ceil(R * 1000 / fcell);
+        const R = Math.min(radiusKm(s.pop), 3) + farmReach, ci = Math.floor(toI(s.x) / fm), cj = Math.floor(toI(s.z) / fm), m = Math.ceil(R * 1000 / fcell);
         const cand = [];
         for (let j = Math.max(0, cj - m); j <= Math.min(fres - 1, cj + m); j++) for (let i = Math.max(0, ci - m); i <= Math.min(fres - 1, ci + m); i++){
           const p = j * fres + i;
-          if (owner[p] >= 0 || plotFert[p] < 0.08) continue;
+          if (taken[p] || plotFert[p] < 0.08) continue;
           const d = Math.hypot(plotX(i) - s.x, plotX(j) - s.z);
           if (d > R || d < radiusKm(s.pop)) continue;
           cand.push([plotFert[p] * Math.exp(-d / 2), p]);
@@ -278,7 +339,7 @@ export function runHistory(w, o = {}, onProgress = null){
         cand.sort((a, b) => b[0] - a[0]);
         for (const [, p] of cand){
           if (s.supply >= need) break;
-          owner[p] = s.id; plotSince[p] = step; s.plots.push(p); s.supply += plotFert[p] * fcellKm2;
+          owner[p] = s.id; taken[p] = 1; plotSince[p] = step; plotUntil[p] = 0; s.plots.push(p); s.supply += plotFert[p] * fcellKm2;
           s.fx += plotX(p % fres); s.fz += plotX((p / fres) | 0);
         }
       }
@@ -302,8 +363,8 @@ export function runHistory(w, o = {}, onProgress = null){
         }
       }
       lap('centres');
-      // settlements linked to their nearest neighbours
-      for (const s of list){
+      // settlements linked to their nearest neighbours (from age 4 every 4th step)
+      if (!modern || step % 4 === 1) for (const s of list){
         if (!s.alive || s.pop < LINK_POP) continue;
         const others = near(s.x, s.z, 20).filter((t) => t !== s && t.alive && t.pop >= 100)
           .map((t) => [Math.hypot(t.x - s.x, t.z - s.z), t]).filter((e) => e[0] < 20).sort((a, b) => a[0] - b[0]);
@@ -317,6 +378,8 @@ export function runHistory(w, o = {}, onProgress = null){
       }
       lap('roads');
       // farm tracks: each centre reaches its plot farthest from any road
+      // (from age 4 only every 4th step: by then most farmland has its track)
+      if (!modern || step % 4 === 0){
       roadDist = chamfer(rres, rcell, (k) => road[k] > 0);
       const m5 = Math.ceil(5000 / fcell);
       for (const c of centres){
@@ -326,7 +389,7 @@ export function runHistory(w, o = {}, onProgress = null){
           let best = -1, bd = 600;
           for (let j = Math.max(0, cj - m5); j <= Math.min(fres - 1, cj + m5); j++) for (let i = Math.max(0, ci - m5); i <= Math.min(fres - 1, ci + m5); i++){
             const p = j * fres + i;
-            if (owner[p] < 0) continue;
+            if (taken[p] !== 1) continue;
             const d = roadDist[atR(plotX(i), plotX(j))];
             if (d > bd && (i - ci) * (i - ci) + (j - cj) * (j - cj) <= m5 * m5){ bd = d; best = p; }
           }
@@ -336,9 +399,21 @@ export function runHistory(w, o = {}, onProgress = null){
           if (path) for (const k of path) roadDist[k] = 0;
         }
       }
+      }
       lap('tracks');
     }
+    if (step === A4){
+      pop650 = list.reduce((a, s) => a + (s.alive ? s.pop : 0), 0);
+      for (const s of list){
+        let dm = 1e9; for (const m of w.metals) dm = Math.min(dm, Math.hypot(m.x / 1000 - s.x, m.z / 1000 - s.z));
+        s.metalPot = Math.exp(-dm / 3);
+      }
+      dist = makeDistricts({ w, list, o, year, S, slope, dFresh, dSea, road, rres, rcell, atR, roadDist: () => roadDist, radiusKm,
+        clearFarm, steps: STEPS, from: A4 });
+    }
     for (const s of list){ s.popAt[step] = s.alive ? s.pop : 0; s.xAt[step] = s.x; s.zAt[step] = s.z; }
+    if (step === A4) dist.init(step); else if (modern) dist.step(step);
+    if (step >= A4) lap('districts');
     if (onProgress) onProgress(step / STEPS, year[step]);
   }
   // road paths as world-space polylines (metres), each with its class: how many routes share it (the most-used
@@ -358,11 +433,12 @@ export function runHistory(w, o = {}, onProgress = null){
     }
     r.pts = pts; r.use = use; r.cls = r.kind === 'track' && use < 3 ? 0 : use >= 6 ? 2 : 1;   // 0 track, 1 road, 2 main road
   }
-  for (const s of list){ delete s.plots; }
+  const blocks = dist ? dist.finish(A4) : null;
+  for (const s of list){ delete s.plots; delete s.metalPot; delete s.dCentre; delete s.attr; }
   const alive = list.filter((s) => s.alive);
   return { steps: STEPS, year, ages: AGES, settlements: list, alive: alive.length,
     biggest: alive.reduce((m, s) => Math.max(m, s.pop), 0), landKm2,
-    farms: { res: fres, cell: fcell, owner, since: plotSince, half }, centres, roads: roadPaths,
+    farms: { res: fres, cell: fcell, owner, since: plotSince, until: plotUntil, half }, centres, roads: roadPaths, blocks,
     roadGrid: { res: rres, cell: rcell, use: road, since: roadSince },
     ms: performance.now() - t0, times };
 }

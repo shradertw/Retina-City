@@ -26,7 +26,9 @@ export function roadNetwork(history){
   const towns = [];
   if (history) for (const s of history.settlements){
     if (!s.alive) continue;
-    const r = Math.sqrt(s.pop / (3000 * Math.PI)) * 1000;
+    // the town's extent: its blocks (from age 4), else the old-town density of 3000 people per km2
+    const area = s.areaAt ? s.areaAt[s.areaAt.length - 1] : 0;
+    const r = (area > 0 ? Math.sqrt(area / Math.PI) : Math.sqrt(s.pop / (3000 * Math.PI))) * 1000;
     if (r < 60) continue;                                   // hamlets: no street grid
     towns.push([s.x * 1000, s.z * 1000, r * 1.25 + 60, s.pop]);
   }
