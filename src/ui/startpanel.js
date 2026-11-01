@@ -4,7 +4,7 @@
    "Click to enter the city". */
 import { WORLD_OPTIONS, loadWorldOptions, saveWorldOptions } from '../gen/options.js';
 
-/** @param {{ onGenerate: (opts: Record<string, number>) => void, onLoad3D: () => void }} hooks */
+/** @param {{ onGenerate: (opts: Record<string, number>, progress: (text: string) => void) => Promise<void> | void, onLoad3D: () => void }} hooks */
 export function initStartPanel(hooks){
   const box = document.getElementById('worldOptions'), btn = document.getElementById('generate');
   const title = document.getElementById('startTitle');
@@ -58,8 +58,9 @@ export function initStartPanel(hooks){
     e.stopPropagation();
     saveWorldOptions(opts);
     btn.disabled = true; btn.textContent = 'Generating…';
-    setTimeout(() => {                     // let the button's new label show before the work starts
-      hooks.onGenerate({ ...opts });
+    setTimeout(async () => {               // let the button's new label show before the work starts
+      try { await hooks.onGenerate({ ...opts }, (text) => { btn.textContent = text; }); }
+      catch (err){ console.error(err); }
       worldReady = true; btn.disabled = false; btn.textContent = 'Generate again'; showTitle();
     }, 30);
   });

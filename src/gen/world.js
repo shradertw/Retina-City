@@ -221,7 +221,11 @@ export function worldFromData(d){
     const a = height[j * res + i], b = height[j * res + i1], c = height[j1 * res + i], e = height[j1 * res + i1];
     return a + (b - a) * u + (c - a) * v + (a - b - c + e) * u * v;
   };
-  return { ...d, heightAt, isLand: (x, z) => heightAt(x, z) > 0 };
+  const gridIndex = (x, z) => {
+    const i = Math.min(res - 1, Math.max(0, Math.floor((x + half) / cell))), j = Math.min(res - 1, Math.max(0, Math.floor((z + half) / cell)));
+    return j * res + i;
+  };
+  return { ...d, heightAt, gridIndex, isLand: (x, z) => heightAt(x, z) > 0 };
 }
 
 const DX = [1, -1, 0, 0, 1, 1, -1, -1], DZ = [0, 0, 1, -1, 1, -1, 1, -1];

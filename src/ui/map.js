@@ -29,8 +29,8 @@ export function initMap(){
   const ctx = cv.getContext('2d');
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
-  let step = -1, playing = false, playT = 0, lastHist = null;
-  const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + step * h.yearsPerStep; };
+  let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1;
+  const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + h.year[step] + (step > h.ages[0].steps ? ' · ' + h.ages[1].name.toLowerCase() : ''); };
   yearIn.addEventListener('input', () => { step = Number(yearIn.value); playing = false; playBtn.textContent = 'Play'; showYear(); });
   playBtn.addEventListener('click', () => {
     playing = !playing; playBtn.textContent = playing ? 'Pause' : 'Play';
@@ -151,6 +151,46 @@ export function initMap(){
       if (hist !== lastHist){ lastHist = hist; step = hist.steps; yearIn.max = String(hist.steps); playing = false; playBtn.textContent = 'Play'; timeBox.hidden = false; }
       if (playing && performance.now() - playT > 120){ playT = performance.now(); step++; if (step >= hist.steps){ step = hist.steps; playing = false; playBtn.textContent = 'Play'; } }
       yearIn.value = String(step); showYear();
+      // farm plots (fields in a patchwork of tones), drawn to an image when the year changes
+      const F = hist.farms;
+      if (farmFor !== hist || farmStep !== step){
+        farmFor = hist; farmStep = step;
+        farmImg = farmImg || document.createElement('canvas');
+        if (farmImg.width !== F.res){ farmImg.width = F.res; farmImg.height = F.res; }
+        const g = farmImg.getContext('2d'), img = g.createImageData(F.res, F.res);
+        for (let j = 0; j < F.res; j++) for (let i = 0; i < F.res; i++){
+          const p = j * F.res + i;
+          if (F.owner[p] < 0 || F.since[p] > step) continue;
+          const o = ((F.res - 1 - j) * F.res + i) * 4, t = ((i * 7 + j * 13) % 5) / 5;
+          img.data[o] = 205 + 30 * t; img.data[o + 1] = 190 + 20 * t; img.data[o + 2] = 90 + 40 * t; img.data[o + 3] = 120;
+        }
+        g.putImageData(img, 0, 0);
+      }
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(farmImg, toX(-F.half), toY(F.res * F.cell - F.half), F.res * F.cell * scale * d, F.res * F.cell * scale * d);
+      // roads by class: farm tracks, roads, main roads (wider on screen when zoomed in)
+      const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 12, 2.2]];
+      for (let cls = scale < 0.02 ? 1 : 0; cls < 3; cls++){      // farm tracks only once zoomed in a little
+        const [col, wm, wmin] = ROAD_STYLE[cls];
+        ctx.strokeStyle = col; ctx.lineWidth = Math.max(wmin * d, wm * scale * d);
+        ctx.setLineDash(cls === 0 && scale < 0.5 ? [3 * d, 2 * d] : []);
+        ctx.beginPath();
+        for (const r of hist.roads){
+          if (r.cls !== cls || r.step > step) continue;
+          const P = r.pts;
+          ctx.moveTo(toX(P[0]), toY(P[1]));
+          for (let n = 2; n < P.length; n += 2) ctx.lineTo(toX(P[n]), toY(P[n + 1]));
+        }
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      // distribution centres: small dark squares
+      ctx.fillStyle = '#3b2a18'; ctx.strokeStyle = '#f0d9a8'; ctx.lineWidth = 1 * d;
+      for (const c of hist.centres){
+        if (c.born > step) continue;
+        const sz = Math.max(3 * d, 60 * scale * d), sx = toX(c.x * 1000), sy = toY(c.z * 1000);
+        ctx.fillRect(sx - sz / 2, sy - sz / 2, sz, sz); ctx.strokeRect(sx - sz / 2, sy - sz / 2, sz, sz);
+      }
       ctx.lineWidth = 1 * d; ctx.font = (10 * d) + 'px "Martian Mono", ui-monospace, monospace';
       const labels = [];
       for (const st of hist.settlements){
@@ -203,7 +243,7 @@ export function initMap(){
     ctx.font = (11 * d) + 'px "Martian Mono", ui-monospace, monospace'; ctx.fillText(m >= 1000 ? m / 1000 + ' km' : m + ' m', bx, by - 6 * d);
     const hs = current.history;
     info.textContent = `World ${current.options.size} km · seed ${current.options.seed}` + (pending ? ` · generating ${pending} chunks…` : '')
-      + (hs ? ` · ${hs.settlements.filter((t) => t.popAt[step] > 0).length} settlements in year ${step * hs.yearsPerStep}` : '')
+      + (hs ? ` · ${hs.settlements.filter((t) => t.popAt[step] > 0).length} settlements in year ${hs.year[step]}` : '')
       + ' · scroll to zoom · drag to pan · double-click: back to you · Z to close'
       + `\nLayer (L): ${LAYERS[layer].name} — ${LAYERS[layer].legend}` + hover;
   }
@@ -233,8 +273,14 @@ export function initMap(){
         const dd = Math.hypot(st.xAt[step] * 1000 - x, st.zAt[step] * 1000 - z), lim = Math.max(radiusKm(pop) * 1000, 6 / scale);
         if (dd < lim && dd < bd){ bd = dd; best = st; }
       }
-      if (best) town = `\n${best.name}: ${Math.round(best.popAt[step]).toLocaleString()} people · founded year ${best.born * h.yearsPerStep}`
-        + (best.died && best.died <= step ? '' : best.died ? (best.mergedInto >= 0 ? ` · merges into ${h.settlements[best.mergedInto].name} in year ${best.died * h.yearsPerStep}` : ` · gone by year ${best.died * h.yearsPerStep}`) : '');
+      // a farm plot or a centre here?
+      const F = h.farms, fi = Math.floor((x + F.half) / F.cell), fj = Math.floor((z + F.half) / F.cell);
+      const fo = fi >= 0 && fj >= 0 && fi < F.res && fj < F.res ? F.owner[fj * F.res + fi] : -1;
+      if (!best && fo >= 0 && F.since[fj * F.res + fi] <= step) town = `\nFarmland of ${h.settlements[fo].name} since year ${h.year[F.since[fj * F.res + fi]]}`;
+      const cen = h.centres.find((c) => c.born <= step && Math.hypot(c.x * 1000 - x, c.z * 1000 - z) < Math.max(80, 6 / scale));
+      if (cen) town += `\nDistribution centre, since year ${h.year[cen.born]}`;
+      if (best) town = `\n${best.name}: ${Math.round(best.popAt[step]).toLocaleString()} people · founded year ${h.year[best.born]}`
+        + (best.died && best.died <= step ? '' : best.died ? (best.mergedInto >= 0 ? ` · merges into ${h.settlements[best.mergedInto].name} in year ${h.year[best.died]}` : ` · gone by year ${h.year[best.died]}`) : '');
     }
     hover = `\nHere: ${wt === 1 ? 'sea' : wt === 2 ? 'lake' : wt === 3 ? 'river' : LIFE[w.life[k]]} · height ${Math.round(w.elev[k])} m · ${w.temp[k].toFixed(1)} °C`
       + ` · humidity ${(w.humid[k] * 100).toFixed(0)}% · fertility ${(w.fert[k] * 100).toFixed(0)}%` + town;

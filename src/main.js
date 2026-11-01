@@ -4,8 +4,8 @@ import { compilePrograms, nextPaint } from './core/gpu.js';
 import { loadReport } from './ui/loading.js';
 import { initStartPanel } from './ui/startpanel.js';
 import { initMap } from './ui/map.js';
-import { buildWorld } from './gen/world.js';
-import { runAge2 } from './gen/history.js';
+import { buildWorld, worldFromData } from './gen/world.js';
+import { runHistory } from './gen/history.js';
 import { makeRoads } from './gen/roads.js';
 import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
@@ -59,10 +59,31 @@ window.__stream = stream;
 const load = loadReport({ onReady: () => startPanel.setShadersReady() });
 let wantLoad = null;
 const load3D = new Promise((resolve) => { wantLoad = resolve; });
-const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: (opts) => {
+// World and history are built in a background worker (with progress on the button); on this thread only if the
+// browser cannot start one.
+let genId = 0;
+function generateWorld(opts, progress){
+  const id = ++genId;
+  return new Promise((resolve, reject) => {
+    let wk;
+    const local = () => { const w = buildWorld(opts); resolve({ world: w, history: runHistory(w, opts) }); };
+    try { wk = new Worker(new URL('./gen/worldworker.js', import.meta.url), { type: 'module' }); }
+    catch (_){ local(); return; }
+    wk.onmessage = (e) => {
+      if (e.data.id !== id) return;
+      if (e.data.progress){ progress(e.data.progress.what + '… ' + Math.round(e.data.progress.f * 100) + '%'); return; }
+      wk.terminate();
+      resolve({ world: worldFromData(e.data.world), history: e.data.history });
+    };
+    wk.onerror = (e) => { wk.terminate(); console.warn('world worker failed; building here', e.message || e); try { local(); } catch (err){ reject(err); } };
+    wk.postMessage({ opts, id });
+  });
+}
+const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: async (opts, progress) => {
   const t = performance.now();
-  const w = buildWorld(opts), roads = makeRoads(w);
-  Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts });
+  const { world: w, history } = await generateWorld(opts, progress);
+  const roads = makeRoads(w);
+  Object.assign(current, { world: w, roads, blocks: makeBlocks(w, roads), options: opts, history });
   state.lat = opts.lat;          // the sky follows the world's latitude
   { const el = document.getElementById('lat'); if (el) el.value = state.lat; }
   // start on the sidewalk of the road nearest the centre, facing along it
@@ -70,10 +91,8 @@ const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: (opt
   if (sp0){ state.pos = sp0.pos; state.yaw = sp0.yaw; state.pitch = 0.06; state.walkY = null; }
   stream.reset(current); setWorldData(stream.packs, w);
   if (window.__ready) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
-  load.set("World (" + opts.size + " km)", performance.now() - t);
-  const t2 = performance.now();
-  current.history = runAge2(w, opts);
-  load.set("History: age 2, " + current.history.alive + " settlements", performance.now() - t2);
+  load.set("World (" + opts.size + " km) and history", performance.now() - t);
+  load.set("  " + history.alive + " settlements, " + history.centres.length + " centres, " + history.roads.length + " roads", "");
   if (!worldMap.isOpen()) worldMap.toggle();                     // show the new world
 } });
 const worldMap = initMap();
