@@ -13,6 +13,9 @@ import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2 } from './roads.js';
  *   (ux, uz) = the frontage direction; the front faces the road on the -v side, v = (-uz, ux) x side
  * @typedef {{ x: number, z: number, ax: number, az: number }} Lamp   (ax, az) = the arm's direction, over the road
  */
+// The placeholder buildings are switched off while the history decides what gets built (step 4d/4e); the
+// town streets and street lights stay, so towns are still easy to find.
+const PLACEHOLDER_BUILDINGS = false;
 /** @param {import('./world.js').World} world @param {ReturnType<import('./roads.js').makeRoads>} roads */
 export function makeBlocks(world, roads){
   const seed = world.seed, sB = salt(seed, 21), sL = salt(seed, 22), sD = salt(seed, 23);
@@ -40,6 +43,7 @@ export function makeBlocks(world, roads){
     if (out) return out;
     out = [];
     const near = roads.index(cx, cz);
+    if (!PLACEHOLDER_BUILDINGS){ proposals.set(key, out); return out; }
     for (const e of roads.chunk(cx, cz)){
       if (!e.town) continue;                               // buildings only along town roads
       const L = roadLength(e);
