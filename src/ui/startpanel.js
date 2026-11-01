@@ -16,7 +16,20 @@ export function initStartPanel(hooks){
       : loading ? 'Loading the 3D city…' : 'World ready · Z: map · click here to load the 3D city';
     startEl.classList.toggle('ready', worldReady && (shadersReady || !loading));   // the hand cursor only when a click does something
   };
+  const groups = new Map();
   for (const o of WORLD_OPTIONS){
+    let parent = box;
+    if (o.group){
+      // a fold-out section per group (closed at first)
+      let g = groups.get(o.group);
+      if (!g){
+        g = document.createElement('details'); g.className = 'wgroup';
+        const sm = document.createElement('summary'); sm.textContent = o.group; g.append(sm);
+        g.addEventListener('click', (e) => e.stopPropagation());
+        box.append(g); groups.set(o.group, g);
+      }
+      parent = g;
+    }
     const row = document.createElement('div'); row.className = 'wopt';
     const id = 'wopt-' + o.key;
     const label = document.createElement('label'); label.htmlFor = id; label.textContent = o.label;
@@ -34,11 +47,12 @@ export function initStartPanel(hooks){
     }
     input.addEventListener('input', () => {
       const v = Number(input.value);
-      if (Number.isFinite(v)) opts[o.key] = Math.min(o.max, Math.max(o.min, Math.round(v)));
+      const st = o.step || 1;                     // keep to the option's steps (some are tenths)
+      if (Number.isFinite(v)) opts[o.key] = Math.min(o.max, Math.max(o.min, +(Math.round(v / st) * st).toFixed(3)));
       show();
     });
     row.addEventListener('click', (e) => e.stopPropagation());   // adjusting an option does not enter the city
-    show(); box.append(row);
+    show(); parent.append(row);
   }
   btn.addEventListener('click', (e) => {
     e.stopPropagation();

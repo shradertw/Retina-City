@@ -72,7 +72,7 @@ const startPanel = initStartPanel({ onLoad3D: () => wantLoad(), onGenerate: (opt
   if (window.__ready) stream.update(state.pos, state.yaw);     // a new world while running: chunks arrive over the next frames
   load.set("World (" + opts.size + " km)", performance.now() - t);
   const t2 = performance.now();
-  current.history = runAge2(w);
+  current.history = runAge2(w, opts);
   load.set("History: age 2, " + current.history.alive + " settlements", performance.now() - t2);
   if (!worldMap.isOpen()) worldMap.toggle();                     // show the new world
 } });

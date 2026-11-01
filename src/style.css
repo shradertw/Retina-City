@@ -125,6 +125,9 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .start .wopt { display: grid; grid-template-columns: 1fr auto; gap: 4px 10px; align-items: center; font-size: 12.5px; }
 .start .wopt output { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 .start .wopt input[type=range] { grid-column: 1 / -1; width: 100%; accent-color: var(--sodium); }
+.start .wgroup { border-top: 1px solid var(--line); padding-top: 6px; }
+.start .wgroup summary { cursor: pointer; font-size: 12.5px; color: var(--muted); margin-bottom: 8px; }
+.start .wgroup[open] { display: grid; gap: 10px; }
 .start .seedrow { grid-column: 1 / -1; display: flex; gap: 8px; }
 .start .seedrow input { flex: 1; min-width: 0; font: 12px var(--mono); color: var(--fg); background: rgba(255,255,255,0.05); border: 1px solid var(--line); border-radius: 3px; padding: 5px 7px; }
 .start .dice, .start .genbtn { font: 600 12px/1 var(--display); color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 3px; padding: 7px 12px; cursor: pointer; }

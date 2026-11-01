@@ -20,19 +20,22 @@ import { chamfer } from './world.js';
 
 export const AGE2 = { steps: 50, years: 10 };
 const DENSITY = 3000;          // people per km2 of settled ground (old towns were dense)
-const FARM_REACH = 2.5;        // km of farmland beyond a settlement's edge
+let FARM_REACH = 2.5;          // km of farmland beyond a settlement's edge (start-screen option)
 const FOOD = 90;               // people one km2 of fully fertile land feeds (pre-industrial)
 const GROWTH = 0.13;           // growth per step (10 years) while well below the limit
-const SETBACK = 0.025;         // chance per settlement per step of a setback
-const MIN_GAP = 1.2;           // km between a new settlement and the edge of an existing one
-const TRADE = 0.35;            // people a settlement can feed per person of trade around it (at full pull)
+let SETBACK = 0.025;           // chance per settlement per step of a setback (option: x 0-4)
+let MIN_GAP = 1.2;             // km between a new settlement and the edge of an existing one (option)
+let TRADE = 0.35;              // people a settlement can feed per person of trade around it (option: x 0-4)
 
 /** radius (km) of the ground a population covers */
 export const radiusKm = (pop) => Math.sqrt(pop / (DENSITY * Math.PI));
 
-/** @param {import('./world.js').World} w */
-export function runAge2(w){
+/** @param {import('./world.js').World} w @param {Record<string, number>} [o] start-screen options */
+export function runAge2(w, o = {}){
   const t0 = performance.now();
+  FARM_REACH = o.farm ?? 2.5; MIN_GAP = o.gap ?? 1.2;
+  TRADE = 0.35 * (o.trade ?? 100) / 100; SETBACK = 0.025 * (o.setbacks ?? 100) / 100;
+  const rate = (o.settleRate ?? 100) / 100;
   const { res, cell, half } = w, N = res * res, cellKm = cell / 1000, cellKm2 = cellKm * cellKm;
   const S = salt(w.seed, 40);
   // distances (m) to the sea and to fresh water
@@ -86,7 +89,7 @@ export function runAge2(w){
     return out;
   };
   // founding attempts per step: about one per 400 km2 of land, more in the first century
-  const attempts = Math.max(1, Math.round(landKm2 / 400));
+  const attempts = Math.max(1, Math.round(landKm2 / 400 * rate));
   let made = 0;
   for (let step = 1; step <= STEPS; step++){
     rebucket();
