@@ -22,8 +22,8 @@ import { vnoise, salt } from './noise.js';
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
 // street patterns: every n-th lattice line, how far lattice points move (m), how far streets bow between
 // their ends (m), share of streets dropped, width (m), main street every major-th line
-const LAT = 40;
-const PATTERNS = [
+export const LAT = 40;
+export const PATTERNS = [
   { name: 'old core', n: 1, A: 9, bow: 3, drop: 0.32, w: 7 },
   { name: 'grid', n: 2, A: 1.5, bow: 0, drop: 0.08, w: 9, major: 4 },
   { name: 'late', n: 3, A: 8, bow: 22, drop: 0.2, w: 8 },

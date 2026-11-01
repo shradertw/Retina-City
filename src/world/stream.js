@@ -30,7 +30,7 @@ export function makeStream(gl){
   const listTex = tex(WTEX_W, NS * NS * SLOT_ROWS, gl.RGBA32F, gl.NEAREST);
   const lampTex = tex(LAMP_MAX, 1, gl.RGBA32F, gl.NEAREST);
   const emptyCells = new Float32Array(CN * CN * 4);
-  let landTex = null, lifeTex = null, useTex = null, useCell = 200, cellsGen = null, gen = null, world = null, genId = 0, range = MAX_RANGE;
+  let landTex = null, lifeTex = null, useTex = null, useCell = 200, farmCell = 200, cellsGen = null, gen = null, world = null, genId = 0, range = MAX_RANGE;
   const slots = new Array(NS * NS).fill(null);      // the pack in each slot
   const packs = new Map();                           // chunk key -> pack (the ones in slots)
   const asked = new Set(), arrived = [];             // requested from the worker; results not yet uploaded
@@ -72,21 +72,26 @@ export function makeStream(gl){
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, world.res, world.res, 0, gl.RGBA, gl.UNSIGNED_BYTE, lb);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    // land use from the history, on its farm-plot grid: 0 wild, 1 farmland, 2 town
+    // land use from the history, on the town-block grid (64 m): 0 wild, 1 farmland (at the end), 2 housing,
+    // 3 shops and offices, 4 industry; without town blocks, on the farm-plot grid with 2 = town
     if (useTex) gl.deleteTexture(useTex);
-    const F = g.history && g.history.farms;
-    const ures = F ? F.res : 1, use = new Uint8Array(ures * ures);
-    useCell = F ? F.cell : world.size;
-    if (F){
-      for (let k = 0; k < use.length; k++) if (F.owner[k] >= 0 && !F.until[k]) use[k] = 1;    // farmed at the end
-      for (const t of g.net ? g.net.towns : []){
-        const i0 = Math.max(0, Math.floor((t[0] - t[2] + world.half) / useCell)), i1 = Math.min(ures - 1, Math.floor((t[0] + t[2] + world.half) / useCell));
-        const j0 = Math.max(0, Math.floor((t[1] - t[2] + world.half) / useCell)), j1 = Math.min(ures - 1, Math.floor((t[1] + t[2] + world.half) / useCell));
-        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++){
-          const x = -world.half + (i + 0.5) * useCell, z = -world.half + (j + 0.5) * useCell;
-          if (Math.hypot(x - t[0], z - t[1]) < t[2]) use[j * ures + i] = 2;
+    const F = g.history && g.history.farms, BL = g.net && g.net.blocks;
+    let ures = 1, use = new Uint8Array(1);
+    farmCell = F ? F.cell : 200;
+    if (BL){
+      ures = BL.res; useCell = BL.size; use = new Uint8Array(ures * ures);
+      if (F) for (let j = 0; j < ures; j++){
+        const fj = Math.floor((j + 0.5) * useCell / F.cell);
+        if (fj >= F.res) continue;
+        for (let i = 0; i < ures; i++){
+          const fi = Math.floor((i + 0.5) * useCell / F.cell), k = fj * F.res + fi;
+          if (fi < F.res && F.owner[k] >= 0 && !F.until[k]) use[j * ures + i] = 1;
         }
       }
+      for (let q = 0; q < BL.key.length; q++) use[BL.key[q]] = 1 + BL.zone[q];
+    } else if (F){
+      ures = F.res; useCell = F.cell; use = new Uint8Array(ures * ures);
+      for (let k = 0; k < use.length; k++) if (F.owner[k] >= 0 && !F.until[k]) use[k] = 1;
     }
     useTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, useTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -201,7 +206,7 @@ export function makeStream(gl){
     const t = [cellsTex, listTex, landTex, lampTex, lifeTex, useTex];
     for (let i = 0; i < 6; i++){ gl.activeTexture(gl.TEXTURE0 + u0 + i); gl.bindTexture(gl.TEXTURE_2D, t[i]); }
     gl.activeTexture(gl.TEXTURE0);
-    gl.uniform1i(u.uCells, u0); gl.uniform1i(u.uList, u0 + 1); gl.uniform1i(u.uLand, u0 + 2); gl.uniform1i(u.uLampTex, u0 + 3); gl.uniform1i(u.uLife, u0 + 4); gl.uniform1i(u.uUse, u0 + 5); gl.uniform1f(u.uUseCell, useCell);
+    gl.uniform1i(u.uCells, u0); gl.uniform1i(u.uList, u0 + 1); gl.uniform1i(u.uLand, u0 + 2); gl.uniform1i(u.uLampTex, u0 + 3); gl.uniform1i(u.uLife, u0 + 4); gl.uniform1i(u.uUse, u0 + 5); gl.uniform1f(u.uUseCell, useCell); gl.uniform1f(u.uFarmCell, farmCell);
     gl.uniform1i(u.uLampN, lamps.n); gl.uniform1f(u.uLampR, lamps.r);
     if (world){ gl.uniform1f(u.uWorldHalf, world.half); gl.uniform1f(u.uWorldRes, world.res); }
   }

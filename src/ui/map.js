@@ -34,7 +34,7 @@ export function initMap(){
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
-  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['streets', 'Town streets (as in 3D)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
+  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['streets', 'Town streets (as in 3D)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
     ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
@@ -131,36 +131,32 @@ export function initMap(){
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     // town streets (and, from step 4e-2, buildings), once zoomed in enough to see them; streets are drawn later,
     // above the town blocks
-    const streets = new Path2D(), mains = new Path2D();
-    if (!(show.streets && scale >= 0.03)) list.length = 0;
+    const streets = new Path2D(), mains = new Path2D(), bld = [new Path2D(), new Path2D(), new Path2D()], doors = new Path2D(), lights = new Path2D();
+    const wantB = show.buildings && showBuildings;
+    if (!((show.streets || wantB) && scale >= 0.03)) list.length = 0;
     for (const [x, z] of list){
-      const fresh = !current.roads.cached(x, z) || (showBuildings && !current.blocks.cached(x, z));
+      const fresh = !current.roads.cached(x, z) || (wantB && !current.blocks.cached(x, z));
       if (fresh && performance.now() - t0 > 20){ pending++; continue; }
-      for (const e of current.roads.chunk(x, z)){
+      if (show.streets) for (const e of current.roads.chunk(x, z)){
         if (e.pattern === undefined) continue;             // the history's roads are drawn with the history
         const P = e.major ? mains : streets;
         for (let k = 0; k <= SAMPLES; k++){ const px = toX(e.pts[2 * k]), pz = toY(e.pts[2 * k + 1]); if (k) P.lineTo(px, pz); else P.moveTo(px, pz); }
       }
-      if (showBuildings){
+      if (wantB){
         const ch = current.blocks.chunk(x, z);
         for (const b of ch.buildings){
-          ctx.fillStyle = b.kind === 2 ? '#7f8a99' : b.kind === 1 ? '#8b8a84' : '#93705f';
-          const vx = -b.uz, vz = b.ux;
-          ctx.beginPath();
-          ctx.moveTo(toX(b.x - b.ux * b.hx - vx * b.hz), toY(b.z - b.uz * b.hx - vz * b.hz));
-          ctx.lineTo(toX(b.x + b.ux * b.hx - vx * b.hz), toY(b.z + b.uz * b.hx - vz * b.hz));
-          ctx.lineTo(toX(b.x + b.ux * b.hx + vx * b.hz), toY(b.z + b.uz * b.hx + vz * b.hz));
-          ctx.lineTo(toX(b.x - b.ux * b.hx + vx * b.hz), toY(b.z - b.uz * b.hx + vz * b.hz));
-          ctx.closePath(); ctx.fill();
+          const P = bld[b.kind], vx = -b.uz, vz = b.ux;
+          P.moveTo(toX(b.x - b.ux * b.hx - vx * b.hz), toY(b.z - b.uz * b.hx - vz * b.hz));
+          P.lineTo(toX(b.x + b.ux * b.hx - vx * b.hz), toY(b.z + b.uz * b.hx - vz * b.hz));
+          P.lineTo(toX(b.x + b.ux * b.hx + vx * b.hz), toY(b.z + b.uz * b.hx + vz * b.hz));
+          P.lineTo(toX(b.x - b.ux * b.hx + vx * b.hz), toY(b.z - b.uz * b.hx + vz * b.hz));
+          P.closePath();
           if (showLamps && b.door){                           // door: a dot on the front, which faces the road
             const fx = b.x + b.ux * b.door.off + vx * b.hz * -b.side, fz = b.z + b.uz * b.door.off + vz * b.hz * -b.side;
-            ctx.fillStyle = '#f0b25c'; ctx.fillRect(toX(fx) - 1.5 * d, toY(fz) - 1.5 * d, 3 * d, 3 * d);
+            doors.rect(toX(fx) - 1.5 * d, toY(fz) - 1.5 * d, 3 * d, 3 * d);
           }
         }
-        if (showLamps){
-          ctx.fillStyle = '#ffd27a';
-          for (const l of ch.lamps){ ctx.beginPath(); ctx.arc(toX(l.x), toY(l.z), 1.6 * d, 0, 6.2832); ctx.fill(); }
-        }
+        if (showLamps) for (const l of ch.lamps){ lights.moveTo(toX(l.x) + 1.6 * d, toY(l.z)); lights.arc(toX(l.x), toY(l.z), 1.6 * d, 0, 6.2832); }
       }
     }
     // settlements at the chosen year: their ground, coloured by when they were founded (older = deeper amber)
@@ -202,10 +198,14 @@ export function initMap(){
         }
         for (let q = 4; q < 16; q++) if (paths[q]){ ctx.fillStyle = ZONE_COL[q >> 2][q & 3]; ctx.fill(paths[q]); }
       }
-      // town streets
+      // town streets, then buildings (brick, concrete, towers), doors and street lights
       ctx.strokeStyle = 'rgba(236,228,210,0.9)';
       ctx.lineWidth = Math.max(1 * d, 8 * scale * d); ctx.stroke(streets);
       ctx.lineWidth = Math.max(1.4 * d, 12 * scale * d); ctx.stroke(mains);
+      ['#9a6a55', '#8f8d86', '#7d8ea6'].forEach((c, k) => { ctx.fillStyle = c; ctx.fill(bld[k]); });
+      ctx.strokeStyle = 'rgba(20,16,12,0.55)'; ctx.lineWidth = 1; for (const P of bld) ctx.stroke(P);
+      ctx.fillStyle = '#f0b25c'; ctx.fill(doors);
+      ctx.fillStyle = '#ffd27a'; ctx.fill(lights);
       // roads by class: farm tracks, roads, main roads (wider on screen when zoomed in)
       const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 12, 2.2]];
       for (let cls = scale < 0.02 ? 1 : 0; cls < 3; cls++){      // farm tracks only once zoomed in a little

@@ -1,11 +1,13 @@
-/* Buildings, doors and street lights along the roads, generated in the same 512 m chunks as the roads.
-   Each side of each road proposes buildings in a row behind its sidewalk, turned to face the road, with
-   seeded frontage (14-30 m), depth (12-28 m) and setback. A proposal is dropped if it sits on any road or
-   sidewalk, or overlaps a proposal with a higher priority (a seeded number). Proposals and priorities depend
-   only on the seed and the roads, so the result is the same whatever order chunks are generated in. */
+/* Buildings, doors and street lights along the town roads, generated in the same 512 m chunks as the roads.
+   Each side of each town road proposes buildings in a row behind its sidewalk, turned to face the road. What
+   gets proposed comes from the history's town block just behind the sidewalk (src/gen/districts.js): its
+   district, storeys and the year it was last built (see FORMS below). No block there: nothing is built.
+   A proposal is dropped if it sits on any road or sidewalk, or overlaps a proposal with a higher priority (a
+   seeded number). Proposals and priorities depend only on the seed, the roads and the history, so the result
+   is the same whatever order chunks are generated in. */
 import { h2, hf, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
-import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2 } from './roads.js';
+import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2, LAT, PATTERNS } from './roads.js';
 
 /**
  * @typedef {{ x: number, z: number, ux: number, uz: number, hx: number, hz: number, h: number, podH: number,
@@ -13,9 +15,33 @@ import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2 } from './roads.js';
  *   (ux, uz) = the frontage direction; the front faces the road on the -v side, v = (-uz, ux) x side
  * @typedef {{ x: number, z: number, ax: number, az: number }} Lamp   (ax, az) = the arm's direction, over the road
  */
-// The placeholder buildings are switched off while the history decides what gets built (step 4d/4e); the
-// town streets and street lights stay, so towns are still easy to find.
-const PLACEHOLDER_BUILDINGS = false;
+/* Building forms by district and the block's storeys; r(k) is a seeded number 0-1. Sizes in metres:
+   w frontage, d depth, back setback from the sidewalk, gap to the next building along the street.
+   kind: 0 brick, 1 concrete, 2 glass tower on a podium. Storeys are 3.2 m (industry 5.5 m).
+     housing  1-2 storeys   detached houses with front yards and gaps between
+              3-5           terraces (row houses) and small flats, wall to wall at the sidewalk
+              6+            on old-core and grid-era streets, flats wall to wall at the sidewalk (perimeter
+                            blocks); elsewhere apartment blocks set back with space around them
+     shops and offices  1-4 shops wall to wall; 5-12 offices; 13+ towers on podiums
+     industry           big sheds set back from the street, one or two tall storeys
+   Brick for the older buildings, concrete (and glass) more often the newer they are. */
+function form(zone, st, year, r, pattern){
+  const brick = (p) => (r(9) < p ? 0 : 1);
+  const old = year < 620 ? 0.85 : year < 760 ? 0.5 : year < 840 ? 0.25 : 0.1;
+  const vary = (n, k) => Math.max(1, n + Math.floor(r(k) * (2 * k + 1)) - k);
+  if (zone === 1){
+    if (st <= 2) return { w: 8 + 5 * r(1), d: 8 + 4 * r(2), back: 3 + 5 * r(3), gap: 3 + 6 * r(4), st: Math.max(1, st - (r(5) < 0.4 ? 1 : 0)), kind: brick(old + 0.15) };
+    if (st <= 5) return { w: 6 + 4 * r(1), d: 10 + 4 * r(2), back: 1.5 * r(3), gap: r(4) < 0.85 ? 0.2 : 3, st: vary(st, 1), kind: brick(old + 0.1) };
+    if (pattern === 0 || pattern === 1) return { w: 14 + 12 * r(1), d: 12 + 4 * r(2), back: 0, gap: r(4) < 0.85 ? 0.2 : 4, st: vary(st, 1), kind: brick(old * 0.7) };
+    return { w: 22 + 18 * r(1), d: 13 + 5 * r(2), back: 3 + 4 * r(3), gap: 6 + 8 * r(4), st: vary(st, 2), kind: brick(old * 0.5) };
+  }
+  if (zone === 2){
+    if (st <= 4) return { w: 8 + 8 * r(1), d: 14 + 10 * r(2), back: 0, gap: r(4) < 0.8 ? 0.2 : 2, st: vary(st, 1), kind: brick(old) };
+    if (st <= 12) return { w: 16 + 14 * r(1), d: 16 + 10 * r(2), back: r(3), gap: 0.5 + 3 * r(4), st: vary(st, 2), kind: brick(old * 0.4) };
+    return { w: 24 + 12 * r(1), d: 22 + 8 * r(2), back: 2, gap: 4 + 6 * r(4), st: vary(st, 3), kind: 2, podH: 6.4 };
+  }
+  return { w: 25 + 30 * r(1), d: 22 + 20 * r(2), back: 6 + 8 * r(3), gap: 6 + 10 * r(4), st: st > 1 && r(5) < 0.5 ? 2 : 1, kind: 1, storeyH: 5.5 };
+}
 /** @param {import('./world.js').World} world @param {ReturnType<import('./roads.js').makeRoads>} roads */
 export function makeBlocks(world, roads){
   const seed = world.seed, sB = salt(seed, 21), sL = salt(seed, 22), sD = salt(seed, 23);
@@ -42,22 +68,30 @@ export function makeBlocks(world, roads){
     let out = proposals.get(key);
     if (out) return out;
     out = [];
-    const near = roads.index(cx, cz);
-    if (!PLACEHOLDER_BUILDINGS){ proposals.set(key, out); return out; }
+    const near = roads.index(cx, cz), BL = roads.blocks;
+    if (!BL){ proposals.set(key, out); return out; }
     for (const e of roads.chunk(cx, cz)){
       if (!e.town) continue;                               // buildings only along town roads
       const L = roadLength(e);
       for (const side of [-1, 1]){
-        let s = 6 + 4 * hf(h2(e.id, side, sB)), n = 0;
-        while (true){
+        let s = 2 + 3 * hf(h2(e.id, side, sB)), n = 0;
+        while (s < L - 4 && n < 200){
           const h = h2(e.id ^ (side > 0 ? 0x55 : 0xAA), n++, sB);
-          const w = 14 + 16 * rnd(h, 1), d = 12 + 16 * rnd(h, 2), back = rnd(h, 3) < 0.3 ? 2 * rnd(h, 4) : 0;
-          if (s + w > L - 6) break;
+          // the town block just behind the sidewalk here
+          const [qx0, qz0, qtx, qtz] = along(e, Math.min(s + 4, L));
+          const probe = e.w / 2 + SIDEWALK + 8, q = roads.block(qx0 - qtz * side * probe, qz0 + qtx * side * probe);
+          if (q < 0){ s += 10; continue; }
+          const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern);
+          // between town streets, a building takes at most half the depth from one street to the next
+          const room = e.pattern === undefined ? 1e9 : (PATTERNS[e.pattern].n * LAT - e.w) / 2 - SIDEWALK - 0.5;
+          const back = Math.min(F.back, Math.max(0, room - 8)), d = Math.max(6, Math.min(F.d, room - back)), w = F.w;
+          if (s + w > L - 2) break;
           const [px, pz, tx, tz] = along(e, s + w / 2);
           const vx = -tz * side, vz = tx * side;                              // away from the road
           const off = e.w / 2 + SIDEWALK + back + d / 2;
-          const b = { x: px + vx * off, z: pz + vz * off, ux: tx, uz: tz, hx: w / 2, hz: d / 2, side, h: 0, podH: 0, kind: 0, prio: rnd(h, 5), door: null, hash: h };
-          s += w + 1.5 * rnd(h, 6);
+          const b = { x: px + vx * off, z: pz + vz * off, ux: tx, uz: tz, hx: w / 2, hz: d / 2, side, kind: F.kind,
+            h: F.st * (F.storeyH || 3.2), podH: F.podH || 0, prio: rnd(h, 5), door: null, hash: h };
+          s += w + F.gap;
           // the corners and side midpoints must keep clear of every road and sidewalk
           let ok = true;
           for (const [a, c] of [[-1, -1], [1, -1], [1, 1], [-1, 1], [0, -1], [0, 1], [-1, 0], [1, 0]]){
@@ -98,7 +132,7 @@ export function makeBlocks(world, roads){
     }
     const buildings = [];
     for (const b of propose(cx, cz)){
-      const r = Math.hypot(b.hx, b.hz), reach = Math.ceil((r + 21) / G);        // 21 m: the largest half-diagonal
+      const r = Math.hypot(b.hx, b.hz), reach = Math.ceil((r + 36) / G);        // 36 m: the largest half-diagonal
       const gx = Math.floor(b.x / G), gz = Math.floor(b.z / G);
       let beaten = false;
       for (let j = -reach; j <= reach && !beaten; j++) for (let i = -reach; i <= reach && !beaten; i++){
@@ -130,18 +164,9 @@ export function makeBlocks(world, roads){
     return f;
   }
 
-  // height, kind and door (towers more likely near the centre of the world, which is the start point for now)
-  // Heights follow the town (until districts and density arrive in step 4d): a village is a few storeys;
-  // the bigger the town, the taller, and tallest toward its middle. Towers only in big towns.
+  // the door (height and kind come with the proposal)
   function finish(b){
-    const h = b.hash, t = roads.townAt ? roads.townAt(b.x, b.z) : null;
-    const size = t ? Math.min(Math.max((Math.log10(t[3]) - 2) / 3, 0), 1) : 0;          // 100 people 0 ... 100,000 people 1
-    const centre = t ? Math.max(0, 1 - Math.hypot(b.x - t[0], b.z - t[1]) / t[2]) : 0;
-    const r = rnd(h, 7), tower = size > 0.45 && rnd(h, 8) < 0.5 * (size - 0.45) * centre * centre * 4;
-    const up = size * (0.4 + 0.6 * centre);                                             // 0 village edge ... 1 big-town middle
-    if (tower && b.hx > 8 && b.hz > 8){ b.kind = 2; b.h = (8 + Math.floor(rnd(h, 9) * rnd(h, 9) * 34 * up)) * 3.2; b.podH = 6.4; }
-    else if (r < 0.55 - 0.25 * up){ b.kind = 0; b.h = (2 + Math.floor(rnd(h, 9) * (2 + 6 * up))) * 3.2; }
-    else { b.kind = 1; b.h = (2 + Math.floor(rnd(h, 9) * (3 + 14 * up))) * 3.2; }
+    const h = b.hash;
     // a door on the front, 90% of the time (same codes as before: type x 64 + variety x 16 + colour x 4 + double x 2 + transom)
     const hd = h2(h, 1, sD);
     if (rnd(hd, 0) < 0.9 && b.hx > 2.5){

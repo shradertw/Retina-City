@@ -200,8 +200,10 @@ uniform float uLampR;        // lights farther than this are not in uLampTex: dr
 uniform float uWorldHalf;    // the world square: -half..half on both axes
 uniform highp sampler2D uLife;   // per world-grid cell: life kind / 255, fertility, humidity, temperature (see src/gen/world.js)
 uniform float uWorldRes;
-uniform highp sampler2D uUse;    // land use from the history, per farm plot: 0 wild, 1 farmland, 2 town
-uniform float uUseCell;          // plot size (m)
+uniform highp sampler2D uUse;    // land use from the history, per town block (64 m): 0 wild, 1 farmland,
+                                 // 2 housing, 3 shops and offices, 4 industry (see src/world/stream.js)
+uniform float uUseCell;          // its cell size (m)
+uniform float uFarmCell;         // farm plot size (m): each plot one crop
 float useAt(vec2 xz){
   ivec2 n = textureSize(uUse, 0), c = ivec2(floor((xz + uWorldHalf) / uUseCell));
   if (any(lessThan(c, ivec2(0))) || any(greaterThanEqual(c, n))) return 0.0;
@@ -1000,10 +1002,11 @@ Surf sidewalk(vec2 uv, vec2 f){
 float lotKind(vec2 p){
   float r = grains(p / 70.0, 131u).x;
   int L = int(lifeAt(p).r * 255.0 + 0.5);
-  if (useAt(p) > 1.5){                                      // in towns a fifth is paved
-    if (r < 0.2) return 0.0;
-    r = (r - 0.2) / 0.8;
-  }
+  float u = useAt(p);
+  // town lots by district: housing mostly gardens; shops and offices paved; industry concrete yards and dirt
+  if (u > 3.5) return r < 0.55 ? 0.0 : (r < 0.8 ? 3.0 : 2.0);
+  if (u > 2.5) return r < 0.85 ? 0.0 : 1.0;
+  if (u > 1.5) return r < 0.08 ? 0.0 : (r < 0.8 ? 1.0 : 2.0);
   if (L == 2) return 4.0;
   if (L == 3) return 5.0;
   if (L == 12) return 6.0;
@@ -1083,7 +1086,7 @@ Surf plazaSlabs(vec2 uv, vec2 f){
 // crop, ploughed soil, or pasture (grass).
 Surf field(vec2 uv, vec2 f){
   Surf s = blank();
-  vec2 pc = floor((uv + uWorldHalf) / uUseCell);
+  vec2 pc = floor((uv + uWorldHalf) / uFarmCell);
   uint hp = h2(ivec2(pc), uSeed + 191u);
   float crop = floor(rnd(hp, 1u) * 4.0);
   bool alongX = rnd(hp, 2u) < 0.5;
