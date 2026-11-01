@@ -5,10 +5,12 @@
      points LAT m apart, turned to line up with the main road nearest its middle. Each street pattern uses
      every n-th lattice line, so streets of different patterns meet at shared points (or end at the edge of
      their area). A street is kept where the block under its middle belongs to that town and pattern:
-       old core   (blocks first built before year 500)  every line (40 m), points moved a lot, many dropped
-       grid era   (500-750)                             every 2nd (80 m), straight, every 4th a main street
-       late era   (750 on)                              every 3rd (120 m), streets bow in gentle curves
-       industry   (any year)                            every 4th (160 m), few streets
+       old core   (blocks first built before year 500)  every line (60 m), points moved a lot, many dropped
+       grid era   (500-750)                             every 2nd (120 m), straight, every 4th a main street
+       late era   (750 on)                              every 3rd (180 m), streets bow in gentle curves
+       industry   (any year)                            every 4th (240 m), few streets
+     Widths: old streets 8 m (two narrow lanes); town streets 12 m (two lanes and parking); main streets 24 m
+     (four lanes, a turn lane and parking); industrial streets 14 m (wide lanes for trucks).
      A lattice point is moved by an amount set by the pattern of the block under it (so every street that
      meets there agrees on where it is); late streets also bow between their ends. Both ends of a street must
      be on or next to the town's blocks. A street that would run alongside one of the history's roads is left
@@ -21,24 +23,30 @@ import { vnoise, salt } from './noise.js';
 
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
 // street patterns: every n-th lattice line, how far lattice points move (m), how far streets bow between
-// their ends (m), share of streets dropped, width (m), main street every major-th line
-export const LAT = 40;
+// their ends (m), share of streets dropped, width (m), main street every major-th line and its width
+export const LAT = 60;
 export const PATTERNS = [
-  { name: 'old core', n: 1, A: 9, bow: 3, drop: 0.32, w: 7 },
-  { name: 'grid', n: 2, A: 1.5, bow: 0, drop: 0.08, w: 9, major: 4 },
-  { name: 'late', n: 3, A: 8, bow: 22, drop: 0.2, w: 8 },
-  { name: 'industry', n: 4, A: 3, bow: 0, drop: 0.15, w: 10 },
+  { name: 'old core', n: 1, A: 12, bow: 4, drop: 0.3, w: 8 },
+  { name: 'grid', n: 2, A: 2, bow: 0, drop: 0.08, w: 12, major: 4, wMain: 24 },
+  { name: 'late', n: 3, A: 12, bow: 30, drop: 0.2, w: 12 },
+  { name: 'industry', n: 4, A: 4, bow: 0, drop: 0.15, w: 14 },
 ];
 /** a town block's street pattern, from its district and the year it was first built */
 export const patternOf = (zone, born) => zone === 3 ? 3 : born < 500 ? 0 : born < 750 ? 1 : 2;
 /** a number key for a pair of integers (faster than text keys like "3,-2") */
 export const key2 = (x, z) => (x + 524288) * 1048576 + (z + 524288);
 export const SIDEWALK = 3;                                   // sidewalk width beyond each road edge (m)
+export const SIDEWALK_MAIN = 4.5;                            // ... along roads wider than 18 m (main streets)
+/** the sidewalk width along road e (the shader uses the same rule: half width over 9 m) */
+export const sidewalkOf = (e) => (e.w > 18 ? SIDEWALK_MAIN : SIDEWALK);
 
 /** @typedef {{ id: number, pts: Float32Array, w: number, major: boolean, type: number, town: boolean }} Road
  *  type: 0 street, 1 main street or main road, 2 farm track, 3 road */
 // widths (m) of the history's road classes: farm track, road, main road
-const CLASS_W = [4, 7, 10], CLASS_TYPE = [2, 3, 1];
+// widths (m) of the history's road classes (farm track, road, main road): in the country (track; two lanes
+// with shoulders; four lanes with shoulders) and where they run through a town (a lane and a half; two lanes
+// with parking; four lanes, a turn lane and parking)
+const CLASS_W = [4, 8, 18], CLASS_W_TOWN = [6, 12, 24], CLASS_TYPE = [2, 3, 1];
 
 /** The history's roads, towns and town blocks (as they stand at the end), as the road and building generators
  *  need them: plain data, so it can go to a worker.
@@ -152,7 +160,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
       for (let q = 0; q <= SAMPLES; q++){ const idx = Math.min(s0 + q, m - 1); pts[2 * q] = out[2 * idx]; pts[2 * q + 1] = out[2 * idx + 1]; }
       const cls = path.cls, mid = SAMPLES;                   // centre point of the piece
       const town = inTown(pts[mid], pts[mid + 1]);
-      const e = { id: h2(pi, run, sP), pts, w: CLASS_W[cls], major: cls === 2, type: CLASS_TYPE[cls], town };
+      const e = { id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town };
       const k = key2(Math.floor(pts[0] / ROAD_CHUNK), Math.floor(pts[1] / ROAD_CHUNK));
       let l = pieces.get(k); if (!l){ l = []; pieces.set(k, l); } l.push(e);
     }
@@ -237,7 +245,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
           }
           if (!onLand) continue;
           if (alongRoad((ax + bx) / 2, (az + bz) / 2, bx - ax, bz - az, n * LAT * 0.4)) continue;
-          out.push({ id: h2(k * 4 + dir * 2 + f * 8, m, sId + t[5]), pts, w: isMajor ? P.w + 4 : P.w, major: isMajor, type: isMajor ? 1 : 0, town: true, pattern: f });
+          out.push({ id: h2(k * 4 + dir * 2 + f * 8, m, sId + t[5]), pts, w: isMajor ? P.wMain : P.w, major: isMajor, type: isMajor ? 1 : 0, town: true, pattern: f });
         }
       });
     }
@@ -264,7 +272,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     if (ix) return ix;
     const cells = new Map();
     for (const e of around(cx, cz, 1)){
-      const pad = e.w / 2 + SIDEWALK + 4, p = e.pts;
+      const pad = e.w / 2 + sidewalkOf(e) + 4, p = e.pts;
       let x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
       for (let k = 0; k <= SAMPLES; k++){ x0 = Math.min(x0, p[2 * k]); x1 = Math.max(x1, p[2 * k]); z0 = Math.min(z0, p[2 * k + 1]); z1 = Math.max(z1, p[2 * k + 1]); }
       for (let gz = Math.floor((z0 - pad) / IC); gz <= Math.floor((z1 + pad) / IC); gz++)

@@ -7,7 +7,7 @@
    is the same whatever order chunks are generated in. */
 import { h2, hf, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
-import { ROAD_CHUNK, SAMPLES, SIDEWALK, distToRoad, key2, LAT, PATTERNS } from './roads.js';
+import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS } from './roads.js';
 
 /**
  * @typedef {{ x: number, z: number, ux: number, uz: number, hx: number, hz: number, h: number, podH: number,
@@ -60,7 +60,7 @@ export function makeBlocks(world, roads){
   }
   const roadLength = (e) => { let L = 0; const p = e.pts; for (let k = 0; k < SAMPLES; k++) L += Math.hypot(p[2 * k + 2] - p[2 * k], p[2 * k + 3] - p[2 * k + 1]); return L; };
   // clear of every nearby road and its sidewalks?
-  const clearOfRoads = (ix, x, z, pad) => ix.near(x, z).every((e) => distToRoad(e, x, z) >= e.w / 2 + SIDEWALK + pad);
+  const clearOfRoads = (ix, x, z, pad) => ix.near(x, z).every((e) => distToRoad(e, x, z) >= e.w / 2 + sidewalkOf(e) + pad);
 
   /** buildings proposed by the roads of chunk (cx, cz), already checked against roads @returns {Building[]} */
   function propose(cx, cz){
@@ -79,16 +79,16 @@ export function makeBlocks(world, roads){
           const h = h2(e.id ^ (side > 0 ? 0x55 : 0xAA), n++, sB);
           // the town block just behind the sidewalk here
           const [qx0, qz0, qtx, qtz] = along(e, Math.min(s + 4, L));
-          const probe = e.w / 2 + SIDEWALK + 8, q = roads.block(qx0 - qtz * side * probe, qz0 + qtx * side * probe);
+          const SW = sidewalkOf(e), probe = e.w / 2 + SW + 8, q = roads.block(qx0 - qtz * side * probe, qz0 + qtx * side * probe);
           if (q < 0){ s += 10; continue; }
           const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern);
           // between town streets, a building takes at most half the depth from one street to the next
-          const room = e.pattern === undefined ? 1e9 : (PATTERNS[e.pattern].n * LAT - e.w) / 2 - SIDEWALK - 0.5;
+          const room = e.pattern === undefined ? 1e9 : (PATTERNS[e.pattern].n * LAT - e.w) / 2 - SW - 0.5;
           const back = Math.min(F.back, Math.max(0, room - 8)), d = Math.max(6, Math.min(F.d, room - back)), w = F.w;
           if (s + w > L - 2) break;
           const [px, pz, tx, tz] = along(e, s + w / 2);
           const vx = -tz * side, vz = tx * side;                              // away from the road
-          const off = e.w / 2 + SIDEWALK + back + d / 2;
+          const off = e.w / 2 + SW + back + d / 2;
           const b = { x: px + vx * off, z: pz + vz * off, ux: tx, uz: tz, hx: w / 2, hz: d / 2, side, kind: F.kind,
             h: F.st * (F.storeyH || 3.2), podH: F.podH || 0, prio: rnd(h, 5), door: null, hash: h };
           s += w + F.gap;

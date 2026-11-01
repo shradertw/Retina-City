@@ -200,14 +200,14 @@ export function initMap(){
       }
       // town streets, then buildings (brick, concrete, towers), doors and street lights
       ctx.strokeStyle = 'rgba(236,228,210,0.9)';
-      ctx.lineWidth = Math.max(1 * d, 8 * scale * d); ctx.stroke(streets);
-      ctx.lineWidth = Math.max(1.4 * d, 12 * scale * d); ctx.stroke(mains);
+      ctx.lineWidth = Math.max(1 * d, 12 * scale * d); ctx.stroke(streets);
+      ctx.lineWidth = Math.max(1.4 * d, 24 * scale * d); ctx.stroke(mains);
       ['#9a6a55', '#8f8d86', '#7d8ea6'].forEach((c, k) => { ctx.fillStyle = c; ctx.fill(bld[k]); });
       ctx.strokeStyle = 'rgba(20,16,12,0.55)'; ctx.lineWidth = 1; for (const P of bld) ctx.stroke(P);
       ctx.fillStyle = '#f0b25c'; ctx.fill(doors);
       ctx.fillStyle = '#ffd27a'; ctx.fill(lights);
       // roads by class: farm tracks, roads, main roads (wider on screen when zoomed in)
-      const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 12, 2.2]];
+      const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 18, 2.2]];
       for (let cls = scale < 0.02 ? 1 : 0; cls < 3; cls++){      // farm tracks only once zoomed in a little
         if (cls === 0 ? !show.tracks : !show.roads) continue;
         const [col, wm, wmin] = ROAD_STYLE[cls];

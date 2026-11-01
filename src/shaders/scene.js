@@ -364,7 +364,7 @@ vec2 map(vec3 p){
   }
   if (p.y > top.x + 1.0) return vec2(min(p.y - top.x, gBound), -2.0);
   vec2 res = vec2(1e9, -1.0);
-  for (int i = ZERO; i < 31; i++){
+  for (int i = ZERO; i < 47; i++){
     if (i >= cn.x) break;
     int k = base + i * 3;
     vec4 a = wT(k), b = wT(k + 1);
@@ -417,7 +417,7 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
   if (!cellAt(P, base, cn, top, lo)) return 1e9;
   float best = 1e9;
   vec2 d1 = vec2(0.0); bool crossing = false;
-  for (int i = ZERO; i < 31; i++){
+  for (int i = ZERO; i < 47; i++){
     if (i >= cn.z) break;
     int k = base + cn.x * 3 + cn.y + i * 2;
     vec4 a = wT(k), b = wT(k + 1);
@@ -458,7 +458,8 @@ float groundHit(vec3 ro, vec3 rd, out float gm, out vec3 gn){
     float dA = roadAt(P, g, fr, dR, gC);
     if (dR > 0.0){
       // the raised level: a country road (level with the fields), a sidewalk, or open ground
-      if (k == 0){ gm = dA < 0.0 ? 0.0 : dR < 3.0 ? 1.0 : 6.0; return t; }
+      // (sidewalks 3 m wide, 4.5 m along main streets: half width over 9 m, as sidewalkOf in src/gen/roads.js)
+      if (k == 0){ gm = dA < 0.0 ? 0.0 : dR < (fr.z > 9.0 ? 4.5 : 3.0) ? 1.0 : 6.0; return t; }
       gm = 1.0; gn = vec3(-gC.x, 0.0, -gC.y); return t;
     }
     t += max(-dR / h, 0.02);
@@ -1157,14 +1158,24 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   if (fr.z > 0.0){                                        // not inside a crossing
     float fa = fpAlong(f, dir), fc = fpAlong(f, vec2(-dir.y, dir.x));
     float sA = fr.x, ac = fr.y, hw = fr.z, L = mod(fr.w, 1000.0);
-    bool major = type > 0.5 && type < 1.5;
+    // Markings by width (lanes 3.5-4 m): up to 10 m wide, a dashed centre line; up to 16 m, also a solid line
+    // at each side marking off a parking lane (towns, 2.5 m) or shoulder (country, 0.5 m); wider, a double
+    // centre line, two lanes each way with a dashed line between, then parking or a shoulder (1.5 m).
+    // Zebra crossings just outside the crossing at each end (in towns).
     float e = country ? 1e9 : min(sA, L - sA);            // distance from the nearer end (a crossing, in towns)
-    if (e > 7.5 && e < 10.5) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);                // zebra crossing
-    else if (e >= 10.5){
-      if (major){
+    float z0 = hw + 4.5;                                  // the crossing's edge, for a crossing road like this one
+    float aa = abs(ac);
+    if (e > z0 && e < z0 + 3.0) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);                // zebra crossing
+    else if (e >= z0 + 3.0){
+      float edge = hw - (country ? (hw > 8.0 ? 1.5 : 0.5) : (hw > 8.0 ? 2.5 : 2.5));      // where the lanes end
+      if (hw > 8.0){
         paint = max(boxF(ac, 0.08, 0.20, fc), boxF(ac, -0.20, -0.08, fc));            // double centre line
-        paint = max(paint, (boxF(abs(ac), 0.5*hw - 0.06, 0.5*hw + 0.06, fc)) * pulseF(sA, 9.0, 3.0, fa));   // lane lines
-      } else paint = boxF(ac, -0.06, 0.06, fc) * pulseF(sA, 9.0, 3.0, fa);             // dashed centre line
+        paint = max(paint, boxF(aa, 0.5 * edge - 0.06, 0.5 * edge + 0.06, fc) * pulseF(sA, 9.0, 3.0, fa));   // lane lines
+        paint = max(paint, boxF(aa, edge - 0.07, edge + 0.07, fc));                    // edge of the lanes
+      } else {
+        paint = boxF(ac, -0.06, 0.06, fc) * pulseF(sA, 9.0, 3.0, fa);                 // dashed centre line
+        if (hw > 5.0 || (country && hw > 3.5)) paint = max(paint, boxF(aa, edge - 0.06, edge + 0.06, fc));   // edge line
+      }
     }
   }
   s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint);

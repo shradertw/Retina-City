@@ -25,7 +25,7 @@
 import { rnd } from '../world/hash.js';
 import { ROAD_CHUNK, SAMPLES } from './roads.js';
 
-export const RC = 32, CN = ROAD_CHUNK / RC, PAD = 8, LAMP_REACH = 13, SIDEWALK_REACH = 3.5, LAMP_H = 8;
+export const RC = 32, CN = ROAD_CHUNK / RC, PAD = 8, LAMP_REACH = 13, SIDEWALK_REACH = 5, LAMP_H = 8;
 export const MAXB = 47, MAXL = 15, MAXR = 47, RINGS = 5;   // (6 bits each in the cell: up to 63)
 export const SLOT_TEX = 12288, WTEX_W = 4096, SLOT_ROWS = SLOT_TEX / WTEX_W;
 // a chunk's tag: written into its cells, so a cell in a reused slot is recognised as stale (0 = nothing)
