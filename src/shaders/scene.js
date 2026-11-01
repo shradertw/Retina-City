@@ -982,7 +982,7 @@ Surf roof(vec2 uv, vec2 f){
   Surf s = blank();
   float fn = max(f.x, f.y);
   vec2 grav = grainLayer(uv, 0.012, 71u, sqrt(f.x*f.y));   // gravel stones: ~1.2 cm
-  s.alb = vec3(0.33, 0.32, 0.30) * (1.0 + 0.5*grav.x - 0.35*grav.y) * (1.0 + 0.2*fbmG(uv, 2.0, 0.4, fn));
+  s.alb = vec3(0.33, 0.32, 0.30) * (1.0 + 0.5*grav.x - 0.35*grav.y) * (1.0 + 0.12*fbmG(uv, 0.7, 0.2, fn));
   s.alb *= 1.0 + 0.1*fbmG(uv, 0.004, 0.0002, fn);
   s.h = -0.004*grav.y;
   return s;
@@ -991,14 +991,14 @@ Surf roof(vec2 uv, vec2 f){
 Surf sidewalk(vec2 uv, vec2 f){
   Surf s = blank();
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  float jc = 1.0 - (1.0 - pulseF(uv.x, 1.0, 0.008, f.x)) * (1.0 - pulseF(uv.y, 1.0, 0.008, f.y));
-  float wP = gate(1.0, fe);
-  float pv = hf(h2(ivec2(floor(uv)), uSeed + 21u));
-  vec3 c = vec3(0.45, 0.44, 0.42) * mix(1.0, 0.9 + 0.2*pv, wP);
+  float jc = 1.0 - (1.0 - pulseF(uv.x, 1.5, 0.008, f.x)) * (1.0 - pulseF(uv.y, 1.5, 0.008, f.y));
+  float wP = gate(1.5, fe);
+  float pv = hf(h2(ivec2(floor(uv / 1.5)), uSeed + 21u));
+  vec3 c = vec3(0.45, 0.44, 0.42) * mix(1.0, 0.96 + 0.08*pv, wP);
   vec2 agg = grainLayer(uv, 0.005, 81u, fe);              // exposed aggregate
   c *= 1.0 + 0.18*agg.x - 0.06*agg.y;
   c *= 1.0 + 0.08*fbmG(uv, 0.003, 0.0002, fn);
-  c *= 1.0 + 0.15*fbmG(uv, 1.5, 0.3, fn);
+  c *= 1.0 + 0.10*fbmG(uv, 0.6, 0.2, fn);
   float vd = pits(uv, 0.018, 0.0005, 0.0015, 0.3, 83u, f);
   c = mix(c, c*0.4, vd);
   s.alb = mix(c, c*0.55, jc);
@@ -1032,7 +1032,7 @@ float lotKind(vec2 p){
 // each blade its own shade from yellow-green to deep green; clumps and drifts of colour over metres.
 vec3 grassCol(vec2 uv, vec2 f, float dry, out float h){
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  vec3 c = mix(vec3(0.060, 0.110, 0.030), vec3(0.120, 0.160, 0.045), vnoise(uv / 1.7 + 2.0));
+  vec3 c = mix(vec3(0.070, 0.115, 0.032), vec3(0.110, 0.155, 0.043), vnoise(uv / 0.7 + 2.0));
   c = mix(c, vec3(0.17, 0.15, 0.07), dry * 0.75);          // dry climates: yellowed grass
   c *= 1.0 + 0.30 * fbmG(uv, 0.5, 0.03, fn);
   float wB = gate(0.006, fe);
@@ -1057,7 +1057,7 @@ vec3 grassCol(vec2 uv, vec2 f, float dry, out float h){
 // (also sand, snow and stony ground: soil colours c0/c1, how lumpy (clodK) and how stony (pebK))
 vec3 dirtCol(vec2 uv, vec2 f, vec3 c0, vec3 c1, float clodK, float pebK, out float h){
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  vec3 c = mix(c0, c1, smoothstep(0.45, 0.8, vnoise(uv / 3.0 + 9.0)));
+  vec3 c = mix(c0, c1, smoothstep(0.45, 0.8, vnoise(uv / 0.9 + 9.0)));
   // soil is lumpy, not tiled: mottling at every scale, then soft clods whose edges only show as faint
   // shadows where the noise breaks them up
   c *= 1.0 + 0.30 * fbmG(uv, 0.4, 0.002, fn);
@@ -1081,14 +1081,14 @@ vec3 dirtCol(vec2 uv, vec2 f, vec3 c0, vec3 c1, float clodK, float pebK, out flo
 Surf plazaSlabs(vec2 uv, vec2 f){
   Surf s = blank();
   float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
-  float jc = 1.0 - (1.0 - pulseF(uv.x, 1.5, 0.008, f.x)) * (1.0 - pulseF(uv.y, 1.5, 0.008, f.y));
-  float sv = hf(h2(ivec2(floor(uv / 1.5)), uSeed + 171u));
-  vec3 c = vec3(0.58, 0.57, 0.54) * mix(1.0, 0.92 + 0.16 * sv, gate(1.5, fe));
+  float jc = 1.0 - (1.0 - pulseF(uv.x, 0.6, 0.006, f.x)) * (1.0 - pulseF(uv.y, 0.6, 0.006, f.y));
+  float sv = hf(h2(ivec2(floor(uv / 0.6)), uSeed + 171u));
+  vec3 c = vec3(0.58, 0.57, 0.54) * mix(1.0, 0.95 + 0.10 * sv, gate(0.6, fe));
   float wBr = gate(0.004, f.y);                             // broom lines, ~4 mm apart, across the slab
   c *= 1.0 + 0.10 * wBr * (vnoise(vec2(uv.x * 3.0, fineP(uv, 0.01).y * 260.0)) - 0.5);
   vec2 sand = gHOnly ? vec2(0.0) : grainLayer(uv, 0.0015, 161u, fe);
   c *= 1.0 + 0.12 * sand.x;
-  c *= 1.0 - 0.18 * smoothstep(0.55, 0.9, vnoise(uv / 4.0 + 21.0)) * (0.6 + 0.4 * fbmG(uv, 0.8, 0.05, fn));   // stains
+  c *= 1.0 - 0.12 * smoothstep(0.55, 0.9, vnoise(uv / 1.6 + 21.0)) * (0.6 + 0.4 * fbmG(uv, 0.4, 0.05, fn));   // stains
   s.alb = mix(c, c * 0.5, jc);
   s.h = -0.005 * jc;
   s.refl = 0.04;
@@ -1126,8 +1126,8 @@ Surf lot(vec2 uv, vec2 f){
   float k = lotKind(uv);
   if (k < 0.5) return plazaSlabs(uv, f);
   float dry = 1.0 - smoothstep(0.2, 0.6, lifeAt(uv).b);   // from the humidity there
-  // grass, dirt, or both: on mixed ground bare patches come and go over a few metres
-  float gw = k < 1.5 ? 1.0 : (k > 2.5 ? 0.0 : smoothstep(0.38, 0.62, 0.65 * vnoise(uv / 9.0 + 3.1) + 0.35 * vnoise(uv / 2.5 + 11.7)));
+  // grass, dirt, or both: on mixed ground bare patches a metre or two across
+  float gw = k < 1.5 ? 1.0 : (k > 2.5 ? 0.0 : smoothstep(0.38, 0.62, 0.6 * vnoise(uv / 2.4 + 3.1) + 0.4 * vnoise(uv / 0.8 + 11.7)));
   // the bare ground: soil, sand, snow or stones
   vec3 c0 = vec3(0.33, 0.24, 0.155), c1 = vec3(0.20, 0.145, 0.095);
   float clodK = 1.0, pebK = 1.0;
@@ -1153,7 +1153,7 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   vec2 stones = grainLayer(uv, 0.008, 101u, fe);          // stones in dark binder: ~8 mm
   c *= 1.0 + 0.55*max(stones.x, 0.0) - 0.4*stones.y;
   c *= 1.0 + 0.15*fbmG(uv, 0.004, 0.0002, fn);
-  c *= 1.0 + 0.25*fbmG(uv, 6.0, 1.0, fn);                 // patch repairs
+  c *= 1.0 + 0.15*fbmG(uv, 2.5, 0.5, fn);                 // patch repairs
   float vd = pits(uv, 0.02, 0.001, 0.003, 0.45, 103u, f); // voids between stones
   c = mix(c, c*0.35, vd);
   float paint = 0.0;
