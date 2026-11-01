@@ -9,7 +9,6 @@ import { LIFE, METALS } from '../gen/world.js';
 import { radiusKm } from '../gen/history.js';
 import { ZONES } from '../gen/districts.js';
 
-const SHOW_STREETS = false;
 // map layers: what each shows, and its legend
 const LAYERS = [
   { key: 'terrain', name: 'Terrain', legend: 'green low land to brown and grey high ground, shaded from the north-west; blue water, rivers' },
@@ -35,7 +34,7 @@ export function initMap(){
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
-  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
+  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['streets', 'Town streets (as in 3D)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
     ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
@@ -130,17 +129,17 @@ export function initMap(){
     list.sort((a, b) => a[2] - b[2]);
     if (list.length > 4000) list.length = 4000;
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    // the placeholder streets and buildings are left off while the world history is being built (step 4)
-    if (!SHOW_STREETS) list.length = 0;
+    // town streets (and, from step 4e-2, buildings), once zoomed in enough to see them; streets are drawn later,
+    // above the town blocks
+    const streets = new Path2D(), mains = new Path2D();
+    if (!(show.streets && scale >= 0.03)) list.length = 0;
     for (const [x, z] of list){
       const fresh = !current.roads.cached(x, z) || (showBuildings && !current.blocks.cached(x, z));
       if (fresh && performance.now() - t0 > 20){ pending++; continue; }
       for (const e of current.roads.chunk(x, z)){
-        ctx.strokeStyle = e.major ? '#d8cfb8' : '#a9a49a';
-        ctx.lineWidth = Math.max(e.major ? 1.6 : 1, e.w * scale * d);
-        ctx.beginPath();
-        for (let k = 0; k <= SAMPLES; k++){ const px = toX(e.pts[2 * k]), pz = toY(e.pts[2 * k + 1]); if (k) ctx.lineTo(px, pz); else ctx.moveTo(px, pz); }
-        ctx.stroke();
+        if (e.pattern === undefined) continue;             // the history's roads are drawn with the history
+        const P = e.major ? mains : streets;
+        for (let k = 0; k <= SAMPLES; k++){ const px = toX(e.pts[2 * k]), pz = toY(e.pts[2 * k + 1]); if (k) P.lineTo(px, pz); else P.moveTo(px, pz); }
       }
       if (showBuildings){
         const ch = current.blocks.chunk(x, z);
@@ -203,6 +202,10 @@ export function initMap(){
         }
         for (let q = 4; q < 16; q++) if (paths[q]){ ctx.fillStyle = ZONE_COL[q >> 2][q & 3]; ctx.fill(paths[q]); }
       }
+      // town streets
+      ctx.strokeStyle = 'rgba(236,228,210,0.9)';
+      ctx.lineWidth = Math.max(1 * d, 8 * scale * d); ctx.stroke(streets);
+      ctx.lineWidth = Math.max(1.4 * d, 12 * scale * d); ctx.stroke(mains);
       // roads by class: farm tracks, roads, main roads (wider on screen when zoomed in)
       const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 12, 2.2]];
       for (let cls = scale < 0.02 ? 1 : 0; cls < 3; cls++){      // farm tracks only once zoomed in a little
@@ -264,14 +267,6 @@ export function initMap(){
         ctx.fillStyle = METAL_COL[m.type]; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(toX(m.x), toY(m.z), Math.max(2.5, m.size * 300 * scale) * d, 0, 6.2832); ctx.fill(); ctx.stroke();
       }
-    }
-    // chunk borders
-    if (SHOW_STREETS && scale >= 0.03 && scale < 2){
-      ctx.strokeStyle = 'rgba(240,178,92,0.18)'; ctx.lineWidth = 1;
-      ctx.beginPath();
-      for (let x = c0x; x <= c1x + 1; x++){ ctx.moveTo(toX(x * ROAD_CHUNK), toY(Math.max(z0, -w.half))); ctx.lineTo(toX(x * ROAD_CHUNK), toY(Math.min(z1, w.half))); }
-      for (let z = c0z; z <= c1z + 1; z++){ ctx.moveTo(toX(Math.max(x0, -w.half)), toY(z * ROAD_CHUNK)); ctx.lineTo(toX(Math.min(x1, w.half)), toY(z * ROAD_CHUNK)); }
-      ctx.stroke();
     }
     // you: an arrow pointing where you look
     const px = toX(state.pos[0]), pz = toY(state.pos[2]), a = state.yaw, s = 9 * d;

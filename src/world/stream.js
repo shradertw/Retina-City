@@ -78,7 +78,7 @@ export function makeStream(gl){
     const ures = F ? F.res : 1, use = new Uint8Array(ures * ures);
     useCell = F ? F.cell : world.size;
     if (F){
-      for (let k = 0; k < use.length; k++) if (F.owner[k] >= 0) use[k] = 1;
+      for (let k = 0; k < use.length; k++) if (F.owner[k] >= 0 && !F.until[k]) use[k] = 1;    // farmed at the end
       for (const t of g.net ? g.net.towns : []){
         const i0 = Math.max(0, Math.floor((t[0] - t[2] + world.half) / useCell)), i1 = Math.min(ures - 1, Math.floor((t[0] + t[2] + world.half) / useCell));
         const j0 = Math.max(0, Math.floor((t[1] - t[2] + world.half) / useCell)), j1 = Math.min(ures - 1, Math.floor((t[1] + t[2] + world.half) / useCell));

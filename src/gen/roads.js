@@ -1,17 +1,36 @@
 /* Roads, in 512 m chunks, from two sources:
    - the world history's roads (src/gen/history.js): farm tracks, roads and main roads across the country, cut
      into pieces of 6 segments (24 m each) that belong to the chunk of their first point;
-   - inside towns only, a placeholder street grid: every 88 m, bent by a smooth noise field so streets curve;
-     every 4th line is a wider main street that is always kept; about 18% of the others are dropped to make
-     bigger blocks (district street patterns replace this in step 4e). Switched off for now (TOWN_GRID).
-   Every road is a polyline of 7 points with a width. Town roads (the grid, and history roads inside a town)
-   have curbs, sidewalks, buildings and street lights; country roads lie level with the fields.
+   - town streets, where the history built town blocks (src/gen/districts.js). Each town has one lattice of
+     points LAT m apart, turned to line up with the main road nearest its middle. Each street pattern uses
+     every n-th lattice line, so streets of different patterns meet at shared points (or end at the edge of
+     their area). A street is kept where the block under its middle belongs to that town and pattern:
+       old core   (blocks first built before year 500)  every line (40 m), points moved a lot, many dropped
+       grid era   (500-750)                             every 2nd (80 m), straight, every 4th a main street
+       late era   (750 on)                              every 3rd (120 m), streets bow in gentle curves
+       industry   (any year)                            every 4th (160 m), few streets
+     A lattice point is moved by an amount set by the pattern of the block under it (so every street that
+     meets there agrees on where it is); late streets also bow between their ends. Both ends of a street must
+     be on or next to the town's blocks. A street that would run alongside one of the history's roads is left
+     out (the road is the main street).
+   Every road is a polyline of 7 points with a width. Town roads (town streets, and history roads through town
+   blocks) have curbs, sidewalks, buildings and street lights; country roads lie level with the fields.
    Each chunk is built from the seed, the history and its own position only: the same in any order. */
-import { h2, hf } from '../world/hash.js';
+import { h2, hf, rnd } from '../world/hash.js';
 import { vnoise, salt } from './noise.js';
 
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
-const TOWN_GRID = false;                                     // the placeholder town street grid
+// street patterns: every n-th lattice line, how far lattice points move (m), how far streets bow between
+// their ends (m), share of streets dropped, width (m), main street every major-th line
+const LAT = 40;
+const PATTERNS = [
+  { name: 'old core', n: 1, A: 9, bow: 3, drop: 0.32, w: 7 },
+  { name: 'grid', n: 2, A: 1.5, bow: 0, drop: 0.08, w: 9, major: 4 },
+  { name: 'late', n: 3, A: 8, bow: 22, drop: 0.2, w: 8 },
+  { name: 'industry', n: 4, A: 3, bow: 0, drop: 0.15, w: 10 },
+];
+/** a town block's street pattern, from its district and the year it was first built */
+export const patternOf = (zone, born) => zone === 3 ? 3 : born < 500 ? 0 : born < 750 ? 1 : 2;
 /** a number key for a pair of integers (faster than text keys like "3,-2") */
 export const key2 = (x, z) => (x + 524288) * 1048576 + (z + 524288);
 export const SIDEWALK = 3;                                   // sidewalk width beyond each road edge (m)
@@ -21,40 +40,98 @@ export const SIDEWALK = 3;                                   // sidewalk width b
 // widths (m) of the history's road classes: farm track, road, main road
 const CLASS_W = [4, 7, 10], CLASS_TYPE = [2, 3, 1];
 
-/** The history's roads and towns, as the road generator needs them (plain data, so it can go to a worker).
+/** The history's roads, towns and town blocks (as they stand at the end), as the road and building generators
+ *  need them: plain data, so it can go to a worker.
+ *  towns: [x, z, radius, people, street angle, settlement id, x0, z0, x1, z1 (the box around its blocks)]
+ *  blocks: every standing block: key (j x res + i), district, storeys, owner, year first built, year last built
  *  @param {any} history */
 export function roadNetwork(history){
-  const towns = [];
-  if (history) for (const s of history.settlements){
+  const towns = [], paths = history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls })) : [];
+  if (!history) return { towns, paths, blocks: null };
+  const BK = history.blocks;
+  // blocks still standing at the end
+  let blocks = null;
+  const box = new Map();
+  if (BK){
+    const v = BK.snap[BK.snap.length - 1], n = v.reduce((a, c) => a + (c ? 1 : 0), 0);
+    blocks = { res: BK.res, half: BK.half, size: BK.size, key: new Int32Array(n), zone: new Uint8Array(n), st: new Uint8Array(n),
+      owner: new Int32Array(n), born: new Int16Array(n), built: new Int16Array(n) };
+    const last = new Int16Array(BK.n).fill(-1);
+    for (let e = 0; e < BK.evB.length; e++) last[BK.evB[e]] = BK.evS[e];
+    let q = 0;
+    for (let b = 0; b < v.length; b++){
+      if (!v[b]) continue;
+      blocks.key[q] = BK.j[b] * BK.res + BK.i[b]; blocks.zone[q] = v[b] >> 6; blocks.st[q] = v[b] & 63; blocks.owner[q] = BK.owner[b];
+      blocks.born[q] = history.year[BK.born[b]]; blocks.built[q] = history.year[last[b] >= 0 ? last[b] : BK.born[b]];
+      const x = -BK.half + BK.i[b] * BK.size, z = -BK.half + BK.j[b] * BK.size;
+      let bx = box.get(BK.owner[b]); if (!bx){ bx = [x, z, x, z]; box.set(BK.owner[b], bx); }
+      bx[0] = Math.min(bx[0], x); bx[1] = Math.min(bx[1], z); bx[2] = Math.max(bx[2], x + BK.size); bx[3] = Math.max(bx[3], z + BK.size);
+      q++;
+    }
+  }
+  // road points in 1 km buckets, for each town's street angle (the direction of the road nearest its middle)
+  const pb = new Map();
+  for (const p of paths){
+    if (p.cls < 1) continue;
+    for (let n = 0; n + 1 < p.pts.length / 2; n++){
+      const x = p.pts[2 * n], z = p.pts[2 * n + 1], k = key2(Math.floor(x / 1000), Math.floor(z / 1000));
+      let l = pb.get(k); if (!l){ l = []; pb.set(k, l); } l.push(x, z, p.pts[2 * n + 2] - x, p.pts[2 * n + 3] - z);
+    }
+  }
+  for (const s of history.settlements){
     if (!s.alive) continue;
+    const bx = box.get(s.id);
     // the town's extent: its blocks (from age 4), else the old-town density of 3000 people per km2
     const area = s.areaAt ? s.areaAt[s.areaAt.length - 1] : 0;
     const r = (area > 0 ? Math.sqrt(area / Math.PI) : Math.sqrt(s.pop / (3000 * Math.PI))) * 1000;
-    if (r < 60) continue;                                   // hamlets: no street grid
-    towns.push([s.x * 1000, s.z * 1000, r * 1.25 + 60, s.pop]);
+    if (r < 60 && !bx) continue;
+    const x = s.x * 1000, z = s.z * 1000;
+    let ang = 0, bd = 1e18;
+    for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++){
+      const l = pb.get(key2(Math.floor(x / 1000) + a, Math.floor(z / 1000) + b)); if (!l) continue;
+      for (let n = 0; n < l.length; n += 4){ const d = (l[n] - x) ** 2 + (l[n + 1] - z) ** 2; if (d < bd){ bd = d; ang = Math.atan2(l[n + 3], l[n + 2]); } }
+    }
+    towns.push([x, z, r * 1.25 + 60, s.pop, ang, s.id, ...(bx || [x - r, z - r, x + r, z + r])]);
   }
-  return { towns, paths: history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls })) : [] };
+  return { towns, paths, blocks };
 }
 
 /** @param {import('./world.js').World} world @param {{ towns: number[][], paths: { pts: Float32Array, cls: number }[] }} [net] */
 export function makeRoads(world, net = { towns: [], paths: [] }){
-  const seed = world.seed, sKeep = salt(seed, 11), sX = salt(seed, 12), sZ = salt(seed, 13), sId = salt(seed, 14);
-  const WA = 34, WS = 640;                                   // bend: up to 34 m, over ~640 m
-  /** the bent position of the unbent grid point (qx, qz) @returns {[number, number]} */
-  const bend = (qx, qz) => [qx + WA * (2 * vnoise(qx / WS, qz / WS, sX) - 1), qz + WA * (2 * vnoise(qx / WS, qz / WS, sZ) - 1)];
-  const major = (line) => ((line % 4) + 4) % 4 === 0;
+  const seed = world.seed, sId = salt(seed, 14);
+
   const cache = new Map();
-  // towns in 1 km buckets, for "is this point in a town?"
-  const tb = new Map();
+  // towns in 1 km buckets (by the box around their blocks), for "which towns reach here?"
+  const tb = new Map(), byId = new Map();
   for (const t of net.towns){
-    const n = Math.ceil(t[2] / 1000);
-    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++){
-      const k = key2(Math.floor(t[0] / 1000) + a, Math.floor(t[1] / 1000) + b); let l = tb.get(k); if (!l){ l = []; tb.set(k, l); } l.push(t);
+    byId.set(t[5], t);
+    for (let b = Math.floor(t[7] / 1000); b <= Math.floor(t[9] / 1000); b++) for (let a = Math.floor(t[6] / 1000); a <= Math.floor(t[8] / 1000); a++){
+      const k = key2(a, b); let l = tb.get(k); if (!l){ l = []; tb.set(k, l); } l.push(t);
     }
   }
-  const inTown = (x, z) => (tb.get(key2(Math.floor(x / 1000), Math.floor(z / 1000))) || []).some((t) => Math.hypot(x - t[0], z - t[1]) < t[2]);
-  /** the town at (x, z) ([x, z, radius, people]), or null */
-  const townAt = (x, z) => (tb.get(key2(Math.floor(x / 1000), Math.floor(z / 1000))) || []).find((t) => Math.hypot(x - t[0], z - t[1]) < t[2]) || null;
+  // the town blocks: grid key -> index
+  const BL = net.blocks, blockAt = new Map();
+  if (BL) for (let q = 0; q < BL.key.length; q++) blockAt.set(BL.key[q], q);
+  /** the town block at (x, z), or -1 */
+  const block = (x, z) => {
+    if (!BL) return -1;
+    const i = Math.floor((x + BL.half) / BL.size), j = Math.floor((z + BL.half) / BL.size);
+    if (i < 0 || j < 0 || i >= BL.res || j >= BL.res) return -1;
+    const q = blockAt.get(j * BL.res + i);
+    return q === undefined ? -1 : q;
+  };
+  // in town: on a block or next to one (a street runs along the edge of its blocks)
+  const inTown = (x, z) => {
+    if (!BL) return (tb.get(key2(Math.floor(x / 1000), Math.floor(z / 1000))) || []).some((t) => Math.hypot(x - t[0], z - t[1]) < t[2]);
+    for (const [a, b] of [[0, 0], [12, 0], [-12, 0], [0, 12], [0, -12]]) if (block(x + a, z + b) >= 0) return true;
+    return false;
+  };
+  /** the town at (x, z) ([x, z, radius, people, ...]), or null */
+  const townAt = (x, z) => {
+    const q = block(x, z);
+    if (q >= 0) return byId.get(BL.owner[q]) || null;
+    return (tb.get(key2(Math.floor(x / 1000), Math.floor(z / 1000))) || []).find((t) => Math.hypot(x - t[0], z - t[1]) < t[2]) || null;
+  };
   // the history's roads, resampled every 24 m and cut into pieces of 6 segments, by chunk of their first point
   const pieces = new Map(), sP = salt(seed, 15), STEP = 24;
   net.paths.forEach((path, pi) => {
@@ -80,31 +157,98 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
       let l = pieces.get(k); if (!l){ l = []; pieces.set(k, l); } l.push(e);
     }
   });
-  /** roads whose first grid point lies in chunk (cx, cz) @returns {Road[]} */
+  // history road pieces' segments in 64 m buckets, to keep town streets from doubling them
+  const segB = new Map();
+  for (const l of pieces.values()) for (const e of l){
+    const p = e.pts;
+    for (let k = 0; k < SAMPLES; k++){
+      const mx = (p[2 * k] + p[2 * k + 2]) / 2, mz = (p[2 * k + 1] + p[2 * k + 3]) / 2, sk = key2(Math.floor(mx / 64), Math.floor(mz / 64));
+      let b = segB.get(sk); if (!b){ b = []; segB.set(sk, b); } b.push(mx, mz, p[2 * k + 2] - p[2 * k], p[2 * k + 3] - p[2 * k + 1]);
+    }
+  }
+  /** a history road runs along (within dist m of (x, z), within 30 degrees of direction (dx, dz))? */
+  function alongRoad(x, z, dx, dz, dist){
+    const L = Math.hypot(dx, dz) || 1, n = Math.ceil(dist / 64);
+    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++){
+      const l = segB.get(key2(Math.floor(x / 64) + a, Math.floor(z / 64) + b)); if (!l) continue;
+      for (let q = 0; q < l.length; q += 4){
+        if (Math.hypot(l[q] - x, l[q + 1] - z) > dist) continue;
+        const c = Math.abs(l[q + 2] * dx + l[q + 3] * dz) / (L * (Math.hypot(l[q + 2], l[q + 3]) || 1));
+        if (c > 0.866) return true;
+      }
+    }
+    return false;
+  }
+  const sNode = salt(seed, 40), sBow = salt(seed, 41);
+  // a town's frame: (u, v) metres along and across its street angle, from its middle
+  const toWorld = (t, u, v) => { const c = Math.cos(t[4]), sn = Math.sin(t[4]); return [t[0] + u * c - v * sn, t[1] + u * sn + v * c]; };
+  /** lattice point (k, m) of town t, moved by the pattern of the block under it @returns {[number, number]} (u, v) */
+  function node(t, k, m){
+    const [x, z] = toWorld(t, k * LAT, m * LAT), q = block(x, z);
+    const A = q >= 0 ? PATTERNS[patternOf(BL.zone[q], BL.born[q])].A : 3;
+    const hN = h2(k + t[5] * 7919, m, sNode);
+    return [k * LAT + A * (2 * rnd(hN, 1) - 1), m * LAT + A * (2 * rnd(hN, 2) - 1)];
+  }
+  // on or next to the town's blocks (within one block)?
+  const nearTown = (t, x, z) => { for (const [a, b] of [[0, 0], [40, 0], [-40, 0], [0, 40], [0, -40]]){ const q = block(x + a, z + b); if (q >= 0 && BL.owner[q] === t[5]) return true; } return false; };
+  /** town streets whose first point lies in chunk (cx, cz) */
+  function townStreets(cx, cz, out){
+    if (!BL) return;
+    const x0 = cx * ROAD_CHUNK, z0 = cz * ROAD_CHUNK, x1 = x0 + ROAD_CHUNK, z1 = z0 + ROAD_CHUNK;
+    const seen = new Set();
+    for (let b = Math.floor(z0 / 1000); b <= Math.floor((z1 - 1) / 1000); b++) for (let a = Math.floor(x0 / 1000); a <= Math.floor((x1 - 1) / 1000); a++)
+    for (const t of tb.get(key2(a, b)) || []){
+      if (seen.has(t[5]) || t[6] > x1 || t[8] < x0 || t[7] > z1 || t[9] < z0) continue;
+      seen.add(t[5]);
+      const c = Math.cos(t[4]), sn = Math.sin(t[4]);
+      // the chunk's corners in the town's frame
+      let u0 = 1e9, u1 = -1e9, v0 = 1e9, v1 = -1e9;
+      for (const [x, z] of [[x0, z0], [x1, z0], [x0, z1], [x1, z1]]){
+        const u = (x - t[0]) * c + (z - t[1]) * sn, v = -(x - t[0]) * sn + (z - t[1]) * c;
+        u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v);
+      }
+      const pad = 12, nodes = new Map();
+      const nodeC = (k, m) => { const key = key2(k, m); let p = nodes.get(key); if (!p){ p = node(t, k, m); nodes.set(key, p); } return p; };
+      const k0 = Math.floor((u0 - pad) / LAT), k1 = Math.ceil((u1 + pad) / LAT), m0 = Math.floor((v0 - pad) / LAT), m1 = Math.ceil((v1 + pad) / LAT);
+      PATTERNS.forEach((P, f) => {
+        const n = P.n, sK = salt(seed, 50 + f);
+        for (let m = Math.ceil(m0 / n) * n; m <= m1; m += n) for (let k = Math.ceil(k0 / n) * n; k <= k1; k += n) for (let dir = 0; dir < 2; dir++){
+          // dir 0: from lattice point (k, m) to (k + n, m); dir 1: to (k, m + n)
+          const a = nodeC(k, m), [ax, az] = toWorld(t, a[0], a[1]);
+          if (Math.floor(ax / ROAD_CHUNK) !== cx || Math.floor(az / ROAD_CHUNK) !== cz) continue;
+          const line = (dir === 0 ? m : k) / n;
+          const isMajor = !!P.major && ((line % P.major) + P.major) % P.major === 0;
+          const hS = h2(k * 2 + dir + t[5] * 7919, m, sK);
+          if (!isMajor && hf(hS) < P.drop) continue;
+          const [mx, mz] = toWorld(t, (k + (dir === 0 ? n / 2 : 0)) * LAT, (m + (dir === 1 ? n / 2 : 0)) * LAT);
+          const q = block(mx, mz);
+          if (q < 0 || BL.owner[q] !== t[5] || patternOf(BL.zone[q], BL.born[q]) !== f) continue;
+          const b = dir === 0 ? nodeC(k + n, m) : nodeC(k, m + n), [bx, bz] = toWorld(t, b[0], b[1]);
+          if (!nearTown(t, ax, az) || !nearTown(t, bx, bz)) continue;
+          // the points between the ends: straight, or bowed to one side (late streets, a little in old ones)
+          const along = (dir === 0 ? k : m) / n + 0.5, bow = P.bow * (2 * vnoise(along / 3.3, line * 1.7 + 0.5, sBow) - 1), du = b[0] - a[0], dv = b[1] - a[1], L = Math.hypot(du, dv) || 1;
+          const pts = new Float32Array((SAMPLES + 1) * 2);
+          let onLand = true;
+          for (let s2 = 0; s2 <= SAMPLES; s2++){
+            const tt = s2 / SAMPLES, o = bow * Math.sin(Math.PI * tt);
+            const [x, z] = toWorld(t, a[0] + du * tt - dv / L * o, a[1] + dv * tt + du / L * o);
+            if (!world.isLand(x, z)){ onLand = false; break; }
+            pts[2 * s2] = x; pts[2 * s2 + 1] = z;
+          }
+          if (!onLand) continue;
+          if (alongRoad((ax + bx) / 2, (az + bz) / 2, bx - ax, bz - az, n * LAT * 0.4)) continue;
+          out.push({ id: h2(k * 4 + dir * 2 + f * 8, m, sId + t[5]), pts, w: isMajor ? P.w + 4 : P.w, major: isMajor, type: isMajor ? 1 : 0, town: true, pattern: f });
+        }
+      });
+    }
+  }
+  /** roads whose first point lies in chunk (cx, cz) @returns {Road[]} */
   function chunk(cx, cz){
     const key = key2(cx, cz);
     let c = cache.get(key);
     if (c) return c;
     c = [];
-    const i0 = Math.ceil(cx * ROAD_CHUNK / GRID), i1 = Math.ceil((cx + 1) * ROAD_CHUNK / GRID);
-    const j0 = Math.ceil(cz * ROAD_CHUNK / GRID), j1 = Math.ceil((cz + 1) * ROAD_CHUNK / GRID);
-    if (TOWN_GRID) for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) for (let dir = 0; dir < 2; dir++){
-      const isMajor = major(dir === 0 ? j : i);
-      if (!isMajor && hf(h2(i * 2 + dir, j, sKeep)) > 0.82) continue;
-      // the grid only inside towns
-      const [mx, mz] = bend((i + (dir === 0 ? 0.5 : 0)) * GRID, (j + (dir === 1 ? 0.5 : 0)) * GRID);
-      if (!inTown(mx, mz)) continue;
-      const pts = new Float32Array((SAMPLES + 1) * 2);
-      let onLand = true;
-      for (let k = 0; k <= SAMPLES; k++){
-        const t = k / SAMPLES;
-        const [x, z] = bend((i + (dir === 0 ? t : 0)) * GRID, (j + (dir === 1 ? t : 0)) * GRID);
-        if (!world.isLand(x, z)){ onLand = false; break; }
-        pts[2 * k] = x; pts[2 * k + 1] = z;
-      }
-      if (!onLand) continue;
-      c.push({ id: h2(i * 2 + dir, j, sId), pts, w: isMajor ? 14 : 9, major: isMajor, type: isMajor ? 1 : 0, town: true });
-    }
+    townStreets(cx, cz, c);
     for (const e of pieces.get(key) || []) c.push(e);
     cache.set(key, c);
     if (cache.size > 4096) cache.delete(cache.keys().next().value);
@@ -142,7 +286,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) for (const e of chunk(cx + dx, cz + dz)) out.push(e);
     return out;
   }
-  return { chunk, around, index, bend, townAt, cached: (cx, cz) => cache.has(key2(cx, cz)) };
+  return { chunk, around, index, townAt, block, blocks: BL, cached: (cx, cz) => cache.has(key2(cx, cz)) };
 }
 
 /** distance from (x, z) to a road's centre line @param {Road} e @param {number} x @param {number} z */
