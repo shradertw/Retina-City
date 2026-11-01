@@ -34,10 +34,18 @@ export function initMap(){
   const ctx = cv.getContext('2d');
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
-  // the town blocks overlay (from year 650) can be hidden; the choice is remembered
-  const blocksBox = /** @type {HTMLInputElement} */ (document.getElementById('mapBlocks'));
-  try { blocksBox.checked = localStorage.getItem('retina-map-blocks') !== '0'; } catch (_){ }
-  blocksBox.addEventListener('change', () => { try { localStorage.setItem('retina-map-blocks', blocksBox.checked ? '1' : '0'); } catch (_){ } });
+  // what the map shows (the Show menu); the choices are remembered
+  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
+    ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
+  const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
+  try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
+  const filterBox = document.getElementById('mapFilter'), filterList = document.getElementById('mapFilterList');
+  for (const [k, label] of SHOW){
+    const l = document.createElement('label'), c = document.createElement('input');
+    c.type = 'checkbox'; c.checked = !!show[k];
+    c.addEventListener('change', () => { show[k] = c.checked; try { localStorage.setItem('retina-map-show', JSON.stringify(show)); } catch (_){ } });
+    l.append(c, ' ' + label); filterList.append(l);
+  }
   let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1;
   const ageOf = (h, s) => { let a = 0, s0 = 0; while (a < h.ages.length - 1 && s > s0 + h.ages[a].steps){ s0 += h.ages[a].steps; a++; } return h.ages[a]; };
   const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + h.year[step] + ' · ' + ageOf(h, step).name.toLowerCase(); };
@@ -48,7 +56,7 @@ export function initMap(){
     if (playing && step >= current.history.steps) step = 0;
     playT = performance.now();
   });
-  for (const el of [timeBox, yearIn, playBtn, blocksBox]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
+  for (const el of [timeBox, yearIn, playBtn, filterBox]) el.addEventListener('pointerdown', (e) => e.stopPropagation());
   let open = false, cx = 0, cz = 0, scale = 0.25, landImg = null, landFor = null, landLayer = -1, drag = null, layer = 0;
   const W = () => cv.width, H = () => cv.height;
   const dpr = () => Math.min(window.devicePixelRatio || 1, 2);
@@ -178,11 +186,11 @@ export function initMap(){
         g.putImageData(img, 0, 0);
       }
       ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(farmImg, toX(-F.half), toY(F.res * F.cell - F.half), F.res * F.cell * scale * d, F.res * F.cell * scale * d);
+      if (show.farms) ctx.drawImage(farmImg, toX(-F.half), toY(F.res * F.cell - F.half), F.res * F.cell * scale * d, F.res * F.cell * scale * d);
       // town blocks (from year 650), once they are big enough on screen to tell apart
       const BK = hist.blocks;
       let blocksShown = false;
-      if (blocksBox.checked && BK && step >= BK.from && BK.size * scale * d >= 1.2){
+      if (show.blocks && BK && step >= BK.from && BK.size * scale * d >= 1.2){
         blocksShown = true;
         const v = BK.snap[step - BK.from], bp = BK.size * scale * d, gap = bp > 6 ? bp * 0.12 : 0, paths = [];
         for (let q = 0; q < 16; q++) paths.push(null);
@@ -198,6 +206,7 @@ export function initMap(){
       // roads by class: farm tracks, roads, main roads (wider on screen when zoomed in)
       const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 12, 2.2]];
       for (let cls = scale < 0.02 ? 1 : 0; cls < 3; cls++){      // farm tracks only once zoomed in a little
+        if (cls === 0 ? !show.tracks : !show.roads) continue;
         const [col, wm, wmin] = ROAD_STYLE[cls];
         ctx.strokeStyle = col; ctx.lineWidth = Math.max(wmin * d, wm * scale * d);
         ctx.setLineDash(cls === 0 && scale < 0.5 ? [3 * d, 2 * d] : []);
@@ -213,7 +222,7 @@ export function initMap(){
       ctx.setLineDash([]);
       // distribution centres: small dark squares
       ctx.fillStyle = '#3b2a18'; ctx.strokeStyle = '#f0d9a8'; ctx.lineWidth = 1 * d;
-      for (const c of hist.centres){
+      if (show.centres) for (const c of hist.centres){
         if (c.born > step) continue;
         const sz = Math.max(3 * d, 60 * scale * d), sx = toX(c.x * 1000), sy = toY(c.z * 1000);
         ctx.fillRect(sx - sz / 2, sy - sz / 2, sz, sz); ctx.strokeRect(sx - sz / 2, sy - sz / 2, sz, sz);
@@ -227,7 +236,8 @@ export function initMap(){
         const r = Math.max((area > 0 ? Math.sqrt(area / Math.PI) : radiusKm(pop)) * 1000 * scale * d, 2 * d), sx = toX(st.xAt[step] * 1000), sz = toY(st.zAt[step] * 1000);
         if (sx < -r || sz < -r || sx > W() + r || sz > H() + r) continue;
         // its blocks are drawn, or hidden on purpose (the land shows, with a dot for the town's middle)
-        if (area > 0 && (blocksShown || !blocksBox.checked)){
+        if (!show.towns){ labels.push([pop, st.name, sx, sz, 2 * d]); continue; }
+        if (area > 0 && (blocksShown || !show.blocks)){
           if (!blocksShown){ ctx.fillStyle = '#f4ead2'; ctx.strokeStyle = 'rgba(20,14,8,0.8)'; ctx.beginPath(); ctx.arc(sx, sz, 3 * d, 0, 6.2832); ctx.fill(); ctx.stroke(); }
           labels.push([pop, st.name, sx, sz, blocksShown ? r * 0.4 : 3 * d]); continue;
         }
@@ -241,7 +251,7 @@ export function initMap(){
       labels.sort((a, b) => b[0] - a[0]);
       const placed = [];
       ctx.fillStyle = '#f4ead2'; ctx.strokeStyle = 'rgba(10,8,6,0.85)'; ctx.lineWidth = 3 * d;
-      for (const [pop, name, sx, sz, r] of labels){
+      if (show.names) for (const [pop, name, sx, sz, r] of labels){
         const tx = sx + r + 3 * d, ty = sz + 3 * d, tw = ctx.measureText(name).width;
         if (placed.some(([x, y, w2]) => Math.abs(y - ty) < 12 * d && tx < x + w2 && x < tx + tw)) continue;
         if (placed.length > 120) break;
@@ -249,7 +259,7 @@ export function initMap(){
       }
     }
     // metal deposits
-    if (LAYERS[layer].key === 'metals'){
+    if (LAYERS[layer].key === 'metals' && show.metals){
       for (const m of w.metals){
         ctx.fillStyle = METAL_COL[m.type]; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 1;
         ctx.beginPath(); ctx.arc(toX(m.x), toY(m.z), Math.max(2.5, m.size * 300 * scale) * d, 0, 6.2832); ctx.fill(); ctx.stroke();
@@ -265,10 +275,12 @@ export function initMap(){
     }
     // you: an arrow pointing where you look
     const px = toX(state.pos[0]), pz = toY(state.pos[2]), a = state.yaw, s = 9 * d;
+    if (show.you){
     ctx.save(); ctx.translate(px, pz); ctx.rotate(a);
     ctx.fillStyle = '#f0b25c'; ctx.strokeStyle = '#0b0e10'; ctx.lineWidth = 2 * d;
     ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * 0.6, s * 0.7); ctx.lineTo(0, s * 0.35); ctx.lineTo(-s * 0.6, s * 0.7); ctx.closePath();
     ctx.stroke(); ctx.fill(); ctx.restore();
+    }
     // scale bar
     const nice = [10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000];
     const m = nice.find((v) => v * scale >= 90) || 50000, bw = m * scale * d, by = H() - 28 * d, bx = 20 * d;
@@ -317,7 +329,7 @@ export function initMap(){
         + (best.died && best.died <= step ? '' : best.died ? (best.mergedInto >= 0 ? ` · merges into ${h.settlements[best.mergedInto].name} in year ${h.year[best.died]}` : ` · gone by year ${h.year[best.died]}`) : '');
       // a town block here?
       const BK = h.blocks;
-      if (blocksBox.checked && BK && step >= BK.from){
+      if (show.blocks && BK && step >= BK.from){
         if (blockFor !== BK){ blockFor = BK; blockKey = new Map(); for (let b = 0; b < BK.n; b++) blockKey.set(BK.j[b] * BK.res + BK.i[b], b); }
         const b = blockKey.get(Math.floor((z + BK.half) / BK.size) * BK.res + Math.floor((x + BK.half) / BK.size)), v = BK.snap[step - BK.from];
         if (b !== undefined && b < v.length && v[b]){
