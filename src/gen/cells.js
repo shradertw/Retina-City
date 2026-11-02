@@ -11,13 +11,17 @@
    Texel layouts (RGBA float):
      building  (centre x, z, frontage direction x, z)   the frontage direction is turned so that its left-hand
                (half frontage, half depth, top, podium)  normal (-z, x) points away from the road: the front
-               (kind, variety, door offset, door code)   face is at local z = -half depth. Door code -1 = none.
-     light     (pole x, z, arm direction x, z)
+               (kind, light + variety, door offset, door code)   face is at local z = -half depth. Door code -1 = none.
+               kind: 0 brick, 1 concrete, 2 glass tower on a podium, 3 timber frame, 4 rough stone. Variety 0-1;
+               light (the whole part): 0 no one lives there (dark at night), 1 candles and oil lamps, 2 electric.
+     light     (pole x, z, arm direction x, z): the arm direction is a unit vector for an electric light on an
+               8 m pole, half that for a gas lamp on a 3.6 m post (no arm: the lantern is on the post)
      road      (start x, z, end x, z)
                (half width, distance along the road at the start, road length, kind)
-               kind: 0 street, 1 main street or main road, 2 farm track, 3 road; + 8 for a country road
-               (level with the fields: no curb, no sidewalk); + 16 x the junction control at the start, + 64 x
-               at the end (0 none, 1 stop, 2 signals, 3 roundabout: see src/gen/streets.js)
+               kind: 0 street, 1 main street or main road, 2 farm track, 3 road; + 8 for a road level with the
+               ground (no curb, no sidewalk: country roads, and town streets before sidewalks); + 16 x the junction
+               control at the start, + 64 x at the end (0 none, 1 stop, 2 signals, 3 roundabout: see
+               src/gen/streets.js); + 256 x the surface (0 dirt, 1 gravel, 2 stone setts, 3 asphalt)
      cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, tops)
                counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings
                tops: the cell's tallest top and its 128 m block's (4 x 4 cells), in quarter metres rounded
@@ -58,7 +62,7 @@ export function makeCells(roads, blocks){
         const s = b.side, ux = b.ux * s, uz = b.uz * s;
         const ex = Math.abs(ux) * b.hx + Math.abs(uz) * b.hz, ez = Math.abs(uz) * b.hx + Math.abs(ux) * b.hz;
         const podH = b.kind === 2 ? b.podH : 0, tp = podH + b.h;
-        const rec = [b.x, b.z, ux, uz, b.hx, b.hz, tp, podH, b.kind, rnd(b.hash, 10), b.door ? b.door.off * s : 0, b.door ? b.door.code : -1];
+        const rec = [b.x, b.z, ux, uz, b.hx, b.hz, tp, podH, b.kind, Math.min(rnd(b.hash, 10), 0.999) + (b.light === undefined ? 2 : b.light), b.door ? b.door.off * s : 0, b.door ? b.door.code : -1];
         visit(b.x - ex - PAD, b.z - ez - PAD, b.x + ex + PAD, b.z + ez + PAD, (i, j) => {
           occ[j * G + i] = 1;
           const k = inner(i, j);
@@ -68,7 +72,7 @@ export function makeCells(roads, blocks){
       for (const l of ch.lamps){
         const hx = l.x + l.ax * 2.5, hz = l.z + l.az * 2.5;
         const x0 = Math.min(l.x, hx) - 0.5, x1 = Math.max(l.x, hx) + 0.5, z0 = Math.min(l.z, hz) - 0.5, z1 = Math.max(l.z, hz) + 0.5;
-        const rec = [l.x, l.z, l.ax, l.az];
+        const ak = l.gas ? 0.5 : 1, rec = [l.x, l.z, l.ax * ak, l.az * ak];
         visit(x0 - PAD, z0 - PAD, x1 + PAD, z1 + PAD, (i, j) => {
           occ[j * G + i] = 1;
           const k = inner(i, j);
@@ -87,7 +91,7 @@ export function makeCells(roads, blocks){
       let s0 = 0;
       for (let k = 0; k < SAMPLES; k++){
         const ax = p[2 * k], az = p[2 * k + 1], bx = p[2 * k + 2], bz = p[2 * k + 3];
-        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town ? 0 : 8) + 16 * (e.jc || 0)];
+        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town && e.walk !== false ? 0 : 8) + 16 * (e.jc || 0) + 256 * (e.surf === undefined ? 3 : e.surf)];
         s0 += Math.hypot(bx - ax, bz - az);
         visit(Math.min(ax, bx) - reach, Math.min(az, bz) - reach, Math.max(ax, bx) + reach, Math.max(az, bz) + reach, (i, j) => {
           const c = inner(i, j);
@@ -128,7 +132,7 @@ export function makeCells(roads, blocks){
       for (let n = 0; n < nR; n++){ data.set(lr[k][n], off * 4); off += 2; }
     }
     const own = blocks.chunk(cx, cz).lamps, lamps = new Float32Array(own.length * 4);
-    own.forEach((l, n) => lamps.set([l.x, l.z, l.ax, l.az], n * 4));
+    own.forEach((l, n) => { const ak = l.gas ? 0.5 : 1; lamps.set([l.x, l.z, l.ax * ak, l.az * ak], n * 4); });
     return { cx, cz, cells, data, lamps, used: off, ms: performance.now() - t0 };
   }
   return { pack };

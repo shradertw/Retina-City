@@ -20,6 +20,7 @@
    Each chunk is built from the seed, the history and its own position only: the same in any order. */
 import { h2, hf, rnd } from '../world/hash.js';
 import { vnoise, salt } from './noise.js';
+import { TECH_INDEX } from './tech.js';
 
 export const ROAD_CHUNK = 512, GRID = 88, SAMPLES = 6;
 // street patterns: every n-th lattice line, how far lattice points move (m), how far streets bow between
@@ -37,8 +38,29 @@ export const patternOf = (zone, born) => zone === 3 ? 3 : born < 500 ? 0 : born 
 export const key2 = (x, z) => (x + 524288) * 1048576 + (z + 524288);
 export const SIDEWALK = 3;                                   // sidewalk width beyond each road edge (m)
 export const SIDEWALK_MAIN = 4.5;                            // ... along roads wider than 18 m (main streets)
-/** the sidewalk width along road e (the shader uses the same rule: half width over 9 m) */
-export const sidewalkOf = (e) => (e.w > 18 ? SIDEWALK_MAIN : SIDEWALK);
+export const VERGE = 1;                                      // the strip kept clear beside a street with no sidewalk
+/** the sidewalk width along road e (the shader uses the same rule: half width over 9 m; none on old streets) */
+export const sidewalkOf = (e) => (e.walk === false ? VERGE : e.w > 18 ? SIDEWALK_MAIN : SIDEWALK);
+
+/* What a road is made of and what it has beside it, from what is known where it runs (the history's knowledge
+   map: each settlement's at the end; land between towns takes the nearest town's):
+     surface   0 dirt, 1 gravel, 2 stone setts, 3 asphalt
+               town streets: dirt, setts once masonry is known, asphalt with cars
+               country roads: dirt, gravel once the wheel is known, asphalt with cars; farm tracks: dirt, gravel with cars
+     walk      curbs and sidewalks: town streets, once printing is known (before that, level with the ground)
+     lamp      street lights along streets with sidewalks: 1 gas lamps (steam), 2 electric (electricity), 0 none */
+const KB = (k) => 1 << TECH_INDEX[k];
+const K_MASON = KB('masonry'), K_WHEEL = KB('wheel'), K_PRINT = KB('printing'), K_STEAM = KB('steam'), K_ELEC = KB('electricity'), K_CAR = KB('car');
+export const SURF_DIRT = 0, SURF_GRAVEL = 1, SURF_SETTS = 2, SURF_ASPHALT = 3;
+/** sets e.surf, e.walk and e.lamp from the knowledge mask where road e runs (-1: everything known) */
+export function dressRoad(e, know){
+  if (e.type === 2) e.surf = know & K_CAR ? SURF_GRAVEL : SURF_DIRT;
+  else if (e.town) e.surf = know & K_CAR ? SURF_ASPHALT : know & K_MASON ? SURF_SETTS : SURF_DIRT;
+  else e.surf = know & K_CAR ? SURF_ASPHALT : know & K_WHEEL ? SURF_GRAVEL : SURF_DIRT;
+  e.walk = e.town && e.type !== 2 && (know & K_PRINT) !== 0;
+  e.lamp = !e.walk ? 0 : know & K_ELEC ? 2 : know & K_STEAM ? 1 : 0;
+  return e;
+}
 
 /** @typedef {{ id: number, pts: Float32Array, w: number, major: boolean, type: number, town: boolean }} Road
  *  type: 0 street, 1 main street or main road, 2 farm track, 3 road */
@@ -63,7 +85,8 @@ export function roadNetwork(history){
   if (BK){
     const v = BK.snap[BK.snap.length - 1], n = v.reduce((a, c) => a + (c ? 1 : 0), 0);
     blocks = { res: BK.res, half: BK.half, size: BK.size, key: new Int32Array(n), zone: new Uint8Array(n), st: new Uint8Array(n),
-      owner: new Int32Array(n), born: new Int16Array(n), built: new Int16Array(n), ind: new Uint8Array(n) };
+      owner: new Int32Array(n), born: new Int16Array(n), built: new Int16Array(n), ind: new Uint8Array(n),
+      know: BK.know ? new Int32Array(n) : null, occ: BK.occ ? new Uint8Array(n) : null };
     const last = new Int16Array(BK.n).fill(-1);
     for (let e = 0; e < BK.evB.length; e++) last[BK.evB[e]] = BK.evS[e];
     let q = 0;
@@ -72,6 +95,7 @@ export function roadNetwork(history){
       blocks.key[q] = BK.j[b] * BK.res + BK.i[b]; blocks.zone[q] = v[b] >> 6; blocks.st[q] = v[b] & 63; blocks.owner[q] = BK.owner[b];
       blocks.born[q] = history.year[BK.born[b]]; blocks.built[q] = history.year[last[b] >= 0 ? last[b] : BK.built ? BK.built[b] : BK.born[b]];
       blocks.ind[q] = BK.ind ? BK.ind[b] : (v[b] >> 6) === 3 ? 1 : 0;
+      if (BK.know){ blocks.know[q] = BK.know[b]; blocks.occ[q] = BK.occ[b]; }
       const x = -BK.half + BK.i[b] * BK.size, z = -BK.half + BK.j[b] * BK.size;
       let bx = box.get(BK.owner[b]); if (!bx){ bx = [x, z, x, z]; box.set(BK.owner[b], bx); }
       bx[0] = Math.min(bx[0], x); bx[1] = Math.min(bx[1], z); bx[2] = Math.max(bx[2], x + BK.size); bx[3] = Math.max(bx[3], z + BK.size);
@@ -102,12 +126,20 @@ export function roadNetwork(history){
     }
     towns.push([x, z, r * 1.25 + 60, s.pop, ang, s.id, ...(bx || [x - r, z - r, x + r, z + r])]);
   }
-  return { towns, paths, blocks, streets: history.streets || null };
+  return { towns, paths, blocks, streets: history.streets || null, knowMap: history.knowMap || null };
 }
 
 /** @param {import('./world.js').World} world @param {{ towns: number[][], paths: { pts: Float32Array, cls: number }[] }} [net] */
 export function makeRoads(world, net = { towns: [], paths: [] }){
   const seed = world.seed, sId = salt(seed, 14);
+  // what is known at (x, z) (-1, everything, without a knowledge map: older histories)
+  const KM = net.knowMap;
+  const knowAt = (x, z) => {
+    if (!KM) return -1;
+    const i = Math.min(KM.res - 1, Math.max(0, Math.floor((x + KM.half) / KM.cell))), j = Math.min(KM.res - 1, Math.max(0, Math.floor((z + KM.half) / KM.cell)));
+    return KM.know[j * KM.res + i];
+  };
+  const dress = (e) => { const p = e.pts, m = SAMPLES; return dressRoad(e, knowAt(p[m], p[m + 1])); };
 
   const cache = new Map();
   // towns in 1 km buckets (by the box around their blocks), for "which towns reach here?"
@@ -162,7 +194,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
       const mid = SAMPLES;                                   // centre point of the piece
       const cls = path.clsAt ? path.clsAt[src[Math.min(s0 + 3, m - 1)]] : path.cls;   // (its class there, when it varies along the road)
       const town = inTown(pts[mid], pts[mid + 1]);
-      const e = { id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town };
+      const e = dress({ id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town });
       const k = key2(Math.floor(pts[0] / ROAD_CHUNK), Math.floor(pts[1] / ROAD_CHUNK));
       let l = pieces.get(k); if (!l){ l = []; pieces.set(k, l); } l.push(e);
     }
@@ -208,7 +240,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     const pts = new Float32Array((SAMPLES + 1) * 2);
     for (let q = 0; q <= SAMPLES; q++){ pts[2 * q] = ax + (bx - ax) * q / SAMPLES; pts[2 * q + 1] = az + (bz - az) * q / SAMPLES; }
     // junction controls at its ends (0 none, 1 stop, 2 signals, 3 roundabout), for the markings
-    const e = { id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true };
+    const e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true });
     const k = key2(Math.floor(ax / ROAD_CHUNK), Math.floor(az / ROAD_CHUNK));
     let l = simStreets.get(k); if (!l){ l = []; simStreets.set(k, l); } l.push(e);
   }
@@ -266,7 +298,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
           }
           if (!onLand) continue;
           if (alongRoad((ax + bx) / 2, (az + bz) / 2, bx - ax, bz - az, n * LAT * 0.4)) continue;
-          out.push({ id: h2(k * 4 + dir * 2 + f * 8, m, sId + t[5]), pts, w: isMajor ? P.wMain : P.w, major: isMajor, type: isMajor ? 1 : 0, town: true, pattern: f });
+          out.push(dress({ id: h2(k * 4 + dir * 2 + f * 8, m, sId + t[5]), pts, w: isMajor ? P.wMain : P.w, major: isMajor, type: isMajor ? 1 : 0, town: true, pattern: f }));
         }
       });
     }
@@ -315,7 +347,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     for (let dz = -r; dz <= r; dz++) for (let dx = -r; dx <= r; dx++) for (const e of chunk(cx + dx, cz + dz)) out.push(e);
     return out;
   }
-  return { chunk, around, index, townAt, block, blocks: BL, cached: (cx, cz) => cache.has(key2(cx, cz)) };
+  return { chunk, around, index, townAt, block, blocks: BL, knowAt, cached: (cx, cz) => cache.has(key2(cx, cz)) };
 }
 
 /** Is (x, z) within clear metres of a river? Rivers are cells of the world grid (water code 3); a river is

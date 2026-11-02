@@ -823,18 +823,26 @@ export function runSim(w, o = {}, onProgress = null){
   for (let id = 0; id < nb; id++){
     if (B.died[id]) continue;
     const i = Math.floor((B.x[id] + half) / BS), j = Math.floor((B.z[id] + half) / BS), k = j * BRES + i;
-    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, fac: 0, tag: B.tag[id], born: B.born[id], built: 0, mason: 0, st: 1 }; bmap.set(k, e); }
+    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, fac: 0, tag: B.tag[id], born: B.born[id], built: -1, mason: 0, st: 1, know: 0, all: 0, used: 0 }; bmap.set(k, e); }
     const kd = B.kind[id];
     if (kd === 2) e.crafts++; else if (kd === 3) e.shops++; else if (kd === FACTORY) e.fac++; else e.homes++;
-    e.st = Math.max(e.st, B.st[id]); e.built = Math.max(e.built, B.rebuilt[id] || B.born[id]);
+    // what its settlement knew when the block was last built (the latest building's), and how much of it is lived in
+    const bt = B.rebuilt[id] || B.born[id];
+    if (bt > e.built){ e.built = bt; const ks = T[B.tag[id]]; e.know = ks ? ks.knowAt[Math.min(bt, ks.died || frames)] || ks.knowAt[ks.born] : 0; }
+    e.st = Math.max(e.st, B.st[id]);
+    e.all++; if (!B.empty[id]) e.used++;
     e.born = Math.min(e.born, B.born[id]);
     if (B.hh[id] >= 0 && H[B.hh[id]].know & bit('masonry')) e.mason = 1;
   }
   const be = [...bmap.values()], bn = be.length;
   const blocks = { size: BS, res: BRES, half, from: frames, n: bn, i: new Int32Array(bn), j: new Int32Array(bn), owner: new Int32Array(bn),
-    born: new Int16Array(bn), built: new Int16Array(bn), ind: new Uint8Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0) };
+    born: new Int16Array(bn), built: new Int16Array(bn), ind: new Uint8Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0),
+    know: new Int32Array(bn), occ: new Uint8Array(bn) };
   be.forEach((e, q) => {
-    blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born; blocks.built[q] = e.built;
+    blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born; blocks.built[q] = Math.max(0, e.built);
+    // (occupied share 0-255: none where the settlement has no one left)
+    const ow = T[e.tag];
+    blocks.know[q] = e.know; blocks.occ[q] = ow && ow.alive && ow.pop > 0 ? Math.round(255 * e.used / Math.max(1, e.all)) : 0;
     // the block's district: whatever most of its buildings are (shops and offices, workshops or factories,
     // homes); its storeys: its tallest building's (homes and workshops before storeys counted: by masonry)
     const zone = e.shops >= Math.max(e.crafts + e.fac, e.homes) && e.shops ? 2 : e.crafts + e.fac >= e.homes ? 3 : 1;
@@ -842,6 +850,26 @@ export function runSim(w, o = {}, onProgress = null){
     const st = Math.max(e.st, zone === 2 ? 2 + e.mason : 1 + e.mason);
     blocks.snap[0][q] = zone << 6 | st;
   });
+  // what is known where, at the end: each land cell takes its settlement's knowledge (a gone settlement's at
+  // its death), and land no settlement holds takes that of the nearest land that is held (for the roads
+  // between towns). Used by the 3D view for road surfaces, sidewalks and street lights.
+  const kmap = new Int32Array(LN), kq = new Int32Array(LN), kseen = new Uint8Array(LN);
+  let qh = 0, qt = 0;
+  for (let c = 0; c < LN; c++){
+    const t = ltag[c];
+    if (t < 0) continue;
+    const ks = T[t]; kmap[c] = ks.knowAt[ks.died || frames] || ks.know || 0; kseen[c] = 1; kq[qt++] = c;
+  }
+  while (qh < qt){
+    const c = kq[qh++], i = c % lres, j = (c / lres) | 0;
+    for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]){
+      const ni = i + a, nj = j + b;
+      if (ni < 0 || nj < 0 || ni >= lres || nj >= lres) continue;
+      const n = nj * lres + ni;
+      if (kseen[n]) continue;
+      kseen[n] = 1; kmap[n] = kmap[c]; kq[qt++] = n;
+    }
+  }
   // farmland at the end, in the shape the 3D view reads (land use per plot)
   const owner = new Int32Array(LN);
   for (let c = 0; c < LN; c++) owner[c] = lfarm[c] >= 0 ? H[lfarm[c]].tag : -1;
@@ -858,6 +886,7 @@ export function runSim(w, o = {}, onProgress = null){
     settlements: T, alive: aliveN, biggest: alive.reduce((m, s) => Math.max(m, s.pop), 0), landKm2,
     people: H.reduce((a, h) => a + (h.alive ? h.people : 0), 0),
     buildings, land: { res: lres, cell: LC, half, tagEv: Int32Array.from(tagEv), farmEv: Int32Array.from(farmEv) },
+    knowMap: { res: lres, cell: LC, half, know: kmap },
     log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
     centres: [], roads: net.roads, roadGrid: net.roadGrid, blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),

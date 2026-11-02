@@ -8,6 +8,7 @@
 import { h2, hf, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
 import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS, nearRiver, roadToBox } from './roads.js';
+import { TECH_INDEX } from './tech.js';
 
 /**
  * @typedef {{ x: number, z: number, ux: number, uz: number, hx: number, hz: number, h: number, podH: number,
@@ -17,17 +18,29 @@ import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS, nearR
  */
 /* Building forms by district and the block's storeys; r(k) is a seeded number 0-1. Sizes in metres:
    w frontage, d depth, back setback from the sidewalk, gap to the next building along the street.
-   kind: 0 brick, 1 concrete, 2 glass tower on a podium. Storeys are 3.2 m (industry 5.5 m).
+   kind: 0 brick, 1 concrete, 2 glass tower on a podium, 3 timber frame, 4 rough stone. Storeys are 3.2 m
+   (industry 5.5 m).
      housing  1-2 storeys   detached houses with front yards and gaps between
               3-5           terraces (row houses) and small flats, wall to wall at the sidewalk
               6+            on old-core and grid-era streets, flats wall to wall at the sidewalk (perimeter
                             blocks); elsewhere apartment blocks set back with space around them
      shops and offices  1-4 shops wall to wall; 5-12 offices; 13+ towers on podiums
      crafts (zone 3)    workshops: small, close together on the street (factories and sheds come with industry)
-   Brick for the older buildings, concrete (and glass) more often the newer they are. */
-function form(zone, st, year, r, pattern, ind){
-  const brick = (p) => (r(9) < p ? 0 : 1);
-  const old = year < 620 ? 0.85 : year < 760 ? 0.5 : year < 840 ? 0.25 : 0.1;
+   The material follows what the block's settlement knew when the block was last built (know, a mask of
+   src/gen/tech.js; -1 for older histories, which go by the year instead):
+     before masonry       timber frame (wattle and daub or plaster between the beams)
+     masonry, no steam    rough stone, a quarter timber frame
+     steam                brick
+     steel frames         brick or concrete (bias: the kind of building's lean toward brick), more concrete
+                          with elevators
+   The light in its windows at night follows what is known there now (electric light reaches old houses too). */
+const KB = (k) => 1 << TECH_INDEX[k];
+const K_MASON = KB('masonry'), K_STEAM = KB('steam'), K_STEEL = KB('steel'), K_ELEV = KB('elevator'), K_ELEC = KB('electricity');
+function form(zone, st, year, r, pattern, ind, know = -1){
+  const pre = know < 0 ? -1 : !(know & K_MASON) ? 3 : !(know & K_STEAM) ? (r(8) < 0.25 ? 3 : 4) : -1;
+  const brick = (p) => (pre >= 0 ? pre : know >= 0 && !(know & K_STEEL) ? 0 : r(9) < p ? 0 : 1);
+  const old = know >= 0 ? (!(know & K_STEEL) ? 0.9 : !(know & K_ELEV) ? 0.5 : 0.15)
+            : year < 620 ? 0.85 : year < 760 ? 0.5 : year < 840 ? 0.25 : 0.1;
   const vary = (n, k) => Math.max(1, n + Math.floor(r(k) * (2 * k + 1)) - k);
   if (zone === 1){
     if (st <= 2) return { w: 8 + 5 * r(1), d: 8 + 4 * r(2), back: 3 + 5 * r(3), gap: 3 + 6 * r(4), st: Math.max(1, st - (r(5) < 0.4 ? 1 : 0)), kind: brick(old + 0.15) };
@@ -82,7 +95,8 @@ export function makeBlocks(world, roads){
           const [qx0, qz0, qtx, qtz] = along(e, Math.min(s + 4, L));
           const SW = sidewalkOf(e), probe = e.w / 2 + SW + 8, q = roads.block(qx0 - qtz * side * probe, qz0 + qtx * side * probe);
           if (q < 0){ s += 10; continue; }
-          const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern, BL.ind ? BL.ind[q] : 0);
+          const know = BL.know ? BL.know[q] : -1;
+          const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern, BL.ind ? BL.ind[q] : 0, know);
           // between town streets, a building takes at most half the depth from one street to the next
           const room = e.pattern === undefined ? 1e9 : (PATTERNS[e.pattern].n * LAT - e.w) / 2 - SW - 0.5;
           const back = Math.min(F.back, Math.max(0, room - 8)), d = Math.max(6, Math.min(F.d, room - back)), w = F.w;
@@ -90,7 +104,10 @@ export function makeBlocks(world, roads){
           const [px, pz, tx, tz] = along(e, s + w / 2);
           const vx = -tz * side, vz = tx * side;                              // away from the road
           const off = e.w / 2 + SW + back + d / 2;
+          // lived in? (the block's occupied share, building by building); its light at night
+          const lived = !BL.occ || rnd(h, 7) * 255 < BL.occ[q];
           const b = { x: px + vx * off, z: pz + vz * off, ux: tx, uz: tz, hx: w / 2, hz: d / 2, side, kind: F.kind,
+            light: !lived ? 0 : roads.knowAt(px, pz) & K_ELEC ? 2 : 1,
             h: F.st * (F.storeyH || 3.2), podH: F.podH || 0, prio: rnd(h, 5), door: null, hash: h };
           s += w + F.gap;
           // the whole footprint must keep clear of every road and its sidewalks (roads listed anywhere under
@@ -149,11 +166,12 @@ export function makeBlocks(world, roads){
       }
       if (!beaten) buildings.push(finish(b));
     }
-    // street lights every ~32 m along each road, alternating sides, clear of crossing roads
+    // street lights every ~32 m along each road, alternating sides, clear of crossing roads (gas lamps before
+    // electricity, none before steam: see dressRoad in src/gen/roads.js)
     const lamps = [];
     const ix = roads.index(cx, cz);
     for (const e of roads.chunk(cx, cz)){
-      if (!e.town || e.type === 2) continue;               // street lights only in towns
+      if (!e.town || e.type === 2 || e.lamp === 0) continue;   // street lights only in towns
       const L = roadLength(e);
       for (let s = 10, n = 0; s < L - 4; s += 32, n++){
         const side = (hf(h2(e.id, n, sL)) < 0.5) ? -1 : 1;
@@ -161,7 +179,7 @@ export function makeBlocks(world, roads){
         const vx = -tz * side, vz = tx * side, off = e.w / 2 + 0.6;
         const x = px + vx * off, z = pz + vz * off;
         if (ix.near(x, z).some((o) => o !== e && distToRoad(o, x, z) < o.w / 2 + 0.4)) continue;
-        lamps.push({ x, z, ax: -vx, az: -vz });
+        lamps.push({ x, z, ax: -vx, az: -vz, gas: e.lamp === 1 });
       }
     }
     f = { buildings, lamps };
@@ -176,7 +194,7 @@ export function makeBlocks(world, roads){
     // a door on the front, 90% of the time (same codes as before: type x 64 + variety x 16 + colour x 4 + double x 2 + transom)
     const hd = h2(h, 1, sD);
     if (rnd(hd, 0) < 0.9 && b.hx > 2.5){
-      const tp = b.kind === 0 ? [0.6, 0.15] : b.kind === 1 ? [0.2, 0.4] : [0.05, 0.75];
+      const tp = b.kind === 0 || b.kind > 2 ? [0.6, 0.15] : b.kind === 1 ? [0.2, 0.4] : [0.05, 0.75];
       const t = rnd(hd, 2), type = t < tp[0] ? 0 : t < tp[0] + tp[1] ? 1 : 2;
       const dbl = rnd(hd, 3) < [0.25, 0.55, 0.3][type] ? 1 : 0, tr = rnd(hd, 4) < [0.45, 0.3, 0.12][type] ? 1 : 0;
       b.door = { off: (2 * rnd(hd, 1) - 1) * (b.hx - 2.2),

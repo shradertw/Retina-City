@@ -274,7 +274,7 @@ export function initMap(){
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     // town streets (and, from step 4e-2, buildings), once zoomed in enough to see them; streets are drawn later,
     // above the town blocks
-    const streets = new Path2D(), mains = new Path2D(), bld = [new Path2D(), new Path2D(), new Path2D()], doors = new Path2D(), lights = new Path2D();
+    const streets = new Path2D(), mains = new Path2D(), bld = [new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D()], doors = new Path2D(), lights = new Path2D();
     const wantB = show.buildings && showBuildings;
     if (!((show.streets || wantB) && scale >= 0.03)) list.length = 0;
     for (const [x, z] of list){
@@ -346,7 +346,7 @@ export function initMap(){
       ctx.strokeStyle = 'rgba(236,228,210,0.9)';
       ctx.lineWidth = Math.max(1 * d, 12 * scale * d); ctx.stroke(streets);
       ctx.lineWidth = Math.max(1.4 * d, 24 * scale * d); ctx.stroke(mains);
-      ['#9a6a55', '#8f8d86', '#7d8ea6'].forEach((c, k) => { ctx.fillStyle = c; ctx.fill(bld[k]); });
+      ['#9a6a55', '#8f8d86', '#7d8ea6', '#b9a888', '#8a8478'].forEach((c, k) => { ctx.fillStyle = c; ctx.fill(bld[k]); });
       ctx.strokeStyle = 'rgba(20,16,12,0.55)'; ctx.lineWidth = 1; for (const P of bld) ctx.stroke(P);
       ctx.fillStyle = '#f0b25c'; ctx.fill(doors);
       ctx.fillStyle = '#ffd27a'; ctx.fill(lights);

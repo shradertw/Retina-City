@@ -82,6 +82,7 @@ uniform float uShadowK;    // shadow sharpness: ~60 under a clear sun, lower as 
 uniform float uEyeScale;   // the eye's current brightness gain (for star visibility)
 uniform float uLampK;      // street-light irradiance (lux) -> scene light, 0 when the lights are off
 uniform float uLampEmit;   // brightness of a lit lamp lens in scene units
+uniform float uWinK;       // scene units per cd/m2 (lit windows at night)
 uniform float uAbsScale;   // cd/m2 per unit of normalised scene light
 uniform vec2 uCloudOff;
 uniform mat3 uStarRot;                     // turns the star field with the time of day
@@ -249,7 +250,9 @@ bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHal
 float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
 bool isBldMat(float m){ float k = matId(m); return (k > 1.5 && k < 5.5) || (k > 6.5 && k < 8.5); }
-struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; };
+// kind: 0 brick, 1 concrete, 2 glass tower on a podium, 3 timber frame, 4 rough stone; light: 0 no one lives
+// there, 1 candles and oil lamps, 2 electric (see src/gen/cells.js)
+struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; float light; };
 // Coordinates on a building's wall: along the face (from the building's own exact directions, measured from its
 // centre) and up. Taking the direction from the surface normal instead is slightly noisy pixel to pixel, and
 // multiplied by a position a kilometre out that noise moves the window pattern by a metre: jagged teeth.
@@ -260,7 +263,7 @@ vec2 wallUV(vec2 c, vec2 u, vec3 p, vec3 n){
 }
 Bld getBld(int k){
   vec4 a = wTp(k), b = wT(k + 1), c = wT(k + 2);
-  Bld r; r.c = a.xy; r.u = a.zw; r.hs = b.xy; r.top = b.z; r.podH = b.w; r.kind = c.x; r.var = c.y; r.doorOff = c.z; r.door = int(c.w);
+  Bld r; r.c = a.xy; r.u = a.zw; r.hs = b.xy; r.top = b.z; r.podH = b.w; r.kind = c.x; r.light = floor(c.y); r.var = c.y - r.light; r.doorOff = c.z; r.door = int(c.w);
   return r;
 }
 
@@ -287,10 +290,23 @@ float rayJump(vec3 p, vec3 rd){
 }
 
 /* ---- street lights: upside-down L poles at the curb, arm over the road ----
-   Pole 8 m tall, 0.6 m back from the road edge, with a 2.5 m arm. Data: (pole x, z, arm direction x, z). */
-vec3 lampHead(vec4 L){ return vec3(L.x + L.z * 2.5, LAMP_H - 0.25, L.y + L.w * 2.5); }
+   Pole 8 m tall, 0.6 m back from the road edge, with a 2.5 m arm. Data: (pole x, z, arm direction x, z).
+   Gas lamps (before electricity; the arm direction is half length): a 3.6 m post with a glass lantern on top. */
+const float GAS_H = 3.6;
+bool gasLamp(vec4 L){ return dot(L.zw, L.zw) < 0.5; }
+vec3 lampHead(vec4 L){ return gasLamp(L) ? vec3(L.x, GAS_H - 0.3, L.y) : vec3(L.x + L.z * 2.5, LAMP_H - 0.25, L.y + L.w * 2.5); }
 // distance and material (7 pole and arm, 8 lamp head); lb = distance to a box around the whole light
 vec2 lampSDF(vec3 p, vec4 L, out float lb){
+  if (gasLamp(L)){
+    vec2 g = p.xz - L.xy;
+    lb = sdBox(vec3(g.x, p.y - 1.95, g.y), vec3(0.4, 1.95, 0.4));
+    float post = max(length(g) - 0.06, max(p.y - (GAS_H - 0.55), 0.15 - p.y));
+    float foot = max(length(g) - 0.13, max(p.y - 0.8, 0.15 - p.y));          // a thicker base
+    float cap = sdBox(vec3(g.x, p.y - (GAS_H + 0.0), g.y), vec3(0.21, 0.04, 0.21));
+    float lant = sdBox(vec3(g.x, p.y - (GAS_H - 0.3), g.y), vec3(0.16, 0.26, 0.16));
+    float d = min(min(post, foot), cap);
+    return lant < d ? vec2(lant, 8.0) : vec2(d, 7.0);
+  }
   vec2 base = L.xy, arm = L.zw, side = vec2(-arm.y, arm.x);
   vec2 q = p.xz - base;
   vec2 lq = vec2(dot(q, arm), dot(q, side));            // along the arm, across it
@@ -301,6 +317,7 @@ vec2 lampSDF(vec3 p, vec4 L, out float lb){
   float d = min(pole, armD);
   return headD < d ? vec2(headD, 8.0) : vec2(d, 7.0);
 }
+const float GAS_LENS = 0.12;   // a gas lantern's glass, as bright as this share of an electric lamp's lens
 // How bright a lamp lens looks from a viewing direction: the light leaves in a downward cone, so the lens
 // is fully bright from inside it and dims to ~8% seen from far off to the side (cosUp: the ray's upward part).
 float lensView(float cosUp){ return mix(0.08, 1.0, smoothstep(0.42, 0.85, cosUp)); }
@@ -326,7 +343,7 @@ vec3 lampSprites(vec3 ro, vec3 rd, float tMax, float fa){
     float R = max(rl, fa) * 2.0;
     float da = length(v - rd * along) / along;
     if (da > R) continue;
-    float facing = v.y / dist * lensView(v.y / dist);   // the lens faces down
+    float facing = gasLamp(LT) ? GAS_LENS * 0.8 : v.y / dist * lensView(v.y / dist);   // the lens faces down; a lantern glows all round
     acc += (1.0 - smoothstep(0.4 * R, R, da)) * k * facing * (rl * rl) / (0.52 * R * R) * exp(-along * 0.0007);
   }
   return acc * vec3(1.0, 0.66, 0.3) * uLampEmit;
@@ -348,6 +365,8 @@ float lampIrradiance(vec3 p, vec3 n){
     float d2 = dot(v, v);
     if (d2 > 160.0 || v.y > -0.05) continue;
     float id = inversesqrt(d2);
+    // a gas lantern: dim and all round (~2 lux under it)
+    if (gasLamp(L)){ E += 25.0 * max(dot(n, -v * id), 0.0) / max(d2, 0.25); continue; }
     float cone = smoothstep(0.77, 0.93, -v.y * id);  // cosine of the angle from straight down
     E += 750.0 * cone * max(dot(n, -v * id), 0.0) / max(d2, 0.25);     // ~12 lux under the lamp
   }
@@ -715,12 +734,28 @@ Surf blank(){ Surf s; s.alb = vec3(0.5); s.h = 0.0; s.glass = 0.0; s.refl = 0.05
 // metres, same axis as uv.x) and half width. Ground-floor windows that would overlap it are left out.
 float gDoorU = 1e9, gDoorHW = 0.0;
 // street-light pole (painted metal) and head (dark housing; the downward face is the lens)
-Surf lampSurf(float mat, vec3 n, vec2 uv, vec2 f){
+// (Surf.emit: 0-1 an electric lamp's lens, seen brightest from below; 2 + k a gas lantern's glass at k of an
+// electric lens, the same from all round; below 0 a lit window, -cd/m2 of the room behind it, see winLight)
+Surf lampSurf(float mat, vec3 n, vec2 uv, vec2 f, float y){
   Surf s = blank();
   s.alb = vec3(0.13, 0.135, 0.14) * (1.0 + 0.15 * fbmG(uv, 0.05, 0.002, max(f.x, f.y)));
   s.refl = 0.12;
-  if (mat > 7.5){ s.alb = vec3(0.08); if (n.y < -0.7){ s.alb = vec3(0.55, 0.55, 0.5); s.emit = 1.0; } }
+  if (mat > 7.5){
+    s.alb = vec3(0.08);
+    if (y < 5.0){ if (abs(n.y) < 0.7){ s.alb = vec3(0.75, 0.70, 0.55); s.emit = 2.0 + GAS_LENS; } }
+    else if (n.y < -0.7){ s.alb = vec3(0.55, 0.55, 0.5); s.emit = 1.0; }
+  }
   return s;
+}
+// Night light in a window: the room behind it, in cd/m2, as a negative Surf.emit. Electric light: about 45% of
+// windows lit, ~40 cd/m2; candles and oil lamps: under a third, ~3 cd/m2; no one living there: dark. Where single
+// windows are not resolved (wI below 1), the average. wid: the window's own random number.
+float winLight(Bld b, float wid, float wI, float glass){
+  if (b.light < 0.5) return 0.0;
+  bool el = b.light > 1.5;
+  float share = el ? 0.45 : 0.3, lum = el ? 40.0 : 3.0;
+  float on = mix(share, step(1.0 - share, fract(wid * 37.17)), wI);
+  return -lum * on * glass;
 }
 
 
@@ -760,6 +795,7 @@ Surf brickWall(vec2 uv, float v, vec2 f, Bld b){
   float wI = gate(1.2, fe);
   vec3 room = wid > 0.78 ? vec3(0.30, 0.27, 0.22) : vec3(0.02, 0.02, 0.025) * (0.6 + wid);
   s.interior = mix(vec3(0.075, 0.07, 0.06), room, wI);
+  s.emit = winLight(b, wid, wI, gl);
   s.h = (-0.008*mc - 0.0008*pit - 0.0002*sand.y)*(1.0 - win) - 0.05*fr - 0.12*gl;
   return s;
 }
@@ -793,7 +829,86 @@ Surf concreteWall(vec2 uv, float v, vec2 f, Bld b){
   float wid = hf(h2(ivec2(int(floor(uv.x/1.6)), int(floor((v - 1.0)/3.2))), uSeed + 31u));
   float wI = gate(1.5, fe);
   s.interior = mix(vec3(0.05), vec3(0.03, 0.032, 0.035) * (0.5 + wid) + vec3(0.08, 0.075, 0.06)*step(0.85, wid), wI);
+  s.emit = winLight(b, wid, wI, gl);
   s.h = -0.01*jc - 0.012*hole - 0.0015*voids*(1.0 - wy) - 0.2*gl - 0.15*fr;
+  return s;
+}
+
+// a box from a to b, filtered by the footprint f
+float boxF(float x, float a, float b, float f){ float w = max(f, 1e-4); return clamp((x - a)/w + 0.5, 0.0, 1.0) * clamp((b - x)/w + 0.5, 0.0, 1.0); }
+// Timber frame (before masonry): dark oak posts every 1.1 m, a rail at each floor and one at sill height,
+// a brace in some bays; plaster on wattle between them, lime-washed in a tone per building, grimy low down.
+// A window in every third bay, 1.0-2.15 m above the floor, with leaded diamond panes.
+Surf timberWall(vec2 uv, float v, vec2 f, Bld b){
+  Surf s = blank();
+  float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
+  int pi = int(b.var * 3.999);
+  vec3 pl = pi == 0 ? vec3(0.80, 0.76, 0.66) : (pi == 1 ? vec3(0.74, 0.63, 0.45) : (pi == 2 ? vec3(0.82, 0.81, 0.76) : vec3(0.70, 0.60, 0.52)));
+  pl *= 1.0 + 0.10 * fbmG(uv, 0.4, 0.002, fn);                      // trowel marks and patches
+  vec2 grit = gHOnly ? vec2(0.0) : grainLayer(uv, 0.0012, 201u, fe);
+  pl *= 1.0 + 0.10*grit.x - 0.05*grit.y;
+  pl *= 1.0 - 0.18 * smoothstep(0.55, 0.95, vnoise(vec2(uv.x * 0.9, v * 0.3) + 5.0));   // damp and grime
+  pl *= 1.0 - 0.15 * (1.0 - smoothstep(0.0, 0.8, v));                 // splashed dirt at the foot
+  float off = b.var * 5.0, x = uv.x + off;
+  float lv = v - 3.2 * floor(v / 3.2), bay = floor(x / 1.1), fl = floor(v / 3.2), bx = x - 1.1 * bay;
+  float post = pulseF(x, 1.1, 0.18, f.x);
+  float rail = max(pulseF(v, 3.2, 0.24, f.y), pulseF(v - 0.85, 3.2, 0.14, f.y));
+  // a brace in some bays without a window, from the sill rail up to the next floor
+  float hb = hf(h2(ivec2(int(bay), int(fl)), uSeed + 203u)), brace = 0.0;
+  if (mod(bay, 3.0) != 1.0 && hb < 0.3 && lv > 0.99){
+    float t = (lv - 0.99) / 2.21, cx = hb < 0.15 ? 0.18 + t * 0.92 : 1.1 - t * 0.92;
+    brace = boxF(bx, cx - 0.09, cx + 0.09, f.x * 1.4) * gate(0.18, fn);
+  }
+  float wood = max(max(post, rail), brace);
+  float win = pulseF(x - 1.28, 3.3, 0.92, f.x) * pulseF(v - 1.0, 3.2, 1.15, f.y);
+  if (v < 3.2 && abs(floor((x - 1.1) / 3.3) * 3.3 + 1.1 - off + 0.64 - gDoorU) < gDoorHW + 0.7) win = 0.0;
+  float lead = 1.0 - (1.0 - pulseF(x + lv, 0.16, 0.012, fn)) * (1.0 - pulseF(x - lv, 0.16, 0.012, fn));
+  vec3 oak = vec3(0.15, 0.10, 0.065) * (1.0 + 0.25 * fbmG(uv, 0.1, 0.002, fn));
+  s.alb = mix(mix(pl, oak, wood), vec3(0.05), win * lead * 0.8);
+  float gl = win * (1.0 - 0.8 * lead) * (1.0 - wood);
+  s.glass = gl; s.refl = 0.04;
+  float wid = hf(h2(ivec2(int(floor((x - 1.1) / 3.3)), int(fl)), uSeed + 207u));
+  float wI = gate(1.0, fe);
+  s.interior = mix(vec3(0.05, 0.045, 0.035), vec3(0.03, 0.025, 0.02) * (0.6 + wid), wI);
+  s.emit = winLight(b, wid, wI, gl);
+  s.h = 0.02 * wood - 0.03 * win - 0.004 * grit.y;
+  return s;
+}
+
+// Rough stone (masonry before industry): courses of uneven height, stones 0.35-0.7 m long, each its own tone,
+// set in deep lime mortar. Windows 1.0 m wide, 1.0-2.4 m above each floor, small panes in dark wooden
+// glazing bars, under a dressed stone lintel.
+Surf stoneWall(vec2 uv, float v, vec2 f, Bld b){
+  Surf s = blank();
+  float fe = sqrt(f.x*f.y), fn = max(f.x, f.y);
+  int pi = int(b.var * 2.999);
+  vec3 base = pi == 0 ? vec3(0.50, 0.47, 0.42) : (pi == 1 ? vec3(0.58, 0.52, 0.40) : vec3(0.43, 0.42, 0.40));
+  float row = floor(v / 0.3);
+  float rh = hf(h2(ivec2(int(row), 7), uSeed + 211u));
+  float sL = 0.35 + 0.35 * rh, x = uv.x + rh * 3.0;               // each course its own stone length and offset
+  float sv = hf(h2(ivec2(int(floor(x / sL)), int(row)), uSeed + 213u));
+  float mc = 1.0 - (1.0 - pulseF(v, 0.3, 0.03, f.y)) * (1.0 - pulseF(x, sL, 0.035, f.x));
+  vec3 st = base * mix(1.0, 0.72 + 0.56 * sv, gate(0.3, fe));
+  vec2 gran = gHOnly ? vec2(0.0) : grainLayer(uv, 0.004, 215u, fe);
+  st *= 1.0 + 0.30*gran.x - 0.08*gran.y;
+  st *= 1.0 + 0.15 * fbmG(uv, 0.12, 0.002, fn);                     // tool marks and weathering
+  vec3 mort = vec3(0.56, 0.53, 0.47) * (1.0 + 0.2 * fbmG(uv, 0.05, 0.002, fn));
+  vec3 wall = mix(st, mort * 0.8, mc);
+  wall *= 1.0 - 0.2 * smoothstep(0.6, 0.95, vnoise(vec2(uv.x * 0.7, v * 0.2) + 13.0));   // lichen and soot
+  float off = b.var * 7.0;
+  float win = pulseF(uv.x + off, 3.0, 1.0, f.x) * pulseF(v - 1.0, 3.2, 1.4, f.y);
+  float lint = pulseF(uv.x + off + 0.15, 3.0, 1.3, f.x) * pulseF(v - 2.4, 3.2, 0.25, f.y);
+  if (v < 3.2 && abs(floor((uv.x + off) / 3.0) * 3.0 - off + 0.5 - gDoorU) < gDoorHW + 0.8){ win = 0.0; lint = 0.0; }
+  float bars = 1.0 - (1.0 - pulseF(uv.x + off, 0.333, 0.035, f.x)) * (1.0 - pulseF(v - 1.0, 0.35, 0.035, f.y));
+  vec3 dressed = base * 1.15 * (1.0 + 0.1 * fbmG(uv, 0.05, 0.002, fn));
+  s.alb = mix(mix(wall, dressed, lint), vec3(0.12, 0.09, 0.06), win * bars);
+  float gl = win * (1.0 - bars);
+  s.glass = gl; s.refl = 0.05;
+  float wid = hf(h2(ivec2(int(floor((uv.x + off) / 3.0)), int(floor((v - 1.0) / 3.2))), uSeed + 217u));
+  float wI = gate(1.0, fe);
+  s.interior = mix(vec3(0.05, 0.045, 0.04), vec3(0.03, 0.028, 0.025) * (0.6 + wid), wI);
+  s.emit = winLight(b, wid, wI, gl);
+  s.h = -0.025 * mc * (1.0 - win) - 0.08 * gl - 0.003 * gran.y + 0.01 * lint;
   return s;
 }
 
@@ -814,6 +929,7 @@ Surf glassWall(vec2 uv, float v, vec2 f, Bld b){
   float wP = gate(1.5, fe);                               // per-pane warp
   uint pid = h2(ivec2(int(floor(uv.x/1.5)), int(floor(v/3.2))), uSeed + 5u);
   s.tilt = (vec2(rnd(pid, 1u), rnd(pid, 2u)) - 0.5) * 0.035 * wP;
+  s.emit = winLight(b, rnd(pid, 3u), wP, gl * (1.0 - spand));
   s.h = 0.08 * mull;
   return s;
 }
@@ -838,6 +954,7 @@ Surf stonePodium(vec2 uv, float v, vec2 f, Bld b){
   s.alb = mix(wall, vec3(0.12, 0.12, 0.13), fr);
   s.glass = gl; s.refl = 0.08;
   s.interior = vec3(0.10, 0.09, 0.08);
+  s.emit = winLight(b, hf(h2(ivec2(int(floor(uv.x / 2.4)), 3), uSeed + 9u)), gate(2.4, fe), gl);
   s.h = -0.004*jc - 0.1*gl;
   return s;
 }
@@ -846,7 +963,6 @@ Surf stonePodium(vec2 uv, float v, vec2 f, Bld b){
    Leaf coordinates: u across a leaf from its hinge edge, y up from the sill (metres). Every part is a box
    whose edges are softened over the receptor footprint, so handles and panel edges fade into an average
    colour at a distance instead of sparkling. */
-float boxF(float x, float a, float b, float f){ float w = max(f, 1e-4); return clamp((x - a)/w + 0.5, 0.0, 1.0) * clamp((b - x)/w + 0.5, 0.0, 1.0); }
 float rectF(vec2 q, vec4 r, vec2 f){ return boxF(q.x, r.x, r.z, f.x) * boxF(q.y, r.y, r.w, f.y); }
 float knobF(vec2 d, float rad, vec2 f){ float w = max(max(f.x, f.y), 1e-4); return clamp((rad - length(d))/w + 0.5, 0.0, 1.0) * min(1.0, 4.0*rad*rad/(w*w)); }
 // paint / stain / frame colours, by type x 4 + colour: wood (walnut, oak, red, green), glass-door frames
@@ -963,7 +1079,7 @@ bool doorSurf(Bld b, vec3 p, vec3 n, vec2 f, out Surf s){
   gDoorU = b.doorOff; gDoorHW = hw;                   // in the wall's u (wallUV: along b.u on the front face)
   vec2 out2 = -v;
   if (!(dpt < 0.02 || (abs(a) <= hw + 0.02 && y <= Hn + 0.02))) return false;
-  vec3 trim = b.kind > 1.5 ? vec3(0.06, 0.06, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; dark metal on podiums
+  vec3 trim = b.kind > 1.5 && b.kind < 2.5 ? vec3(0.06, 0.06, 0.065) : b.kind > 2.5 && b.kind < 3.5 ? vec3(0.15, 0.10, 0.065) : vec3(0.56, 0.54, 0.50);   // stone surround; oak on timber frames; dark metal on podiums
   if (dpt < 0.02){
     // on the wall: a 10 cm surround around the opening
     if (abs(a) < hw + 0.1 && y < Hn + 0.1 && dot(n.xz, out2) > 0.7){
@@ -1144,10 +1260,52 @@ Surf lot(vec2 uv, vec2 f){
 
 // The footprint (given along world x and z) measured along a unit direction d
 float fpAlong(vec2 f, vec2 d){ return length(f * d); }
+// Roads before asphalt (surface code, see src/gen/roads.js): 2 stone setts, granite blocks in courses
+// 0.12 m deep across the road, 0.18-0.26 m long, each course shifted; 1 gravel, loose stones on packed
+// ground; 0 dirt, packed soil. Gravel and dirt show two worn wheel ruts per lane, with grass between them
+// on single-lane dirt roads and farm tracks.
+Surf oldRoad(vec2 uv, vec4 fr, vec2 dir, vec2 f, float surf, float type){
+  Surf s = blank();
+  float fa = fpAlong(f, dir), fc = fpAlong(f, vec2(-dir.y, dir.x)), fe = sqrt(fa * fc), fn = max(f.x, f.y);
+  if (surf > 1.5){
+    float sA = fr.x, row = floor(sA / 0.12);
+    float ro = hf(h2(ivec2(int(row), 3), uSeed + 221u)), sL = 0.18 + 0.08 * ro, x = fr.y + ro * 0.5;
+    float sv = hf(h2(ivec2(int(floor(x / sL)), int(row)), uSeed + 223u));
+    float jc = 1.0 - (1.0 - pulseF(sA, 0.12, 0.014, fa)) * (1.0 - pulseF(x, sL, 0.016, fc));
+    vec3 c = vec3(0.40, 0.39, 0.37) * mix(1.0, 0.78 + 0.44 * sv, gate(0.12, fe));
+    vec2 gran = gHOnly ? vec2(0.0) : grainLayer(uv, 0.003, 225u, fe);
+    c *= 1.0 + 0.30*gran.x - 0.10*gran.y;
+    c *= 1.0 + 0.12 * fbmG(uv, 1.5, 0.3, fn);                       // wear and grime
+    s.alb = mix(c, vec3(0.10, 0.09, 0.08), jc * 0.85);
+    s.h = -0.012 * jc - 0.001 * gran.y;
+    s.refl = 0.05;
+    return s;
+  }
+  float hh, hw = max(fr.z, 1.0), aa = abs(fr.y);
+  vec3 c = surf > 0.5 ? dirtCol(uv, f, vec3(0.50, 0.46, 0.40), vec3(0.41, 0.38, 0.34), 0.2, 6.0, hh)
+                      : dirtCol(uv, f, vec3(0.36, 0.28, 0.20), vec3(0.27, 0.21, 0.15), 0.8, 1.2, hh);
+  // ruts 1.6 m apart: one pair in the middle of a narrow road, one pair per lane on a wide one
+  float r = hw > 4.0 ? abs(aa - 0.5 * hw) : aa;
+  float rut = boxF(r, 0.5, 1.1, fc + 0.3);                // (soft edges: worn, not cut)
+  c = mix(c, c * (surf > 0.5 ? 0.8 : 0.72), rut * 0.8);
+  hh -= 0.03 * rut;
+  if (surf < 0.5 && hw <= 4.0){
+    float gh, gw = boxF(aa, -1.0, 0.35, fc) * smoothstep(0.35, 0.6, vnoise(uv / 1.3 + 2.0));
+    vec3 gc = grassCol(uv, f, 0.3, gh);
+    c = mix(c, gc, gw); hh = mix(hh, gh, gw);
+  }
+  s.alb = c; s.h = hh; s.refl = 0.02;
+  return s;
+}
 // fr: the road frame at this point (see roadAt); dir: the road's direction
 Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   Surf s = blank();
   float fn = max(f.x, f.y);
+  float kind = floor(fr.w / 1000.0), type = mod(kind, 8.0);
+  bool country = mod(kind, 16.0) > 7.5;
+  float jS = mod(floor(kind / 16.0), 4.0), jE = mod(floor(kind / 64.0), 4.0);   // junction controls at the start and end
+  float surf = floor(kind / 256.0);                       // 0 dirt, 1 gravel, 2 setts, 3 asphalt
+  if (surf < 2.5) return oldRoad(uv, fr, dir, f, surf, type);
   vec3 c = vec3(0.045, 0.045, 0.048);
   float fe = sqrt(f.x*f.y);
   vec2 stones = grainLayer(uv, 0.008, 101u, fe);          // stones in dark binder: ~8 mm
@@ -1157,9 +1315,6 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   float vd = pits(uv, 0.02, 0.001, 0.003, 0.45, 103u, f); // voids between stones
   c = mix(c, c*0.35, vd);
   float paint = 0.0;
-  float kind = floor(fr.w / 1000.0), type = mod(kind, 8.0);
-  bool country = mod(kind, 16.0) > 7.5;
-  float jS = mod(floor(kind / 16.0), 4.0), jE = floor(kind / 64.0);   // junction controls at the start and end
   if (type > 1.5 && type < 2.5){
     // a farm track: packed gravel and dirt, no markings
     float hh;
@@ -1239,13 +1394,15 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 #ifdef MAT_GROUND
   return blank();
 #else
-  if (m > 6.5) return lampSurf(m, n, uv, f);
+  if (m > 6.5) return lampSurf(m, n, uv, f, p.y);
   Bld b = getBld(bldOf(mat));
   if (!top) uv = wallUV(b.c, b.u, p, n);
   gDoorU = 1e9;
-  if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
+  if (p.y < 3.6 && (m > 4.5 || b.kind < 1.5 || b.kind > 2.5)){ Surf ds; if (doorSurf(b, p, n, f, ds)) return ds; }
   if (top) return roof(uv, f);
   if (m > 4.5) return stonePodium(uv, p.y, f, b);
+  if (b.kind > 3.5) return stoneWall(uv, p.y, f, b);
+  if (b.kind > 2.5) return timberWall(uv, p.y, f, b);
   if (b.kind < 0.5) return brickWall(uv, p.y, f, b);
   if (b.kind < 1.5) return concreteWall(uv, p.y, f, b);
   return glassWall(uv, p.y - b.podH, f, b);
@@ -1260,7 +1417,12 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
 vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   glassy = 0.0;
   float m = matId(mat);
-  if (m < 0.5) return vec3(0.05);                                     // road
+  if (m < 0.5){                                                       // road: asphalt, setts, gravel or dirt
+    vec2 g, gC; vec4 fr; float dC;
+    roadAt(p.xz, g, fr, dC, gC);
+    float sf = floor(floor(fr.w / 1000.0) / 256.0);
+    return sf > 2.5 ? vec3(0.05) : sf > 1.5 ? vec3(0.30, 0.29, 0.27) : sf > 0.5 ? vec3(0.42, 0.39, 0.34) : vec3(0.30, 0.23, 0.16);
+  }
   if (m < 1.5) return vec3(0.34, 0.33, 0.31);                         // sidewalk
   if (m > 8.5){ glassy = 0.9; return vec3(0.02, 0.04, 0.05); }        // water
   if (m > 7.5) return vec3(0.08);                                     // lamp head
@@ -1278,6 +1440,8 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
     glassy = pulseF(v - 0.5, 100.0, 3.2, f.y) * (1.0 - pulseF(uv.x, 2.4, 0.1, f.x)) * 0.9;
     return vec3(0.60, 0.56, 0.50);
   }
+  if (b.kind > 3.5){ glassy = pulseF(uv.x + b.var * 7.0, 3.0, 1.0, f.x) * pulseF(v - 1.0, 3.2, 1.4, f.y) * 0.7; return vec3(0.46, 0.43, 0.38); }   // rough stone
+  if (b.kind > 2.5){ glassy = pulseF(uv.x + b.var * 5.0 - 1.28, 3.3, 0.92, f.x) * pulseF(v - 1.0, 3.2, 1.15, f.y) * 0.6; return vec3(0.50, 0.44, 0.36); }   // timber and plaster
   if (b.kind < 0.5){
     int pi = int(b.var * 3.999);
     vec3 base = pi == 0 ? vec3(0.36, 0.11, 0.07) : (pi == 1 ? vec3(0.30, 0.16, 0.10) : (pi == 2 ? vec3(0.50, 0.36, 0.24) : vec3(0.22, 0.12, 0.09)));
@@ -1610,7 +1774,9 @@ void main(){
     vec3 amb = mix(vec3(0.30, 0.28, 0.26), vec3(0.42, 0.52, 0.68), N.y*0.5 + 0.5) * ao * cavity * uAmbTint;
     vec3 lit = s.alb * (dif * vec3(2.6, 2.4, 2.1) * uKeyCol + amb * 0.9 * uAmbK);
     if (uLampK > 0.0) lit += s.alb * vec3(1.0, 0.62, 0.24) * lampE * uLampK * cavity;
-    lit += s.emit * vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(rd.y) * (1.0 - smoothstep(0.5, 2.0, ang * t / 0.2));   // far: drawn as a glow instead
+    float near = 1.0 - smoothstep(0.5, 2.0, ang * t / 0.2);           // far: drawn as a glow instead
+    if (s.emit > 1.5) lit += (s.emit - 2.0) * vec3(1.0, 0.72, 0.42) * uLampEmit * near;            // gas lantern
+    else lit += max(s.emit, 0.0) * vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(rd.y) * near;     // electric lens
     float cv = max(dot(N, -rd), 0.0);
     float F = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0);
     // rooms behind the glass are lit by daylight through the windows (dark at night, for now)
@@ -1620,6 +1786,12 @@ void main(){
     float Fr = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0) * 0.25;
     vec3 roughRefl = skyBase(vec3(R.x, max(R.y, 0.0), R.z));
     col = mix(lit + roughRefl*Fr*0.08*(1.0 - s.glass), glassCol, s.glass);
+    // a lit room behind a window (warm candlelight, or whiter electric light), seen through the glass
+    if (s.emit < 0.0){
+      float lum = -s.emit / max(s.glass, 0.05);
+      vec3 wc = mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.80, 0.58), smoothstep(2.5, 10.0, lum));
+      col += wc * -s.emit * uWinK * (1.0 - clamp(F, 0.0, 1.0));
+    }
 
     float fog = 1.0 - exp(-t * 0.0007);
     col = mix(col, uFogCol, fog);

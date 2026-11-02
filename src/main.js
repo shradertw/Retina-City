@@ -825,7 +825,7 @@ function setSkyUniforms(u, k){
   gl.uniform3f(u.uFogCol, ...k.fog);
   gl.uniform1f(u.uSunK, k.sunK); gl.uniform1f(u.uSunDiskK, k.sunDiskK); gl.uniform1f(u.uCloudGrey, k.cloudGrey); gl.uniform1f(u.uShadowK, k.shadowK); gl.uniform1f(u.uAmbK, k.ambK); gl.uniform1f(u.uSkyK, k.skyK); gl.uniform1f(u.uTwi, k.twi);
   gl.uniform1f(u.uNightSky, k.nightSky); gl.uniform1f(u.uMoonDisk, k.moonDisk); gl.uniform1f(u.uAbsScale, 5000 * k.L);
-  gl.uniform1f(u.uLampK, k.lampK); gl.uniform1f(u.uLampEmit, k.lampEmit);
+  gl.uniform1f(u.uLampK, k.lampK); gl.uniform1f(u.uLampEmit, k.lampEmit); gl.uniform1f(u.uWinK, 1e-4 / k.L);   // (1 scene unit ~ 10,000 cd/m2 at full daylight)
   gl.uniform1f(u.uCloud, state.cloud); gl.uniform2f(u.uCloudOff, state.cloudT * 6, state.cloudT * 2.5);
   gl.uniformMatrix3fv(u.uStarRot, false, k.rot);
 }

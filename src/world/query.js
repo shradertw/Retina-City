@@ -96,10 +96,12 @@ export function lampLuxJS(p, n){
   let E = 0;
   for (let k = 0; k < c.nL; k++){
     const i = (c.s + c.nB * 3 + k) * 4, d = c.d;
-    const lx = d[i] + d[i + 2] * 2.5, lz = d[i + 1] + d[i + 3] * 2.5, ly = LAMP_H - 0.35;
+    // (a gas lamp: arm direction half length, lantern on a 3.6 m post, dim and all round; as the shader)
+    const gas = d[i + 2] * d[i + 2] + d[i + 3] * d[i + 3] < 0.5;
+    const lx = gas ? d[i] : d[i] + d[i + 2] * 2.5, lz = gas ? d[i + 1] : d[i + 1] + d[i + 3] * 2.5, ly = gas ? 3.6 - 0.4 : LAMP_H - 0.35;
     const v = [p[0] - lx, p[1] - ly, p[2] - lz], d2 = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
     if (d2 > 160 || v[1] > -0.05) continue;
-    const dd = Math.sqrt(d2), cone = sstep(0.77, 0.93, -v[1] / dd);
+    const dd = Math.sqrt(d2), cone = gas ? 25 / 750 : sstep(0.77, 0.93, -v[1] / dd);
     E += 750 * cone * Math.max(-(n[0] * v[0] + n[1] * v[1] + n[2] * v[2]) / dd, 0) / Math.max(d2, 0.25);
   }
   return E;
