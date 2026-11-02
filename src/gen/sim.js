@@ -36,7 +36,7 @@ import { makeName } from './history.js';
 import { TECH, bit, yieldOf, eraOf, count } from './tech.js';
 import { makeRouter } from './route.js';
 import { makeStreets } from './streets.js';
-import { NT } from './traits.js';
+import { NT, TI, inclination } from './traits.js';
 import { nearRiver } from './roads.js';
 
 export const STEP_YEARS = 5;
@@ -164,7 +164,7 @@ export function runSim(w, o = {}, onProgress = null){
     const id = T.length;
     const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), bornStep: step, died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
       popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
-      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
+      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, cells: 0, tm: new Float32Array(NT).fill(0.5), ff: 0, fp: 0, loot: 0, lootLost: 0, lost: 0, inflow: 0, town: 0, traders: 0, hh: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
     return s;
   }
@@ -296,7 +296,7 @@ export function runSim(w, o = {}, onProgress = null){
   }
 
   // settlement s joins u: households, buildings (lived in or empty) and land within reach of s
-  function absorb(s, u, step){
+  function absorb(s, u, step, verb = 'joins'){
     for (const h of H) if (h.alive && h.tag === s.id) h.tag = u.id;
     const n = Math.ceil(3 * R / R), ci = Math.floor(s.core[0] / R), cj = Math.floor(s.core[1] / R);
     for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of bkC.get(key(ci + a, cj + b)) || []){
@@ -309,7 +309,60 @@ export function runSim(w, o = {}, onProgress = null){
     if (shared) u.know |= s.know;
     u.pop += s.pop;
     s.alive = false; s.died = fr(step); s.mergedInto = u.id; s.pop = 0;
-    log.push({ step: fr(step), tag: s.id, tech: -1, text: `${s.name} joins ${u.name}` });
+    log.push({ step: fr(step), tag: s.id, tech: -1, text: `${s.name} ${verb} ${u.name}` });
+  }
+
+  /* Raids. Each step a settlement of 30+ people may raid a neighbour: more likely the more readily its people
+     use force (and the less they share and trust: inclination 'raid'), and the shorter of food it is. It picks
+     the neighbour within reach with the most stores for the defence it would meet. Strength: a quarter of the
+     people fight; the raiders' by how readily they use force and their weapons (bronze, iron), the defenders' by
+     their readiness to defend (force, order) and walls (masonry, where people plan and keep rules). The winners
+     take food; both sides lose people (the losers more); a lost raid on a settlement may burn some of its empty
+     buildings. Raiders who keep winning against a smaller neighbour take it over. */
+  const raidLog = [];
+  const bronzeBit = bit('bronze'), ironBit = bit('iron'), masonryBit = bit('masonry');
+  function raidStep(live, tb, TB, step){
+    const wheelI = TECH.findIndex((t) => t.key === 'wheel'), masonI = TECH.findIndex((t) => t.key === 'masonry');
+    for (const A of live){
+      if (A.pop < 30) continue;
+      const short = Math.max(0, 1 - (A.ff + A.inflow) / Math.max(1, A.pop)), incl = inclination(A.tm, 'raid');
+      const hR = h2(A.id, step, S + 71);
+      if (rnd(hR, 1) >= Math.min(0.5, 0.025 * incl * incl * (0.4 + 3 * short))) continue;
+      const range = A.kc[wheelI] > 0 ? 7000 : 4000, ci = Math.floor(A.cx / TB), cj = Math.floor(A.cz / TB);
+      const weap = 1 + 0.25 * (A.kc[TECH.findIndex((t) => t.key === 'bronze')] > 0 ? 1 : 0) + 0.25 * (A.kc[TECH.findIndex((t) => t.key === 'iron')] > 0 ? 1 : 0);
+      const att = A.pop * 0.25 * (0.5 + A.tm[TI.force]) * weap;
+      let best = null, bv = 0, bdef = 0;
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
+        if (t === A || t.pop < 10) continue;
+        const d = Math.hypot(t.cx - A.cx, t.cz - A.cz);
+        if (d > range * 1.5) continue;
+        const walls = t.kc[masonI] > 0 && t.tm[TI.order] > 0.5 ? 1.6 : 1;
+        const def = t.pop * 0.25 * inclination(t.tm, 'defend') * walls;
+        const stores = Math.max(0, t.cap) + 0.5 * t.inflow + 0.2 * t.pop, v = stores * Math.exp(-d / range) * att / (att + def);
+        if (v > bv){ bv = v; best = t; bdef = def; }
+      }
+      if (!best) continue;
+      const t = best, won = rnd(hR, 2) < att / (att + bdef);
+      const lw = 0.01 + 0.03 * rnd(hR, 3), ll = 0.04 + 0.08 * rnd(hR, 4);
+      A.lost += won ? lw : ll; t.lost += won ? ll : lw;
+      A.raids = (A.raids || 0) + 1; t.raided = (t.raided || 0) + 1;
+      if (won){
+        const take = 0.6 * (Math.max(0, t.cap) + 0.5 * t.inflow + 0.2 * t.pop);
+        A.loot += take; t.lootLost = (t.lootLost || 0) + take;
+        A.wins = (A.wins || 0) + 1; A.wonNow = 1; t.raidedNow = 1;
+        // empty buildings near the middle may burn
+        const ci2 = Math.floor(t.core[0] / FG), cj2 = Math.floor(t.core[1] / FG);
+        for (let b = -4; b <= 4; b++) for (let a = -4; a <= 4; a++) for (const id of (bkF.get(key(ci2 + a, cj2 + b)) || []).slice())
+          if (B.empty[id] && !B.died[id] && rnd(h2(id, step, S + 72), 1) < 0.3) collapse(id, step);
+        // a run of wins over a smaller neighbour: it is taken over
+        const k = 'w' + t.id;
+        A[k] = (A[k] || 0) * 0.8 + 1;
+        if (A[k] >= 3 && A.pop > 1.5 * t.pop && t.alive){ absorb(t, A, step, 'is taken over by'); A[k] = 0; }
+      } else { t.raidedNow = 1; }
+      raidLog.push(fr(step), A.id, t.id, won ? 1 : 0);
+      const pair = 'r' + t.id;
+      if (!A[pair]){ A[pair] = 1; log.push({ step: fr(step), tag: A.id, tech: -2, text: `${A.name} raids ${t.name}` + (won ? '' : ' and is driven off') }); }
+    }
   }
 
   /* Where a town household builds: the best of a few spots around the settlement's middle by what the land
@@ -365,14 +418,14 @@ export function runSim(w, o = {}, onProgress = null){
   const farmingBit = bit('farming');
   for (let step = 1; step <= steps; step++){
     // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement --
-    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); }
+    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5); }
     focc.fill(0);
     for (const h of H){
       if (!h.alive) continue;
       if (h.mode === FORAGER){ focc[fAt(h.x, h.z)] += h.people; continue; }
       const s = T[h.tag];
       s.pop += h.people; s.hh++;
-      if (h.mode === FARMER){ h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2; s.cap += Math.max(0, h.food - h.people); }
+      if (h.mode === FARMER){ h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2; s.cap += Math.max(0, h.food - h.people); s.ff += h.food; s.fp += h.people; }
       else { s.town += h.people; if (h.mode === TRADER) s.traders += h.people; }
       for (let t = 0; t < TECH.length; t++) if (h.know & (1 << t)) s.kc[t]++;
     }
@@ -401,7 +454,8 @@ export function runSim(w, o = {}, onProgress = null){
       let wsum = 0;
       for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
         if (t !== u && t.town <= 0) continue;
-        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * Math.exp(-d / range);
+        // (a settlement wary of outsiders sends less to other settlements' markets)
+        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * Math.exp(-d / range) * (t === u ? 1 : inclination(u.tm, 'trade'));
         if (wt < 1e-3) continue;
         cand.push([t, wt]); wsum += wt;
       }
@@ -426,6 +480,7 @@ export function runSim(w, o = {}, onProgress = null){
     }
     for (const L of tradeLinks.values()){ if (L.path >= 0) router.paths[L.path].traffic += L.ema * STEP_YEARS; L.ema = 0; }
     for (const s of live) s.townPeak = Math.max(s.townPeak || 0, s.town);
+    raidStep(live, tb, TB, step);
     lap('settlements');
 
     // -- households --
@@ -472,11 +527,20 @@ export function runSim(w, o = {}, onProgress = null){
       const s = T[h.tag];
       // food: farmers from their fields (taking more land if they can), crafts people from the surplus
       let ratio;
+      // raids: food taken from the settlement comes off everyone's share; food taken by it goes to everyone
+      const keep = 1 - Math.min(0.6, (s.lootLost || 0) / Math.max(1, s.ff + s.inflow)), extra = s.loot / Math.max(1, s.pop);
       if (h.mode === FARMER){
         farm(h, h.people * farmK(h), step);
         h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2;
-        ratio = h.food / h.people;
-      } else ratio = s.town > 0 ? s.inflow / s.town : 1;
+        // sharing: part of each family's harvest is pooled with the settlement's other farmers (up to 60% where
+        // everyone shares readily, none where no one does)
+        const sh = 0.6 * Math.min(1, s.tm[TI.sharing] * inclination(h.tr, 'share') * 0.5);
+        const avg = s.fp > 0 ? s.ff / s.fp : 1;
+        ratio = ((1 - sh) * h.food / h.people + sh * avg) * keep + extra;
+      } else ratio = (s.town > 0 ? s.inflow / s.town : 1) * keep + extra;
+      // being raided makes people warier and readier to use force; winning raids, readier still
+      if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.03); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.02); }
+      if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.015);
       h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - 0.007)) * (0.95 + 0.1 * rnd(hS, 1));
       // knowledge: discoveries, and learning from the settlement and from settlements in contact
       if (shared) h.know = s.know;
@@ -486,7 +550,7 @@ export function runSim(w, o = {}, onProgress = null){
         const m = 1 << t, tk = TECH[t];
         if (h.know & m || (h.know & tk.mask) !== tk.mask) continue;
         if (techRes[t] && !(h.res & techRes[t])) continue;
-        if (rnd(hS, 40 + t) < pace * h.ing * spare * size / tk.difficulty){
+        if (rnd(hS, 40 + t) < pace * h.ing * spare * size * inclination(h.tr, 'invent') / tk.difficulty){
           h.know |= m;
           if (shared) s.know |= m;
           if (!s.found) s.found = 0;
@@ -494,7 +558,7 @@ export function runSim(w, o = {}, onProgress = null){
           continue;
         }
         const inside = shared ? 0 : s.hh > 1 ? s.kc[t] / s.hh : 0;
-        if (rnd(hS, 60 + t) < 0.35 * Math.sqrt(inside) + 0.25 * Math.min(1, s.ext ? s.ext[t] : 0)){
+        if (rnd(hS, 60 + t) < (0.35 * Math.sqrt(inside) + 0.25 * Math.min(1, s.ext ? s.ext[t] : 0)) * inclination(h.tr, 'adopt')){
           h.know |= m; if (shared) s.know |= m;
         }
       }
@@ -515,7 +579,9 @@ export function runSim(w, o = {}, onProgress = null){
           sp = townSite(nh.id * 7, s, use, nh.know, step);
           if (sp){ nh.mode = use; s.town += p; if (use === TRADER) s.traders += p; build(nh, sp[0], sp[1], use, step); continue; }
         }
-        if (freeLandNear(h.x, h.z, 1500) > p / (YIELD * yieldOf(h.know) * cellKm2) * 1.5) sp = site(nh.id * 11, h.x, h.z, 30, 160, 8, false);
+        // some branches move far away whatever the land nearby (more where people move on readily)
+        if (rnd(hS, 8) < 0.05 * inclination(h.tr, 'leave')) sp = site(nh.id * 19, h.x, h.z, 3000, 12000, 16, true);
+        if (!sp && freeLandNear(h.x, h.z, 1500) > p / (YIELD * yieldOf(h.know) * cellKm2) * 1.5) sp = site(nh.id * 11, h.x, h.z, 30, 160, 8, false);
         if (!sp) sp = site(nh.id * 13, h.x, h.z, 700, Math.max(1200, R * 1.8), 14, true);       // a farmstead further out
         if (!sp) sp = site(nh.id * 17, h.x, h.z, 3000, 9000, 16, true);                         // open land further away
         if (sp){ build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * farmK(nh), step); streets.track(B.x[nh.b], B.z[nh.b], nh.tag, fr(step)); }
@@ -526,6 +592,7 @@ export function runSim(w, o = {}, onProgress = null){
     // setbacks: now and then a settlement loses part of its people
     const hit = new Map();
     for (const s of live) if (rnd(h2(s.id, step, S + 5), 1) < setback) hit.set(s.id, 0.15 + 0.25 * rnd(h2(s.id, step, S + 5), 2));
+    for (const s of live) if (s.lost > 0) hit.set(s.id, Math.min(0.6, (hit.get(s.id) || 0) + s.lost));     // raid losses
     if (hit.size) for (const h of H) if (h.alive && h.mode !== FORAGER && hit.has(h.tag)) h.people *= 1 - hit.get(h.tag);
     // land changes hands: every 5 steps, to the tag the buildings around it mostly carry
     if (step % 5 === 0){
@@ -597,7 +664,7 @@ export function runSim(w, o = {}, onProgress = null){
       const ci = Math.floor(s.core[0] / TB), cj = Math.floor(s.core[1] / TB);
       for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || [])
         if (t !== s && t.alive && t.pop > absorbPop){ const d = Math.hypot(t.core[0] - s.core[0], t.core[1] - s.core[1]); if (d < bd){ bd = d; u = t; } }
-      if (!u) continue;
+      if (!u || rnd(h2(s.id, step, S + 73), 1) >= 0.5 * inclination(s.tm, 'join')) continue;
       absorb(s, u, step);
     }
     for (const s of T){
@@ -608,7 +675,7 @@ export function runSim(w, o = {}, onProgress = null){
       s.areaAt[f] = s.cells * cellKm2; s.knowAt[f] = shared ? s.know : s.kn;
       // its people's average ways (0-255 per trait)
       if (!s.traitsAt) s.traitsAt = new Uint8Array((frames + 1) * NT);
-      if (s.pop > 0) for (let i = 0; i < NT; i++) s.traitsAt[f * NT + i] = Math.round(255 * s.trs[i] / s.pop);
+      if (s.pop > 0) for (let i = 0; i < NT; i++){ s.tm[i] = s.trs[i] / s.pop; s.traitsAt[f * NT + i] = Math.round(255 * s.tm[i]); }
       s.x = s.xAt[f]; s.z = s.zAt[f];
     }
     lap('record');
@@ -661,7 +728,8 @@ export function runSim(w, o = {}, onProgress = null){
 
   const buildings = { n: nb, x: Float32Array.from(B.x), z: Float32Array.from(B.z), kind: Uint8Array.from(B.kind), tag: Int32Array.from(B.tag),
     born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty) };
-  for (const s of T){ delete s.trs; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
+  for (const s of T) for (const k of Object.keys(s)) if (/^[wr]\d+$/.test(k)) delete s[k];     // raid bookkeeping
+  for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
   const aliveN = alive.length;
   return {
     version: 2, steps: frames, year, stepYears: rec * STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps: frames, years: rec * STEP_YEARS }],
@@ -670,6 +738,6 @@ export function runSim(w, o = {}, onProgress = null){
     buildings, land: { res: lres, cell: LC, half, tagEv: Int32Array.from(tagEv), farmEv: Int32Array.from(farmEv) },
     log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
-    centres: [], roads: net.roads, roadGrid: net.roadGrid, blocks, streets: town.streets, junctions: town.junctions,
+    centres: [], roads: net.roads, roadGrid: net.roadGrid, blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
     ms: performance.now() - t0, times };
 }

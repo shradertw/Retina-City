@@ -37,7 +37,7 @@ export function initMap(){
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
   const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Streets and junctions (grey none, white stop, yellow signals, blue roundabout)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Buildings: farm homes (cream), workshops (brown), shops (blue), empty (grey)'], ['names', 'Names'], ['farms', 'Farmland'],
-    ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
+    ['roads', 'Roads'], ['raids', 'Raids (recent: red won, grey driven off)'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
   const filterBox = document.getElementById('mapFilter'), filterList = document.getElementById('mapFilterList');
@@ -201,6 +201,18 @@ export function initMap(){
           ctx.fillStyle = col[J[i + 2]]; ctx.beginPath(); ctx.arc(toX(J[i]), toY(J[i + 1]), r, 0, 6.2832); ctx.fill();
         }
       }
+    }
+    // raids in the last few frames: red where the raiders won, grey where they were driven off
+    const RD = hist.raids;
+    if (show.raids && RD){
+      ctx.lineWidth = 2 * d; ctx.setLineDash([6 * d, 4 * d]);
+      for (let i = 0; i < RD.length; i += 4){
+        const f = RD[i]; if (f > step || f < step - 4) continue;
+        const A = hist.settlements[RD[i + 1]], T2 = hist.settlements[RD[i + 2]];
+        ctx.strokeStyle = RD[i + 3] ? 'rgba(220,40,30,0.9)' : 'rgba(150,150,150,0.8)';
+        ctx.beginPath(); ctx.moveTo(toX(A.xAt[f] * 1000), toY(A.zAt[f] * 1000)); ctx.lineTo(toX(T2.xAt[f] * 1000), toY(T2.zAt[f] * 1000)); ctx.stroke();
+      }
+      ctx.setLineDash([]);
     }
     // buildings standing this year: farm homes light, workshops brown, shops blue
     const Bd = hist.buildings, bs = Math.max(1.6 * d, 12 * scale * d);
@@ -449,7 +461,8 @@ export function initMap(){
           const words = TRAITS.map((t, i) => describe(i, v(i))).filter(Boolean);
           town += `\nWays: ${words.length ? words.join(', ') : 'middling in everything'} (` + TRAITS.map((t, i) => t.key + ' ' + v(i).toFixed(2)).join(', ') + ')';
         }
-        const found = h.log.filter((e) => e.tag === t && e.step <= step).map((e) => `${e.text.replace(st.name + ' discovers ', '')} (${h.year[e.step]})`);
+        if (st.raids || st.raided) town += `\nRaids: made ${st.raids || 0} (won ${st.wins || 0}) · raided ${st.raided || 0} times (over the whole history)`;
+        const found = h.log.filter((e) => e.tag === t && e.step <= step && e.tech >= 0).map((e) => `${e.text.replace(st.name + ' discovers ', '')} (${h.year[e.step]})`);
         if (found.length) town += `\nDiscovered here: ${found.join(', ')}`;
       }
       if (c >= 0 && sim.farm[c]) town += '\nFarmland';
