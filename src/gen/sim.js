@@ -48,7 +48,13 @@ export function runSim(w, o = {}, onProgress = null){
   const lap = (n) => { const t = performance.now(); times[n] = (times[n] || 0) + t - tl; tl = t; };
   const years = o.duration ?? 1000, steps = Math.max(1, Math.round(years / STEP_YEARS));
   const R = (o.tagRadius ?? 1) * 1000, rival = (o.rival ?? 5) / 100, shared = !!o.sharedKnow;
-  const pace = (o.pace ?? 100) / 100, startK = (o.startPeople ?? 100) / 100, setback = 0.02 * (o.setbacks ?? 100) / 100;
+  // the settings are real likelihoods; here they become chances per 5-year step
+  const perStep = (pc, years) => 1 - Math.pow(1 - Math.min(pc, 99.9) / 100, STEP_YEARS / years);
+  // discovery: the chance that an average farming family (ingenuity 0.5, ordinary harvest, small village)
+  // comes up with the plough within 100 years; every discovery's chance scales with it
+  const pace = perStep(o.discovery ?? 15, 100) / (0.5 / TECH[1].difficulty);
+  const startDensity = o.startDensity ?? 60;                    // people per 100 km2 of land at the start
+  const setback = perStep(o.setbackRisk ?? 33, 100);            // a settlement's chance of a setback per step
   const links = Math.round(o.links ?? 2);
   const S = salt(w.seed, 60);
   const { res, cell, half } = w;
@@ -249,7 +255,7 @@ export function runSim(w, o = {}, onProgress = null){
 
   // ---- start: forager bands over the land, more where wild food is rich ----
   {
-    const n = Math.max(1, Math.round(landKm2 / 100 * 3 * startK));
+    const n = Math.max(1, Math.round(landKm2 / 100 * startDensity / BAND));
     let total = 0; const cum = new Float64Array(LN);
     for (let c = 0; c < LN; c++){ total += lwild[c]; cum[c] = total; }
     for (let k = 0; k < n && total > 0; k++){
