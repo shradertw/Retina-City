@@ -58,8 +58,11 @@ export function runSim(w, o = {}, onProgress = null){
   const links = Math.round(o.links ?? 2);
   const S = salt(w.seed, 60);
   const { res, cell, half } = w;
-  const year = new Int16Array(steps + 1);
-  for (let s = 0; s <= steps; s++) year[s] = s * STEP_YEARS;
+  // what is kept for the map: at most 400 frames (a long history keeps one frame per several steps); every
+  // step and year below in the output is a frame
+  const rec = Math.max(1, Math.ceil(steps / 400)), frames = Math.ceil(steps / rec), fr = (s) => Math.ceil(s / rec);
+  const year = new Int16Array(frames + 1);
+  for (let f = 0; f <= frames; f++) year[f] = Math.min(f * rec, steps) * STEP_YEARS;
   let cnt = 0;                                                  // counter for chances
   const chance = (a, k = 1) => rnd(h2(a, cnt++, S), k);
 
@@ -145,9 +148,9 @@ export function runSim(w, o = {}, onProgress = null){
 
   function newSettlement(x, z, step){
     const id = T.length;
-    const s = { id, name: makeName(h2(id, 7, S)), born: step, died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
-      popAt: new Float32Array(steps + 1), xAt: new Float32Array(steps + 1), zAt: new Float32Array(steps + 1), areaAt: new Float32Array(steps + 1),
-      knowAt: new Int32Array(steps + 1), know: 0, nb: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
+    const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
+      popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
+      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
     return s;
   }
@@ -156,7 +159,7 @@ export function runSim(w, o = {}, onProgress = null){
     if (old === tag) return;
     if (old >= 0) T[old].cells--;
     ltag[c] = tag; T[tag].cells++;
-    tagEv.push(c, step, tag);
+    tagEv.push(c, fr(step), tag);
   }
   function claim(x, z, tag, step){
     const ci = Math.floor((x + half) / LC), cj = Math.floor((z + half) / LC);
@@ -180,7 +183,7 @@ export function runSim(w, o = {}, onProgress = null){
       if (others.length) tag = B.tag[others[Math.floor(chance(h.id, 2) * others.length)]];
     }
     const id = B.x.length;
-    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(step); B.died.push(0); B.hh.push(h.id);
+    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.hh.push(h.id);
     addTo(bkC, key(Math.floor(x / R), Math.floor(z / R)), id); addTo(bkF, key(Math.floor(x / FG), Math.floor(z / FG)), id);
     const s = T[tag];
     s.nb++; s.everB++;
@@ -192,13 +195,13 @@ export function runSim(w, o = {}, onProgress = null){
   function abandon(h, step){
     if (h.b >= 0){
       const id = h.b;
-      B.died[id] = step;
+      B.died[id] = fr(step);
       removeFrom(bkC, key(Math.floor(B.x[id] / R), Math.floor(B.z[id] / R)), id);
       removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
       T[B.tag[id]].nb--;
       h.b = -1;
     }
-    for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, step, 0); }
+    for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); }
     h.cells = []; h.cap = 0;
   }
   function newHousehold(x, z, people, ing, know, mode, step, parent = -1){
@@ -224,7 +227,7 @@ export function runSim(w, o = {}, onProgress = null){
       if (i < 0 || j < 0 || i >= lres || j >= lres) continue;
       const c = j * lres + i;
       if (lfarm[c] >= 0 || lfert[c] < 0.08 || (ltag[c] >= 0 && ltag[c] !== h.tag)) continue;
-      lfarm[c] = h.id; h.cells.push(c); h.cap += lfert[c]; farmEv.push(c, step, 1); took++;
+      lfarm[c] = h.id; h.cells.push(c); h.cap += lfert[c]; farmEv.push(c, fr(step), 1); took++;
     }
   }
   const freeLandNear = (x, z, r) => {
@@ -334,7 +337,7 @@ export function runSim(w, o = {}, onProgress = null){
         const ci = Math.floor(h.x / TB), cj = Math.floor(h.z / TB);
         for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const u of tb.get(key(ci + a, cj + b)) || [])
           near += Math.exp(-Math.hypot(u.cx - h.x, u.cz - h.z) / 6000) * u.pop / (u.pop + 100);
-        if (rnd(hS, 2) < learn){ h.know |= farmingBit; if (!log.some((e) => e.tech === 0)) log.push({ step, tag: -1, tech: 0, text: `Farming is discovered by a band of foragers` }); }
+        if (rnd(hS, 2) < learn){ h.know |= farmingBit; if (!log.some((e) => e.tech === 0)) log.push({ step: fr(step), tag: -1, tech: 0, text: `Farming is discovered by a band of foragers` }); }
         else if (rnd(hS, 3) < 0.3 * Math.min(1, near)){ h.know |= farmingBit; by = 'learned'; }
         if (h.know & farmingBit){
           // settle: a home on good land near water, within a few km
@@ -368,7 +371,7 @@ export function runSim(w, o = {}, onProgress = null){
           h.know |= m;
           if (shared) s.know |= m;
           if (!s.found) s.found = 0;
-          if (!(s.found & m)){ s.found |= m; log.push({ step, tag: s.id, tech: t, text: `${s.name} discovers ${tk.name}` }); }
+          if (!(s.found & m)){ s.found |= m; log.push({ step: fr(step), tag: s.id, tech: t, text: `${s.name} discovers ${tk.name}` }); }
           continue;
         }
         const inside = shared ? 0 : s.hh > 1 ? s.kc[t] / s.hh : 0;
@@ -455,13 +458,14 @@ export function runSim(w, o = {}, onProgress = null){
     }
     for (const s of T){
       if (!s.alive) continue;
-      if (s.nb <= 0){ s.alive = false; s.died = step; continue; }
-      s.popAt[step] = s.pop; s.xAt[step] = s.pop > 0 ? s.sx / s.pop / 1000 : s.core[0] / 1000; s.zAt[step] = s.pop > 0 ? s.sz / s.pop / 1000 : s.core[1] / 1000;
-      s.areaAt[step] = s.cells * cellKm2; s.knowAt[step] = shared ? s.know : s.kn;
-      s.x = s.xAt[step]; s.z = s.zAt[step];
+      if (s.nb <= 0){ s.alive = false; s.died = fr(step); continue; }
+      const f = fr(step);
+      s.popAt[f] = s.pop; s.xAt[f] = s.pop > 0 ? s.sx / s.pop / 1000 : s.core[0] / 1000; s.zAt[f] = s.pop > 0 ? s.sz / s.pop / 1000 : s.core[1] / 1000;
+      s.areaAt[f] = s.cells * cellKm2; s.knowAt[f] = shared ? s.know : s.kn;
+      s.x = s.xAt[f]; s.z = s.zAt[f];
     }
     lap('record');
-    if (onProgress) onProgress(step / steps, year[step]);
+    if (onProgress) onProgress(step / steps, step * STEP_YEARS);
   }
 
   // ---- roads (stage 1): links between settlements at the end ----
@@ -475,7 +479,7 @@ export function runSim(w, o = {}, onProgress = null){
       const t = others[n][1], k = Math.min(s.id, t.id) * 1e6 + Math.max(s.id, t.id);
       if (linked.has(k)) continue;
       linked.add(k);
-      if (router.link(s.core[0], s.core[1], t.core[0], t.core[1], steps)) s.onRoad = t.onRoad = true;
+      if (router.link(s.core[0], s.core[1], t.core[0], t.core[1], frames)) s.onRoad = t.onRoad = true;
     }
   }
   const net = router.finish();
@@ -494,7 +498,7 @@ export function runSim(w, o = {}, onProgress = null){
     if (H[B.hh[id]].know & bit('masonry')) e.mason = 1;
   }
   const be = [...bmap.values()], bn = be.length;
-  const blocks = { size: BS, res: BRES, half, from: steps, n: bn, i: new Int32Array(bn), j: new Int32Array(bn), owner: new Int32Array(bn),
+  const blocks = { size: BS, res: BRES, half, from: frames, n: bn, i: new Int32Array(bn), j: new Int32Array(bn), owner: new Int32Array(bn),
     born: new Int16Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0) };
   be.forEach((e, q) => {
     blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born;
@@ -511,11 +515,11 @@ export function runSim(w, o = {}, onProgress = null){
   for (const s of T){ delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
   const aliveN = alive.length;
   return {
-    version: 2, steps, year, stepYears: STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps, years: STEP_YEARS }],
+    version: 2, steps: frames, year, stepYears: rec * STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps: frames, years: rec * STEP_YEARS }],
     settlements: T, alive: aliveN, biggest: alive.reduce((m, s) => Math.max(m, s.pop), 0), landKm2,
     people: H.reduce((a, h) => a + (h.alive ? h.people : 0), 0),
     buildings, land: { res: lres, cell: LC, half, tagEv: Int32Array.from(tagEv), farmEv: Int32Array.from(farmEv) },
-    log, eras: T.map((s) => eraOf(s.knowAt[s.died || steps])),
+    log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
     centres: [], roads: net.roads, roadGrid: net.roadGrid, blocks,
     ms: performance.now() - t0, times };
