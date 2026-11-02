@@ -447,7 +447,7 @@ export function runHistory(w, o = {}, onProgress = null){
 const A = ['bar', 'cal', 'dun', 'el', 'fen', 'gar', 'hal', 'ive', 'kel', 'lin', 'mar', 'nor', 'os', 'pen', 'quel', 'ros', 'sal', 'tor', 'ul', 'ven', 'wil', 'yar', 'ash', 'brin', 'cor', 'dor'];
 const B = ['a', 'e', 'i', 'o', 'an', 'en', 'in', 'on', 'ar', 'er', 'el', 'ow', 'ey', 'ith'];
 const C = ['ton', 'by', 'ford', 'ham', 'wick', 'stead', 'mouth', 'bury', 'dale', 'field', 'holm', 'mere', 'brook', 'ley', 'well', 'gate'];
-function makeName(h){
+export function makeName(h){
   let n = A[Math.floor(rnd(h, 1) * A.length)];
   if (rnd(h, 2) < 0.6) n += B[Math.floor(rnd(h, 3) * B.length)];
   n += C[Math.floor(rnd(h, 4) * C.length)];

@@ -8,6 +8,7 @@ import { ROAD_CHUNK, SAMPLES } from '../gen/roads.js';
 import { LIFE, METALS } from '../gen/world.js';
 import { radiusKm } from '../gen/history.js';
 import { ZONES } from '../gen/districts.js';
+import { eraOf, namesOf } from '../gen/tech.js';
 
 // map layers: what each shows, and its legend
 const LAYERS = [
@@ -34,7 +35,7 @@ export function initMap(){
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
-  const SHOW = [['blocks', 'Town blocks (from year 650)'], ['streets', 'Town streets (as in 3D)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Settlements'], ['names', 'Names'], ['farms', 'Farmland'],
+  const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Town streets (as in 3D)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Settlements and their buildings'], ['names', 'Names'], ['farms', 'Farmland'],
     ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
@@ -47,7 +48,13 @@ export function initMap(){
   }
   let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1;
   const ageOf = (h, s) => { let a = 0, s0 = 0; while (a < h.ages.length - 1 && s > s0 + h.ages[a].steps){ s0 += h.ages[a].steps; a++; } return h.ages[a]; };
-  const showYear = () => { const h = current.history; if (h) yearOut.textContent = 'Year ' + h.year[step] + ' · ' + ageOf(h, step).name.toLowerCase(); };
+  const showYear = () => {
+    const h = current.history; if (!h) return;
+    if (h.version === 2){
+      let m = 0; for (const s of h.settlements) m |= s.knowAt[step];
+      yearOut.textContent = 'Year ' + h.year[step] + ' · ' + (m ? 'most advanced: ' + eraOf(m).toLowerCase() : 'foragers only');
+    } else yearOut.textContent = 'Year ' + h.year[step] + ' · ' + ageOf(h, step).name.toLowerCase();
+  };
   let blockKey = null, blockFor = null;      // block grid -> block, for the hover readout (built when needed)
   yearIn.addEventListener('input', () => { step = Number(yearIn.value); playing = false; playBtn.textContent = 'Play'; showYear(); });
   playBtn.addEventListener('click', () => {
@@ -109,6 +116,105 @@ export function initMap(){
     return c;
   }
 
+  /* ---- the history simulation (src/gen/sim.js): land tags and farmland replayed from their change lists up to
+     the chosen year, buildings standing that year, settlement names; roads and town blocks as at the end ---- */
+  let sim = null;
+  const tagColour = (t) => { const hh = ((t * 2654435761) >>> 0) / 4294967296; const a = hh * 6.2832; return [150 + 90 * Math.cos(a), 150 + 90 * Math.cos(a + 2.1), 150 + 90 * Math.cos(a + 4.2)]; };
+  function replay(hist){
+    const L = hist.land, N = L.res * L.res;
+    if (!sim || sim.hist !== hist){
+      const mk = () => { const c = document.createElement('canvas'); c.width = c.height = L.res; return c; };
+      sim = { hist, tag: new Int32Array(N), farm: new Uint8Array(N), at: -1, ti: 0, fi: 0, tagImg: mk(), farmImg: mk() };
+    }
+    if (sim.at === step) return;
+    if (step < sim.at){ sim.tag.fill(-1); sim.farm.fill(0); sim.ti = 0; sim.fi = 0; }
+    if (sim.at < 0) sim.tag.fill(-1);
+    const te = L.tagEv, fe = L.farmEv;
+    while (sim.ti < te.length && te[sim.ti + 1] <= step){ sim.tag[te[sim.ti]] = te[sim.ti + 2]; sim.ti += 3; }
+    while (sim.fi < fe.length && fe[sim.fi + 1] <= step){ sim.farm[fe[sim.fi]] = fe[sim.fi + 2]; sim.fi += 3; }
+    sim.at = step;
+    const R = L.res;
+    const gt = sim.tagImg.getContext('2d'), it = gt.createImageData(R, R);
+    const gf = sim.farmImg.getContext('2d'), iF = gf.createImageData(R, R);
+    for (let j = 0; j < R; j++) for (let i = 0; i < R; i++){
+      const c = j * R + i, o = ((R - 1 - j) * R + i) * 4, t = sim.tag[c];
+      if (t >= 0){ const col = tagColour(t); it.data[o] = col[0]; it.data[o + 1] = col[1]; it.data[o + 2] = col[2]; it.data[o + 3] = 70; }
+      if (sim.farm[c]){ const v = ((i * 7 + j * 13) % 5) / 5; iF.data[o] = 210 + 30 * v; iF.data[o + 1] = 190 + 20 * v; iF.data[o + 2] = 95 + 40 * v; iF.data[o + 3] = 130; }
+    }
+    gt.putImageData(it, 0, 0); gf.putImageData(iF, 0, 0);
+  }
+  function drawSim(hist, d){
+    if (hist !== lastHist){ lastHist = hist; step = hist.steps; yearIn.max = String(hist.steps); playing = false; playBtn.textContent = 'Play'; timeBox.hidden = false; }
+    if (playing && performance.now() - playT > 90){ playT = performance.now(); step++; if (step >= hist.steps){ step = hist.steps; playing = false; playBtn.textContent = 'Play'; } }
+    yearIn.value = String(step); showYear();
+    replay(hist);
+    const L = hist.land, span = L.res * L.cell * scale * d;
+    ctx.imageSmoothingEnabled = false;
+    if (show.land) ctx.drawImage(sim.tagImg, toX(-L.half), toY(L.res * L.cell - L.half), span, span);
+    if (show.farms) ctx.drawImage(sim.farmImg, toX(-L.half), toY(L.res * L.cell - L.half), span, span);
+    // town blocks as at the end
+    const BK = hist.blocks;
+    if (show.blocks && BK && step >= BK.from && BK.size * scale * d >= 1.2){
+      const v = BK.snap[0], bp = BK.size * scale * d, gap = bp > 6 ? bp * 0.12 : 0, paths = [];
+      for (let b = 0; b < v.length; b++){
+        const c = v[b]; if (!c) continue;
+        const sx = toX(-BK.half + BK.i[b] * BK.size), sy = toY(-BK.half + (BK.j[b] + 1) * BK.size);
+        if (sx > W() || sy > H() || sx + bp < 0 || sy + bp < 0) continue;
+        const q = (c >> 6) * 4 + band(c & 63);
+        (paths[q] || (paths[q] = new Path2D())).rect(sx + gap / 2, sy + gap / 2, bp - gap, bp - gap);
+      }
+      for (let q = 4; q < 16; q++) if (paths[q]){ ctx.globalAlpha = 0.6; ctx.fillStyle = ZONE_COL[q >> 2][q & 3]; ctx.fill(paths[q]); ctx.globalAlpha = 1; }
+    }
+    // roads (stage 1: built at the end)
+    const ROAD_STYLE = [['rgba(120,84,48,0.9)', 4, 0.8], ['rgba(236,226,200,0.95)', 8, 1.3], ['rgba(255,214,140,1)', 18, 2.2]];
+    if (show.roads) for (let cls = 0; cls < 3; cls++){
+      const [col, wm, wmin] = ROAD_STYLE[cls];
+      ctx.strokeStyle = col; ctx.lineWidth = Math.max(wmin * d, wm * scale * d);
+      ctx.beginPath();
+      for (const r of hist.roads){
+        if (r.cls !== cls || r.step > step) continue;
+        const P = r.pts;
+        ctx.moveTo(toX(P[0]), toY(P[1]));
+        for (let n = 2; n < P.length; n += 2) ctx.lineTo(toX(P[n]), toY(P[n + 1]));
+      }
+      ctx.stroke();
+    }
+    // buildings standing this year: homes small and light, crafts (workshops) darker
+    const Bd = hist.buildings, bs = Math.max(1.6 * d, 12 * scale * d);
+    if (show.towns && scale > 0.004){
+      const homes = new Path2D(), crafts = new Path2D();
+      const x0 = cx - W() / 2 / (scale * d) - 50, x1 = cx + W() / 2 / (scale * d) + 50, z0 = cz - H() / 2 / (scale * d) - 50, z1 = cz + H() / 2 / (scale * d) + 50;
+      for (let b = 0; b < Bd.n; b++){
+        if (Bd.born[b] > step || (Bd.died[b] && Bd.died[b] <= step)) continue;
+        const x = Bd.x[b], z = Bd.z[b];
+        if (x < x0 || x > x1 || z < z0 || z > z1) continue;
+        (Bd.kind[b] === 2 ? crafts : homes).rect(toX(x) - bs / 2, toY(z) - bs / 2, bs, bs);
+      }
+      ctx.fillStyle = '#f4e3c0'; ctx.fill(homes); ctx.fillStyle = '#7a3b22'; ctx.fill(crafts);
+      ctx.strokeStyle = 'rgba(20,14,8,0.7)'; ctx.lineWidth = 1; ctx.stroke(homes); ctx.stroke(crafts);
+    }
+    // names, biggest first, as many as fit
+    if (show.names){
+      ctx.font = (10 * d) + 'px "Martian Mono", ui-monospace, monospace';
+      const labels = [];
+      for (const st of hist.settlements){
+        const pop = st.popAt[step]; if (!(pop > 0)) continue;
+        const sx = toX(st.xAt[step] * 1000), sy = toY(st.zAt[step] * 1000);
+        if (sx < -50 || sy < -20 || sx > W() + 50 || sy > H() + 20) continue;
+        labels.push([pop, st.name + ' ' + Math.round(pop).toLocaleString(), sx, sy]);
+      }
+      labels.sort((a, b) => b[0] - a[0]);
+      const placed = [];
+      ctx.fillStyle = '#f4ead2'; ctx.strokeStyle = 'rgba(10,8,6,0.85)'; ctx.lineWidth = 3 * d;
+      for (const [, name, sx, sy] of labels){
+        const tx = sx + 6 * d, ty = sy - 6 * d, tw = ctx.measureText(name).width;
+        if (placed.some(([x, y, w2]) => Math.abs(y - ty) < 12 * d && tx < x + w2 && x < tx + tw)) continue;
+        if (placed.length > 150) break;
+        ctx.strokeText(name, tx, ty); ctx.fillText(name, tx, ty); placed.push([tx, ty, tw]);
+      }
+    }
+  }
+
   function draw(){
     if (!open) return;
     requestAnimationFrame(draw);
@@ -161,7 +267,8 @@ export function initMap(){
     }
     // settlements at the chosen year: their ground, coloured by when they were founded (older = deeper amber)
     const hist = current.history;
-    if (hist){
+    if (hist && hist.version === 2) drawSim(hist, d);
+    if (hist && hist.version !== 2){
       if (hist !== lastHist){ lastHist = hist; step = hist.steps; yearIn.max = String(hist.steps); playing = false; playBtn.textContent = 'Play'; timeBox.hidden = false; }
       if (playing && performance.now() - playT > 120){ playT = performance.now(); step++; if (step >= hist.steps){ step = hist.steps; playing = false; playBtn.textContent = 'Play'; } }
       yearIn.value = String(step); showYear();
@@ -306,6 +413,31 @@ export function initMap(){
     const k = w.gridIndex(x, z), wt = w.water[k];
     const h = current.history;
     let town = '';
+    if (h && h.version === 2 && sim){
+      const L = h.land, li = Math.floor((x + L.half) / L.cell), lj = Math.floor((z + L.half) / L.cell);
+      const c = li >= 0 && lj >= 0 && li < L.res && lj < L.res ? lj * L.res + li : -1;
+      const t = c >= 0 ? sim.tag[c] : -1;
+      if (t >= 0){
+        const st = h.settlements[t], k = st.knowAt[step];
+        town = `\n${st.name}: ${Math.round(st.popAt[step]).toLocaleString()} people · founded year ${h.year[st.born]} · ${eraOf(k).toLowerCase()}`
+          + (k ? `\nKnows: ${namesOf(k).join(', ')}` : '');
+        const found = h.log.filter((e) => e.tag === t && e.step <= step).map((e) => `${e.text.replace(st.name + ' discovers ', '')} (${h.year[e.step]})`);
+        if (found.length) town += `\nDiscovered here: ${found.join(', ')}`;
+      }
+      if (c >= 0 && sim.farm[c]) town += '\nFarmland';
+      // the building under the pointer
+      const Bd = h.buildings, rr = Math.max(15, 6 / scale);
+      let best = -1, bd = rr;
+      for (let b = 0; b < Bd.n; b++){
+        if (Bd.born[b] > step || (Bd.died[b] && Bd.died[b] <= step)) continue;
+        const dd = Math.hypot(Bd.x[b] - x, Bd.z[b] - z); if (dd < bd){ bd = dd; best = b; }
+      }
+      if (best >= 0) town += `\n${Bd.kind[best] === 2 ? 'Workshop and home of crafts people' : 'Home of a farming family'}, built year ${h.year[Bd.born[best]]}` + (Bd.died[best] ? `, abandoned year ${h.year[Bd.died[best]]}` : '');
+      const recent = h.log.filter((e) => e.step <= step).slice(-3).map((e) => `${h.year[e.step]}: ${e.text}`);
+      if (recent.length) town += `\nLatest: ${recent.join(' · ')}`;
+      hover = `\nHere: ${wt === 1 ? 'sea' : wt === 2 ? 'lake' : wt === 3 ? 'river' : LIFE[w.life[k]]} · height ${Math.round(w.elev[k])} m · fertility ${(w.fert[k] * 100).toFixed(0)}%` + town;
+      return;
+    }
     if (h && step >= 0){
       let best = null, bd = 1e9;
       for (const st of h.settlements){

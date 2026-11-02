@@ -52,7 +52,7 @@ export function makeStream(gl){
     slots.fill(null); packs.clear(); asked.clear(); arrived.length = 0;
     // the worker needs only what roads and buildings read: the land (height grid) and the seed
     if (worker) worker.postMessage({ type: 'init', id: genId,
-      world: { size: world.size, seed: world.seed, half: world.half, res: world.res, cell: world.cell, height: world.height }, net: g.net });
+      world: { size: world.size, seed: world.seed, half: world.half, res: world.res, cell: world.cell, height: world.height, water: world.water }, net: g.net });
     gl.bindTexture(gl.TEXTURE_2D, cellsTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NS * CN, NS * CN, gl.RGBA, gl.FLOAT, new Float32Array(NS * CN * NS * CN * 4));
     if (landTex) gl.deleteTexture(landTex);

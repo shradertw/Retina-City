@@ -5,7 +5,7 @@ import { loadReport } from './ui/loading.js';
 import { initStartPanel } from './ui/startpanel.js';
 import { initMap } from './ui/map.js';
 import { buildWorld, worldFromData } from './gen/world.js';
-import { runHistory } from './gen/history.js';
+import { runSim } from './gen/sim.js';
 import { makeRoads, roadNetwork } from './gen/roads.js';
 import { makeBlocks } from './gen/blocks.js';
 import { current } from './gen/current.js';
@@ -66,7 +66,7 @@ function generateWorld(opts, progress){
   const id = ++genId;
   return new Promise((resolve, reject) => {
     let wk;
-    const local = () => { const w = buildWorld(opts); resolve({ world: w, history: runHistory(w, opts) }); };
+    const local = () => { const w = buildWorld(opts); resolve({ world: w, history: runSim(w, opts) }); };
     try { wk = new Worker(new URL('./gen/worldworker.js', import.meta.url), { type: 'module' }); }
     catch (_){ local(); return; }
     wk.onmessage = (e) => {

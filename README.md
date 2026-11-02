@@ -14,7 +14,7 @@ Working with Claude.AI to make a procedural city you see the way a human eye see
 | `src/main.js` | WebGL setup, controls, view codes, the frame loop and the eye's processing passes |
 | `src/core/` | Shared state and small helpers |
 | `src/world/` | The seeded hash, the chunk stream that keeps the area around the player on the GPU, and the world evaluated in JavaScript (collision, focus ray) |
-| `src/gen/` | The world generator: options, the natural maps (elevation, lakes, rivers, climate, metals, fertility, life), the world history (settlements, farms and roads, then town districts and density up to year 900), roads and buildings in 512 m chunks, and the 32 m render cells the shaders read (built in a background worker) |
+| `src/gen/` | The world generator: options, the natural maps (elevation, lakes, rivers, climate, metals, fertility, life), the history simulation (households, settlement tags, farming, discoveries; src/gen/sim.js, tech.js), roads and buildings in 512 m chunks, and the 32 m render cells the shaders read (built in a background worker) |
 | `src/sky/` | Sun and moon positions, light levels, the day/night cycle |
 | `src/ui/` | Start screen, loading report, map, sky dials, compass |
 | `src/shaders/` | GLSL: shared pieces, the raymarched scene, and the post-processing passes |

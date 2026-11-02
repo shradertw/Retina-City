@@ -39,13 +39,17 @@ export function initStartPanel(hooks){
     const show = () => { out.textContent = o.kind === 'range' ? opts[o.key] + ' ' + (o.unit || '') + (o.note ? ' · ' + o.note(opts[o.key]) : '') : ''; };
     row.append(label, out);
     if (o.kind === 'range'){ input.type = 'range'; input.step = String(o.step); row.append(input); }
+    else if (o.kind === 'check'){
+      input.type = 'checkbox'; input.checked = !!opts[o.key]; row.append(input);
+      input.addEventListener('change', () => { opts[o.key] = input.checked ? 1 : 0; });
+    }
     else {
       input.type = 'number'; input.step = '1';
       const dice = document.createElement('button'); dice.type = 'button'; dice.textContent = 'Random'; dice.className = 'dice';
       dice.addEventListener('click', (e) => { e.stopPropagation(); opts[o.key] = Math.floor(Math.random() * (o.max + 1)); input.value = String(opts[o.key]); });
       const pair = document.createElement('div'); pair.className = 'seedrow'; pair.append(input, dice); row.append(pair);
     }
-    input.addEventListener('input', () => {
+    if (o.kind !== 'check') input.addEventListener('input', () => {
       const v = Number(input.value);
       const st = o.step || 1;                     // keep to the option's steps (some are tenths)
       if (Number.isFinite(v)) opts[o.key] = Math.min(o.max, Math.max(o.min, +(Math.round(v / st) * st).toFixed(3)));
