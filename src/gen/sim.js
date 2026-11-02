@@ -36,6 +36,7 @@ import { makeName } from './history.js';
 import { TECH, bit, yieldOf, eraOf, count } from './tech.js';
 import { makeRouter } from './route.js';
 import { makeStreets } from './streets.js';
+import { NT } from './traits.js';
 import { nearRiver } from './roads.js';
 
 export const STEP_YEARS = 5;
@@ -235,8 +236,9 @@ export function runSim(w, o = {}, onProgress = null){
     removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
     T[B.tag[id]].nb--; if (B.kind[id] >= 2) T[B.tag[id]].townB--;
   }
-  function newHousehold(x, z, people, ing, know, mode, step, parent = -1){
-    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0 };
+  // tr: behaviour traits (src/gen/traits.js), 0-1 each
+  function newHousehold(x, z, people, ing, know, mode, step, parent, tr){
+    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0, tr };
     H.push(h);
     return h;
   }
@@ -244,6 +246,8 @@ export function runSim(w, o = {}, onProgress = null){
   // hands work more land (the surplus feeds the towns)
   const yieldBits = TECH.reduce((m, t, i) => t.yield ? m | (1 << i) : m, 0);
   const farmK = (h) => 1.2 + 0.12 * count(h.know & yieldBits);
+  // a branch's traits: its family's, with a little change
+  const inheritTr = (tr, a) => Float32Array.from(tr, (v, i) => Math.min(1, Math.max(0, v + 0.12 * (chance(a, 20 + i) - 0.5))));
   const inherit = (ing, a) => Math.min(1, Math.max(0.02, ing + 0.15 * (chance(a, 3) - 0.5)));
   // farmland: take free cells near home (own settlement's land or untagged), best first, until the harvest
   // reaches target people's worth
@@ -344,7 +348,9 @@ export function runSim(w, o = {}, onProgress = null){
       let lo = 0, hi = LN - 1;
       while (lo < hi){ const mid = (lo + hi) >> 1; if (cum[mid] < u) lo = mid + 1; else hi = mid; }
       const x = lx(lo % lres) + (rnd(h2(k, 2, S), 1) - 0.5) * LC, z = lx((lo / lres) | 0) + (rnd(h2(k, 3, S), 1) - 0.5) * LC;
-      newHousehold(x, z, BAND * (0.7 + 0.6 * rnd(h2(k, 4, S), 1)), 0.15 + 0.7 * rnd(h2(k, 5, S), 1), 0, FORAGER, 0);
+      // each band's ways: anywhere from one end of each trait to the other, mostly in between
+      const tr = Float32Array.from({ length: NT }, (_, i) => 0.5 + 0.45 * (rnd(h2(k, 10 + i, S), 1) + rnd(h2(k, 30 + i, S), 1) - 1));
+      newHousehold(x, z, BAND * (0.7 + 0.6 * rnd(h2(k, 4, S), 1)), 0.15 + 0.7 * rnd(h2(k, 5, S), 1), 0, FORAGER, 0, -1, tr);
     }
   }
   // forager occupancy and wild food on a coarse grid (4 km)
@@ -459,7 +465,7 @@ export function runSim(w, o = {}, onProgress = null){
         }
         if (h.mode === FORAGER){
           if (h.people < 4){ h.alive = false; continue; }
-          if (h.people > 45){ const p = 15 + 5 * rnd(hS, 4); h.people -= p; newHousehold(h.x + 3000 * (rnd(hS, 5) - 0.5), h.z + 3000 * (rnd(hS, 6) - 0.5), p, inherit(h.ing, h.id), h.know, FORAGER, step, h.id); }
+          if (h.people > 45){ const p = 15 + 5 * rnd(hS, 4); h.people -= p; newHousehold(h.x + 3000 * (rnd(hS, 5) - 0.5), h.z + 3000 * (rnd(hS, 6) - 0.5), p, inherit(h.ing, h.id), h.know, FORAGER, step, h.id, inheritTr(h.tr, h.id)); }
         }
         continue;
       }
@@ -499,7 +505,7 @@ export function runSim(w, o = {}, onProgress = null){
       // splitting
       if (h.people > SPLIT){
         const p = 8 + 7 * rnd(hS, 7);
-        const nh = newHousehold(h.x, h.z, p, inherit(h.ing, h.id), h.know, FARMER, step, h.id);
+        const nh = newHousehold(h.x, h.z, p, inherit(h.ing, h.id), h.know, FARMER, step, h.id, inheritTr(h.tr, h.id));
         h.people -= p;
         let sp = null;
         if (s.inflow - s.town > p * 1.2 && s.hh >= 3){
@@ -570,11 +576,18 @@ export function runSim(w, o = {}, onProgress = null){
       if (step >= emptyList[q + 1]){ collapse(id, step); emptyList[q] = emptyList[emptyList.length - 2]; emptyList[q + 1] = emptyList[emptyList.length - 1]; emptyList.length -= 2; q -= 2; }
     }
     // record the settlements
-    for (const s of T){ s.pop = 0; s.sx = 0; s.sz = 0; s.kn = 0; }
+    for (const s of T){ s.pop = 0; s.sx = 0; s.sz = 0; s.kn = 0; if (s.alive) (s.trs || (s.trs = new Float32Array(NT))).fill(0); }
     for (const h of H){
       if (!h.alive || h.b < 0) continue;
       const s = T[h.tag];
       s.pop += h.people; s.sx += h.x * h.people; s.sz += h.z * h.people; s.kn |= h.know;
+      for (let i = 0; i < NT; i++) s.trs[i] += h.tr[i] * h.people;
+    }
+    // households take on the ways of their settlement a little each step (a twentieth of the difference)
+    for (const h of H){
+      if (!h.alive || h.b < 0) continue;
+      const s = T[h.tag];
+      if (s.pop > 0) for (let i = 0; i < NT; i++) h.tr[i] += 0.05 * (s.trs[i] / s.pop - h.tr[i]);
     }
     // a settlement of absorbPop people or fewer, with a bigger settlement near (within twice the tag radius),
     // joins it: its land, buildings and households take that tag (a new hamlet gets 20 years first)
@@ -593,6 +606,9 @@ export function runSim(w, o = {}, onProgress = null){
       const f = fr(step);
       s.popAt[f] = s.pop; s.xAt[f] = s.pop > 0 ? s.sx / s.pop / 1000 : s.core[0] / 1000; s.zAt[f] = s.pop > 0 ? s.sz / s.pop / 1000 : s.core[1] / 1000;
       s.areaAt[f] = s.cells * cellKm2; s.knowAt[f] = shared ? s.know : s.kn;
+      // its people's average ways (0-255 per trait)
+      if (!s.traitsAt) s.traitsAt = new Uint8Array((frames + 1) * NT);
+      if (s.pop > 0) for (let i = 0; i < NT; i++) s.traitsAt[f * NT + i] = Math.round(255 * s.trs[i] / s.pop);
       s.x = s.xAt[f]; s.z = s.zAt[f];
     }
     lap('record');
@@ -645,7 +661,7 @@ export function runSim(w, o = {}, onProgress = null){
 
   const buildings = { n: nb, x: Float32Array.from(B.x), z: Float32Array.from(B.z), kind: Uint8Array.from(B.kind), tag: Int32Array.from(B.tag),
     born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty) };
-  for (const s of T){ delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
+  for (const s of T){ delete s.trs; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
   const aliveN = alive.length;
   return {
     version: 2, steps: frames, year, stepYears: rec * STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps: frames, years: rec * STEP_YEARS }],

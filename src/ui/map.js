@@ -9,6 +9,7 @@ import { LIFE, METALS } from '../gen/world.js';
 import { radiusKm } from '../gen/history.js';
 import { ZONES } from '../gen/districts.js';
 import { eraOf, namesOf } from '../gen/tech.js';
+import { TRAITS, describe } from '../gen/traits.js';
 
 // map layers: what each shows, and its legend
 const LAYERS = [
@@ -443,6 +444,11 @@ export function initMap(){
         const st = h.settlements[t], k = st.knowAt[step];
         town = `\n${st.name}: ${st.popAt[step] > 0 ? Math.round(st.popAt[step]).toLocaleString() + ' people' : 'ghost town (no one lives here)'} · founded year ${h.year[st.born]} · ${eraOf(k).toLowerCase()}`
           + (k ? `\nKnows: ${namesOf(k).join(', ')}` : '');
+        if (st.traitsAt && st.popAt[step] > 0){
+          const NT = TRAITS.length, v = (i) => st.traitsAt[step * NT + i] / 255;
+          const words = TRAITS.map((t, i) => describe(i, v(i))).filter(Boolean);
+          town += `\nWays: ${words.length ? words.join(', ') : 'middling in everything'} (` + TRAITS.map((t, i) => t.key + ' ' + v(i).toFixed(2)).join(', ') + ')';
+        }
         const found = h.log.filter((e) => e.tag === t && e.step <= step).map((e) => `${e.text.replace(st.name + ' discovers ', '')} (${h.year[e.step]})`);
         if (found.length) town += `\nDiscovered here: ${found.join(', ')}`;
       }
