@@ -46,7 +46,9 @@ const YIELD = 55;              // people one km2 of fully fertile farmland feeds
 const SPLIT = 40;              // a household above this splits
 const FARM_REACH = 2000;       // m: how far from home a household farms
 const GAP = 22;                // m: least distance between buildings
-const FARMER = 1, FORAGER = 0, CRAFTS = 2, TRADER = 3;     // ways of living (also the building kinds: 0 farm home, 2 workshop, 3 shop)
+const FARMER = 1, FORAGER = 0, CRAFTS = 2, TRADER = 3, WORKER = 4;
+// building kinds: 0 farm home, 2 workshop, 3 shop, 4 factory, 5 housing (homes of factory workers)
+const FACTORY = 4, HOUSING = 5;
 const RES_BITS = { copper: 1, iron: 2, coal: 4, river: 8 };
 
 /** @param {import('./world.js').World} w @param {Record<string, number>} [o] */
@@ -126,7 +128,8 @@ export function runSim(w, o = {}, onProgress = null){
   const tagEv = [], farmEv = [];                                // land changes, for the map's replay: [cell, step, value]
   const H = [];                                                 // households
   // buildings: died 0 = standing; empty = the frame its people left (0 = lived in); hh = who lives there (-1 none)
-  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], empty: [], hh: [] };
+  // st: storeys; cap: households it holds (flats); occ: households in it; rebuilt: frame rebuilt taller (0 never)
+  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], empty: [], hh: [], st: [], cap: [], occ: [], rebuilt: [] };
   const emptyList = [];                                          // [building, step it falls down]
   const T = [];                                                 // settlements (tags)
   // roads between settlements (built when trade between them is enough) and town streets (grown as towns need)
@@ -164,7 +167,7 @@ export function runSim(w, o = {}, onProgress = null){
     const id = T.length;
     const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), bornStep: step, died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
       popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
-      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, cells: 0, tm: new Float32Array(NT).fill(0.5), ff: 0, fp: 0, loot: 0, lootLost: 0, lost: 0, inflow: 0, town: 0, traders: 0, hh: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
+      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, bl: [], cells: 0, workers: 0, tm: new Float32Array(NT).fill(0.5), ff: 0, fp: 0, loot: 0, lootLost: 0, lost: 0, inflow: 0, town: 0, traders: 0, hh: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
     return s;
   }
@@ -185,46 +188,62 @@ export function runSim(w, o = {}, onProgress = null){
     }
   }
   /** a new building for household h at (x, z); its settlement tag by the rules above */
-  function build(h, x, z, kind, step){
-    // an empty building of the same kind close by is moved into
+  /** household h moves into building id (it has room) */
+  function moveIn(h, id){
+    if (B.empty[id]) B.empty[id] = 0;
+    B.occ[id]++; B.hh[id] = h.id;
+    const s = T[B.tag[id]];
+    if (shared){ s.know |= h.know; h.know = s.know; }
+    h.b = id; h.tag = B.tag[id]; h.x = B.x[id]; h.z = B.z[id]; h.res = resourcesAt(h.x, h.z);
+    return id;
+  }
+  function build(h, x, z, kind, step, st = 1, cap = 1){
+    // a building of the same kind close by with room (an empty one, or a block of flats) is moved into
     {
       const ci = Math.floor(x / FG), cj = Math.floor(z / FG);
       for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const id of bkF.get(key(ci + a, cj + b)) || []){
-        if (!B.empty[id] || B.kind[id] !== kind || Math.hypot(B.x[id] - x, B.z[id] - z) > 40) continue;
-        B.empty[id] = 0; B.hh[id] = h.id;
-        const s = T[B.tag[id]];
-        if (shared){ s.know |= h.know; h.know = s.know; }
-        h.b = id; h.tag = B.tag[id]; h.x = B.x[id]; h.z = B.z[id]; h.res = resourcesAt(h.x, h.z);
-        return id;
+        if (B.kind[id] !== kind || B.occ[id] >= B.cap[id] || Math.hypot(B.x[id] - x, B.z[id] - z) > 40) continue;
+        return moveIn(h, id);
       }
     }
+    const id = addBuilding(x, z, kind, step, st, cap, h.id);
+    B.occ[id] = 1;
+    const s = T[B.tag[id]];
+    if (shared){ s.know |= h.know; h.know = s.know; }
+    h.b = id; h.tag = B.tag[id]; h.x = x; h.z = z; h.res = resourcesAt(x, z);
+    return id;
+  }
+  /** a new building at (x, z); its settlement tag by the rules above (a = whose chances) */
+  function addBuilding(x, z, kind, step, st, cap, a){
     const c = landAt(x, z), near = buildingsNear(x, z, R);
     let tag = ltag[c];
     if (tag < 0){
       if (!near.length) tag = newSettlement(x, z, step).id;
       else { let bd = 1e9; for (const id of near){ const d = Math.hypot(B.x[id] - x, B.z[id] - z); if (d < bd){ bd = d; tag = B.tag[id]; } } }
     }
-    if (near.length && chance(h.id, 1) < rival){
+    if (near.length && chance(a, 1) < rival){
       const others = near.filter((id) => B.tag[id] !== tag);
-      if (others.length) tag = B.tag[others[Math.floor(chance(h.id, 2) * others.length)]];
+      if (others.length) tag = B.tag[others[Math.floor(chance(a, 2) * others.length)]];
     }
     const id = B.x.length;
-    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.empty.push(0); B.hh.push(h.id);
+    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.empty.push(0); B.hh.push(-1);
+    B.st.push(st); B.cap.push(cap); B.occ.push(0); B.rebuilt.push(0);
     addTo(bkC, key(Math.floor(x / R), Math.floor(z / R)), id); addTo(bkF, key(Math.floor(x / FG), Math.floor(z / FG)), id);
     const s = T[tag];
-    s.nb++; s.everB++; if (kind >= 2) s.townB++;
-    if (shared){ s.know |= h.know; h.know = s.know; }
-    h.b = id; h.tag = tag; h.x = x; h.z = z; h.res = resourcesAt(x, z);
+    s.nb++; s.everB++; if (kind >= 2){ s.townB++; s.bl.push(id); }
     claim(x, z, tag, step);
     return id;
   }
   // a household dies out or leaves: its building stands empty (and falls down after 100-300 years unless
   // someone moves in), its fields fall free
   function abandon(h, step){
+    if (h.job >= 0){ B.occ[h.job]--; h.job = -1; }
     if (h.b >= 0){
       const id = h.b;
-      B.empty[id] = fr(step); B.hh[id] = -1;
-      emptyList.push(id, step + 20 + Math.floor(40 * chance(id, 9)));
+      if (--B.occ[id] <= 0){
+        B.occ[id] = 0; B.empty[id] = fr(step); B.hh[id] = -1;
+        emptyList.push(id, step + 20 + Math.floor(40 * chance(id, 9)));
+      }
       h.b = -1;
     }
     for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); }
@@ -238,14 +257,15 @@ export function runSim(w, o = {}, onProgress = null){
   }
   // tr: behaviour traits (src/gen/traits.js), 0-1 each
   function newHousehold(x, z, people, ing, know, mode, step, parent, tr){
-    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0, tr };
+    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, job: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0, tr };
     H.push(h);
     return h;
   }
   // how much a farming family grows, relative to its own needs: more as farming knowledge lets each pair of
   // hands work more land (the surplus feeds the towns)
   const yieldBits = TECH.reduce((m, t, i) => t.yield ? m | (1 << i) : m, 0);
-  const farmK = (h) => 1.2 + 0.12 * count(h.know & yieldBits);
+  const labourOf = (m) => TECH.reduce((k, t, i) => t.labour && m & (1 << i) ? k * t.labour : k, 1);
+  const farmK = (h) => (1.2 + 0.12 * count(h.know & yieldBits)) * labourOf(h.know);
   // a branch's traits: its family's, with a little change
   const inheritTr = (tr, a) => Float32Array.from(tr, (v, i) => Math.min(1, Math.max(0, v + 0.12 * (chance(a, 20 + i) - 0.5))));
   const inherit = (ing, a) => Math.min(1, Math.max(0.02, ing + 0.15 * (chance(a, 3) - 0.5)));
@@ -301,7 +321,7 @@ export function runSim(w, o = {}, onProgress = null){
     const n = Math.ceil(3 * R / R), ci = Math.floor(s.core[0] / R), cj = Math.floor(s.core[1] / R);
     for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of bkC.get(key(ci + a, cj + b)) || []){
       if (B.tag[id] !== s.id) continue;
-      B.tag[id] = u.id; s.nb--; u.nb++; if (B.kind[id] >= 2){ s.townB--; u.townB++; }
+      B.tag[id] = u.id; s.nb--; u.nb++; if (B.kind[id] >= 2){ s.townB--; u.townB++; u.bl.push(id); }
     }
     const gi = Math.floor((s.core[0] + half) / LC), gj = Math.floor((s.core[1] + half) / LC), m = Math.ceil(3 * R / LC);
     for (let j = Math.max(0, gj - m); j <= Math.min(lres - 1, gj + m); j++) for (let i = Math.max(0, gi - m); i <= Math.min(lres - 1, gi + m); i++)
@@ -368,7 +388,61 @@ export function runSim(w, o = {}, onProgress = null){
   /* Where a town household builds: the best of a few spots around the settlement's middle by what the land
      is worth to its use (bid rent). Traders want the busiest, most central spots, next to other shops; makers
      take the ring further out, next to water (for mills, once known), away from the dear centre. */
-  const millBit = bit('mill'), wheelBit = bit('wheel');
+  const millBit = bit('mill'), wheelBit = bit('wheel'), steamBit = bit('steam'), railBit = bit('rail'), carBit = bit('car');
+  const medBit = bit('medicine'), printBit = bit('printing'), steelBit = bit('steel'), elevBit = bit('elevator'), elecBit = bit('electricity');
+  /* Storeys: the most anyone can build (masonry 3, steel frames 12, elevators 40; else 2), and how much of it
+     a spot gets: the more central and the bigger the town, the taller (land is dearer there). */
+  const storeyCap = (k) => k & elevBit ? 40 : k & steelBit ? 12 : k & bit('masonry') ? 3 : 2;
+  function storeysFor(s, x, z, kind, know){
+    if (kind === FACTORY) return know & steelBit ? 2 : 1;
+    if (kind === CRAFTS) return know & bit('masonry') ? 2 : 1;
+    const r = 60 + 25 * Math.sqrt(s.townB + 1), central = Math.exp(-Math.hypot(x - s.core[0], z - s.core[1]) / (0.45 * r));
+    const size = Math.sqrt(Math.min(1, s.pop / 40000)), cap = storeyCap(know);
+    const k = kind === TRADER ? 2 : 1.5;
+    // (with cars, housing away from the middle is houses with gardens: one or two storeys)
+    if (kind === HOUSING && know & carBit && central < 0.3) return 1 + (central > 0.15 ? 1 : 0);
+    return Math.max(1, Math.round(1 + (cap - 1) * Math.pow(central, k) * Math.max(size, kind === TRADER ? 0.3 : 0.15)));
+  }
+  /* A factory worker household: a job in one of the settlement's factories with room (or a new factory,
+     placed by what the land is worth to it: the edge, water, away from shops), and a home within commuting
+     reach of it (1.5 km on foot, 5 km by rail, 15 km by car), away from the factories' noise and smoke, in a
+     block of flats with room or a new building facing a street. */
+  function industrial(h, s, step){
+    let job = -1;
+    for (const id of s.bl) if (B.kind[id] === FACTORY && !B.died[id] && B.occ[id] < B.cap[id]){ job = id; break; }
+    if (job < 0){
+      const sp = townSite(h.id * 23, s, FACTORY, h.know, step);
+      if (!sp) return false;
+      job = addBuilding(sp[0], sp[1], FACTORY, step, storeysFor(s, sp[0], sp[1], FACTORY, h.know), h.know & elecBit ? 12 : 6, h.id);
+      if (B.tag[job] !== s.id){ /* stood on another settlement's land: still this town's employer */ }
+    }
+    const reach = h.know & carBit ? 15000 : h.know & railBit ? 5000 : 1500;
+    const jx = B.x[job], jz = B.z[job];
+    const smoke = (x, z) => { let n = 0; const ci = Math.floor(x / FG), cj = Math.floor(z / FG);
+      for (let b = -4; b <= 4; b++) for (let a = -4; a <= 4; a++) for (const id of bkF.get(key(ci + a, cj + b)) || []) if (B.kind[id] === FACTORY) n++;
+      return Math.min(1, n / 3); };
+    const r = 60 + 25 * Math.sqrt(s.townB + 1);
+    const score = (x, z) => { const dj = Math.hypot(x - jx, z - jz); if (dj > reach) return -1e9;
+      return 0.5 * Math.exp(-Math.hypot(x - s.core[0], z - s.core[1]) / (0.6 * r)) - 0.9 * smoke(x, z) - 0.4 * dj / reach + 0.2 * chance(h.id, 30); };
+    // flats with room
+    let best = null, bs = -1e8;
+    for (let t = 0; t < 20 && s.bl.length; t++){
+      const id = s.bl[Math.floor(chance(h.id, 40 + t) * s.bl.length)];
+      if (B.kind[id] !== HOUSING || B.died[id] || B.occ[id] >= B.cap[id]) continue;
+      const v = score(B.x[id], B.z[id]); if (v > bs){ bs = v; best = id; }
+    }
+    // or a new building facing a street (with cars the town also spreads outward: see streets.grow)
+    let cands = streets.frontage(s, 12, h.id * 3).filter(([x, z]) => buildable(x, z));
+    if (cands.length < 3){ streets.grow(s, fr(step), true, h.id * 7, !!(h.know & carBit)); cands = cands.concat(streets.frontage(s, 8, h.id * 9).filter(([x, z]) => buildable(x, z))); }
+    let bp = null;
+    for (const [x, z] of cands){ const v = score(x, z); if (v > bs){ bs = v; bp = [x, z]; best = null; } }
+    h.mode = WORKER; h.job = job; B.occ[job]++;
+    if (best !== null){ moveIn(h, best); return true; }
+    if (!bp){ B.occ[job]--; h.job = -1; h.mode = FARMER; return false; }
+    const st = storeysFor(s, bp[0], bp[1], HOUSING, h.know);
+    build(h, bp[0], bp[1], HOUSING, step, st, st);
+    return true;
+  }
   function townSite(a, s, use, know, step){
     const r = 40 + 16 * Math.sqrt(s.townB + 1), wide = !!(know & wheelBit);
     // spots facing the settlement's streets; when few are free, the streets grow (see src/gen/streets.js)
@@ -385,6 +459,7 @@ export function runSim(w, o = {}, onProgress = null){
       for (let b = -2; b <= 2; b++) for (let q = -2; q <= 2; q++) for (const id of bkF.get(key(ci + q, cj + b)) || []) if (B.kind[id] === 3) shops++;
       const central = Math.exp(-d / (0.4 * r)), busy = Math.min(shops, 8) / 8, water = lwater[landAt(px, pz)];
       const sc = use === TRADER ? 2 * central + 0.6 * busy
+        : use === FACTORY ? 0.8 * (1 - central) - 1.2 * busy + 0.8 * water + 0.2 * chance(a, 6)
         : 1.2 * Math.exp(-d / (0.8 * r)) - 0.8 * busy - 0.6 * central + (know & millBit ? 0.9 : 0.25) * water;
       if (sc > bs){ bs = sc; best = [px, pz]; }
     }
@@ -418,7 +493,7 @@ export function runSim(w, o = {}, onProgress = null){
   const farmingBit = bit('farming');
   for (let step = 1; step <= steps; step++){
     // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement --
-    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5); }
+    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.workers = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5); }
     focc.fill(0);
     for (const h of H){
       if (!h.alive) continue;
@@ -426,7 +501,7 @@ export function runSim(w, o = {}, onProgress = null){
       const s = T[h.tag];
       s.pop += h.people; s.hh++;
       if (h.mode === FARMER){ h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2; s.cap += Math.max(0, h.food - h.people); s.ff += h.food; s.fp += h.people; }
-      else { s.town += h.people; if (h.mode === TRADER) s.traders += h.people; }
+      else { s.town += h.people; if (h.mode === TRADER) s.traders += h.people; if (h.mode === WORKER) s.workers += h.people; }
       for (let t = 0; t < TECH.length; t++) if (h.know & (1 << t)) s.kc[t]++;
     }
     // contact between settlements: knowledge exposure from the others nearby (bigger and nearer count more)
@@ -446,16 +521,19 @@ export function runSim(w, o = {}, onProgress = null){
     }
     // trade: each settlement's spare food goes to the markets around it (itself included), more to bigger
     // and nearer ones; the food that reaches a market feeds its town people (crafts and traders)
-    const wheelI = TECH.findIndex((t) => t.key === 'wheel');
+    let roadsThisStep = 0;
+    const wheelI = TECH.findIndex((t) => t.key === 'wheel'), railI = TECH.findIndex((t) => t.key === 'rail'), carI = TECH.findIndex((t) => t.key === 'car');
     for (const u of live){
       if (u.cap <= 0) continue;
-      const range = u.kc[wheelI] > 0 ? 6000 : 3500, ci = Math.floor(u.cx / TB), cj = Math.floor(u.cz / TB);
+      // reach: carts, then railways, then cars
+      const range = u.kc[carI] > 0 ? 35000 : u.kc[railI] > 0 ? 18000 : u.kc[wheelI] > 0 ? 6000 : 3500, ci = Math.floor(u.cx / TB), cj = Math.floor(u.cz / TB);
+      const nb2 = Math.ceil(range * 1.5 / TB);
       const cand = [];
       let wsum = 0;
-      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
+      for (let b = -nb2; b <= nb2; b++) for (let a = -nb2; a <= nb2; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
         if (t !== u && t.town <= 0) continue;
         // (a settlement wary of outsiders sends less to other settlements' markets)
-        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * Math.exp(-d / range) * (t === u ? 1 : inclination(u.tm, 'trade'));
+        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * (1 + t.workers / (t.town + 1)) * Math.exp(-d / range) * (t === u ? 1 : inclination(u.tm, 'trade'));
         if (wt < 1e-3) continue;
         cand.push([t, wt]); wsum += wt;
       }
@@ -466,7 +544,10 @@ export function runSim(w, o = {}, onProgress = null){
         // a road once the trade between two settlements is enough; its traffic decides its class
         const k = Math.min(u.id, t.id) * 1e6 + Math.max(u.id, t.id);
         let L = tradeLinks.get(k);
-        if (!L && amt >= LINK_FLOW){
+        // (a road only between settlements within 15 km: trade further away goes along the roads between the
+        // towns in between; at most 12 new roads per step)
+        if (!L && amt >= LINK_FLOW && roadsThisStep < 12 && Math.hypot(t.cx - u.cx, t.cz - u.cz) < 15000){
+          roadsThisStep++;
           const pi = router.link(u.core[0], u.core[1], t.core[0], t.core[1], fr(step));
           L = { path: pi, ema: 0 };
           tradeLinks.set(k, L);
@@ -541,7 +622,8 @@ export function runSim(w, o = {}, onProgress = null){
       // being raided makes people warier and readier to use force; winning raids, readier still
       if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.03); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.02); }
       if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.015);
-      h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - 0.007)) * (0.95 + 0.1 * rnd(hS, 1));
+      // (medicine: fewer deaths)
+      h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - (h.know & medBit ? 0.0045 : 0.007))) * (0.95 + 0.1 * rnd(hS, 1));
       // knowledge: discoveries, and learning from the settlement and from settlements in contact
       if (shared) h.know = s.know;
       const spare = h.mode >= CRAFTS ? 2 : 0.5 + Math.min(1, Math.max(0, ratio - 1) * 2);
@@ -549,8 +631,8 @@ export function runSim(w, o = {}, onProgress = null){
       for (let t = 1; t < TECH.length; t++){
         const m = 1 << t, tk = TECH[t];
         if (h.know & m || (h.know & tk.mask) !== tk.mask) continue;
-        if (techRes[t] && !(h.res & techRes[t])) continue;
-        if (rnd(hS, 40 + t) < pace * h.ing * spare * size * inclination(h.tr, 'invent') / tk.difficulty){
+        // (a resource must be within reach to invent; learning it from others works anywhere: trade brings it)
+        if ((!techRes[t] || h.res & techRes[t]) && rnd(hS, 40 + t) < pace * h.ing * spare * size * inclination(h.tr, 'invent') / tk.difficulty){
           h.know |= m;
           if (shared) s.know |= m;
           if (!s.found) s.found = 0;
@@ -558,7 +640,7 @@ export function runSim(w, o = {}, onProgress = null){
           continue;
         }
         const inside = shared ? 0 : s.hh > 1 ? s.kc[t] / s.hh : 0;
-        if (rnd(hS, 60 + t) < (0.35 * Math.sqrt(inside) + 0.25 * Math.min(1, s.ext ? s.ext[t] : 0)) * inclination(h.tr, 'adopt')){
+        if (rnd(hS, 60 + t) < (0.35 * Math.sqrt(inside) + 0.25 * Math.min(1, s.ext ? s.ext[t] : 0)) * inclination(h.tr, 'adopt') * (h.know & printBit ? 1.6 : 1)){
           h.know |= m; if (shared) s.know |= m;
         }
       }
@@ -575,9 +657,15 @@ export function runSim(w, o = {}, onProgress = null){
         if (s.inflow - s.town > p * 1.2 && s.hh >= 3){
           // town people: traders once the settlement is a market (it draws food from others), else makers;
           // where they build is decided by what the land is worth to them (see townSite)
-          const use = s.traders < 0.35 * s.town && (s.inflow > s.cap * 1.1 || s.town > 60) ? TRADER : CRAFTS;
-          sp = townSite(nh.id * 7, s, use, nh.know, step);
-          if (sp){ nh.mode = use; s.town += p; if (use === TRADER) s.traders += p; build(nh, sp[0], sp[1], use, step); continue; }
+          // with steam power, factory work takes over from workshops
+          const steam = !!(nh.know & steamBit);
+          const use = s.traders < 0.3 * s.town && (s.inflow > s.cap * 1.1 || s.town > 60) ? TRADER : steam ? WORKER : CRAFTS;
+          if (use === WORKER){
+            if (industrial(nh, s, step)){ s.town += p; s.workers += p; continue; }
+          } else {
+            sp = townSite(nh.id * 7, s, use, nh.know, step);
+            if (sp){ nh.mode = use; s.town += p; if (use === TRADER) s.traders += p; build(nh, sp[0], sp[1], use, step, storeysFor(s, sp[0], sp[1], use, nh.know), 1); continue; }
+          }
         }
         // some branches move far away whatever the land nearby (more where people move on readily)
         if (rnd(hS, 8) < 0.05 * inclination(h.tr, 'leave')) sp = site(nh.id * 19, h.x, h.z, 3000, 12000, 16, true);
@@ -636,6 +724,18 @@ export function runSim(w, o = {}, onProgress = null){
       }
     }
     lap('tags');
+    // every 50 years central shops and housing are rebuilt taller where knowledge now allows it
+    if (step % 10 === 0) for (const s of live){
+      if (!s.alive || s.townB < 5 || !s.kn) continue;
+      let n = 0;
+      for (const id of s.bl){
+        if (n >= 30) break;
+        const k = B.kind[id];
+        if (B.died[id] || B.tag[id] !== s.id || (k !== TRADER && k !== HOUSING)) continue;
+        const t = storeysFor(s, B.x[id], B.z[id], k, s.kn);
+        if (t > B.st[id] + 1){ B.st[id] = t; if (k === HOUSING) B.cap[id] = t; B.rebuilt[id] = fr(step); n++; }
+      }
+    }
     // empty buildings fall down in time
     for (let q = 0; q < emptyList.length; q += 2){
       const id = emptyList[q];
@@ -706,19 +806,23 @@ export function runSim(w, o = {}, onProgress = null){
   for (let id = 0; id < nb; id++){
     if (B.died[id]) continue;
     const i = Math.floor((B.x[id] + half) / BS), j = Math.floor((B.z[id] + half) / BS), k = j * BRES + i;
-    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, tag: B.tag[id], born: B.born[id], mason: 0 }; bmap.set(k, e); }
-    if (B.kind[id] === 2) e.crafts++; else if (B.kind[id] === 3) e.shops++; else e.homes++;
+    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, fac: 0, tag: B.tag[id], born: B.born[id], built: 0, mason: 0, st: 1 }; bmap.set(k, e); }
+    const kd = B.kind[id];
+    if (kd === 2) e.crafts++; else if (kd === 3) e.shops++; else if (kd === FACTORY) e.fac++; else e.homes++;
+    e.st = Math.max(e.st, B.st[id]); e.built = Math.max(e.built, B.rebuilt[id] || B.born[id]);
     e.born = Math.min(e.born, B.born[id]);
     if (B.hh[id] >= 0 && H[B.hh[id]].know & bit('masonry')) e.mason = 1;
   }
   const be = [...bmap.values()], bn = be.length;
   const blocks = { size: BS, res: BRES, half, from: frames, n: bn, i: new Int32Array(bn), j: new Int32Array(bn), owner: new Int32Array(bn),
-    born: new Int16Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0) };
+    born: new Int16Array(bn), built: new Int16Array(bn), ind: new Uint8Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0) };
   be.forEach((e, q) => {
-    blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born;
-    // the block's district: whatever most of its buildings are (shops and offices, workshops, homes)
-    const zone = e.shops >= Math.max(e.crafts, e.homes) && e.shops ? 2 : e.crafts >= e.homes ? 3 : 1;
-    const st = zone === 2 ? 2 + e.mason : 1 + e.mason;
+    blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born; blocks.built[q] = e.built;
+    // the block's district: whatever most of its buildings are (shops and offices, workshops or factories,
+    // homes); its storeys: its tallest building's (homes and workshops before storeys counted: by masonry)
+    const zone = e.shops >= Math.max(e.crafts + e.fac, e.homes) && e.shops ? 2 : e.crafts + e.fac >= e.homes ? 3 : 1;
+    blocks.ind[q] = zone === 3 && e.fac > 0 ? 1 : 0;
+    const st = Math.max(e.st, zone === 2 ? 2 + e.mason : 1 + e.mason);
     blocks.snap[0][q] = zone << 6 | st;
   });
   // farmland at the end, in the shape the 3D view reads (land use per plot)
@@ -727,7 +831,8 @@ export function runSim(w, o = {}, onProgress = null){
   lap('blocks');
 
   const buildings = { n: nb, x: Float32Array.from(B.x), z: Float32Array.from(B.z), kind: Uint8Array.from(B.kind), tag: Int32Array.from(B.tag),
-    born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty) };
+    born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty),
+    st: Uint8Array.from(B.st, (v) => Math.min(63, v)), rebuilt: Int16Array.from(B.rebuilt) };
   for (const s of T) for (const k of Object.keys(s)) if (/^[wr]\d+$/.test(k)) delete s[k];     // raid bookkeeping
   for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
   const aliveN = alive.length;

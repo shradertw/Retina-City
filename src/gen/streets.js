@@ -93,16 +93,18 @@ export function makeStreets(c){
     return s.coreNode;
   }
   /** grow settlement s's network by one street; wide: the wheel is known @returns {number} the new edge or -1 */
-  function grow(s, born, wide, a){
+  function grow(s, born, wide, a, outward = false){
     core(s, born);
     const nodes = s.nodes;
     for (let t = 0; t < 10; t++){
-      // a node with free sides, nearer the middle more likely (towns fill in before they spread)
+      // a node with free sides, nearer the middle more likely (towns fill in before they spread); outward:
+      // further out more likely (suburbs, once people have cars)
       let n = -1;
       for (let k = 0; k < 4; k++){
         const m = nodes[Math.floor(c.rnd(a, 10 + t * 4 + k) * nodes.length)];
         if (nedges[m].length >= 4) continue;
-        if (n < 0 || Math.hypot(nx[m] - s.core[0], nz[m] - s.core[1]) < Math.hypot(nx[n] - s.core[0], nz[n] - s.core[1])) n = m;
+        const dm = Math.hypot(nx[m] - s.core[0], nz[m] - s.core[1]), dn = n < 0 ? 0 : Math.hypot(nx[n] - s.core[0], nz[n] - s.core[1]);
+        if (n < 0 || (outward ? dm > dn : dm < dn)) n = m;
       }
       if (n < 0) continue;
       let ang;

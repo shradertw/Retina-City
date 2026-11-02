@@ -51,7 +51,9 @@ export function makeRouter(w){
         const ng = g + c;
         if (stamp[n] === search && ng >= gScore[n]) continue;
         stamp[n] = search; gScore[n] = ng; from[n] = k;
-        heap.push(n, ng + 0.4 * rcell * Math.hypot(ni - gi, nj - gj));
+        // (a heuristic above the cheapest cost per metre, 0.35 on roads: the search heads for the goal sooner,
+        // at the price of routes that are sometimes a little longer than the best)
+        heap.push(n, ng + 0.6 * rcell * Math.hypot(ni - gi, nj - gj));
       }
     }
     return null;

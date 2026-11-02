@@ -25,7 +25,7 @@ import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS, nearR
      shops and offices  1-4 shops wall to wall; 5-12 offices; 13+ towers on podiums
      crafts (zone 3)    workshops: small, close together on the street (factories and sheds come with industry)
    Brick for the older buildings, concrete (and glass) more often the newer they are. */
-function form(zone, st, year, r, pattern){
+function form(zone, st, year, r, pattern, ind){
   const brick = (p) => (r(9) < p ? 0 : 1);
   const old = year < 620 ? 0.85 : year < 760 ? 0.5 : year < 840 ? 0.25 : 0.1;
   const vary = (n, k) => Math.max(1, n + Math.floor(r(k) * (2 * k + 1)) - k);
@@ -40,6 +40,7 @@ function form(zone, st, year, r, pattern){
     if (st <= 12) return { w: 16 + 14 * r(1), d: 16 + 10 * r(2), back: r(3), gap: 0.5 + 3 * r(4), st: vary(st, 2), kind: brick(old * 0.4) };
     return { w: 24 + 12 * r(1), d: 22 + 8 * r(2), back: 2, gap: 4 + 6 * r(4), st: vary(st, 3), kind: 2, podH: 6.4 };
   }
+  if (ind) return { w: 25 + 30 * r(1), d: 22 + 20 * r(2), back: 6 + 8 * r(3), gap: 6 + 10 * r(4), st: st > 1 && r(5) < 0.5 ? 2 : 1, kind: brick(old * 0.6), storeyH: 5.5 };   // factories
   // workshops of crafts people (before industry): small brick buildings, close together on the street
   return { w: 8 + 7 * r(1), d: 10 + 8 * r(2), back: 1.5 * r(3), gap: r(4) < 0.7 ? 0.2 : 3, st: vary(st, 0), kind: brick(old + 0.2), storeyH: 3.6 };
 }
@@ -81,7 +82,7 @@ export function makeBlocks(world, roads){
           const [qx0, qz0, qtx, qtz] = along(e, Math.min(s + 4, L));
           const SW = sidewalkOf(e), probe = e.w / 2 + SW + 8, q = roads.block(qx0 - qtz * side * probe, qz0 + qtx * side * probe);
           if (q < 0){ s += 10; continue; }
-          const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern);
+          const F = form(BL.zone[q], BL.st[q], BL.built[q], (k) => rnd(h, 10 + k), e.pattern === undefined ? 1 : e.pattern, BL.ind ? BL.ind[q] : 0);
           // between town streets, a building takes at most half the depth from one street to the next
           const room = e.pattern === undefined ? 1e9 : (PATTERNS[e.pattern].n * LAT - e.w) / 2 - SW - 0.5;
           const back = Math.min(F.back, Math.max(0, room - 8)), d = Math.max(6, Math.min(F.d, room - back)), w = F.w;

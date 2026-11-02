@@ -63,14 +63,15 @@ export function roadNetwork(history){
   if (BK){
     const v = BK.snap[BK.snap.length - 1], n = v.reduce((a, c) => a + (c ? 1 : 0), 0);
     blocks = { res: BK.res, half: BK.half, size: BK.size, key: new Int32Array(n), zone: new Uint8Array(n), st: new Uint8Array(n),
-      owner: new Int32Array(n), born: new Int16Array(n), built: new Int16Array(n) };
+      owner: new Int32Array(n), born: new Int16Array(n), built: new Int16Array(n), ind: new Uint8Array(n) };
     const last = new Int16Array(BK.n).fill(-1);
     for (let e = 0; e < BK.evB.length; e++) last[BK.evB[e]] = BK.evS[e];
     let q = 0;
     for (let b = 0; b < v.length; b++){
       if (!v[b]) continue;
       blocks.key[q] = BK.j[b] * BK.res + BK.i[b]; blocks.zone[q] = v[b] >> 6; blocks.st[q] = v[b] & 63; blocks.owner[q] = BK.owner[b];
-      blocks.born[q] = history.year[BK.born[b]]; blocks.built[q] = history.year[last[b] >= 0 ? last[b] : BK.born[b]];
+      blocks.born[q] = history.year[BK.born[b]]; blocks.built[q] = history.year[last[b] >= 0 ? last[b] : BK.built ? BK.built[b] : BK.born[b]];
+      blocks.ind[q] = BK.ind ? BK.ind[b] : (v[b] >> 6) === 3 ? 1 : 0;
       const x = -BK.half + BK.i[b] * BK.size, z = -BK.half + BK.j[b] * BK.size;
       let bx = box.get(BK.owner[b]); if (!bx){ bx = [x, z, x, z]; box.set(BK.owner[b], bx); }
       bx[0] = Math.min(bx[0], x); bx[1] = Math.min(bx[1], z); bx[2] = Math.max(bx[2], x + BK.size); bx[3] = Math.max(bx[3], z + BK.size);
