@@ -46,7 +46,7 @@ export const sidewalkOf = (e) => (e.w > 18 ? SIDEWALK_MAIN : SIDEWALK);
 // widths (m) of the history's road classes (farm track, road, main road): in the country (track; two lanes
 // with shoulders; four lanes with shoulders) and where they run through a town (a lane and a half; two lanes
 // with parking; four lanes, a turn lane and parking)
-const CLASS_W = [4, 8, 18], CLASS_W_TOWN = [6, 12, 24], CLASS_TYPE = [2, 3, 1];
+const CLASS_W = [4, 8, 18], CLASS_W_TOWN = [6, 12, 16], CLASS_TYPE = [2, 3, 1];
 
 /** The history's roads, towns and town blocks (as they stand at the end), as the road and building generators
  *  need them: plain data, so it can go to a worker.
@@ -54,7 +54,7 @@ const CLASS_W = [4, 8, 18], CLASS_W_TOWN = [6, 12, 24], CLASS_TYPE = [2, 3, 1];
  *  blocks: every standing block: key (j x res + i), district, storeys, owner, year first built, year last built
  *  @param {any} history */
 export function roadNetwork(history){
-  const towns = [], paths = history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls })) : [];
+  const towns = [], paths = history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls, clsAt: r.clsAt })) : [];
   if (!history) return { towns, paths, blocks: null };
   const BK = history.blocks;
   // blocks still standing at the end
@@ -101,7 +101,7 @@ export function roadNetwork(history){
     }
     towns.push([x, z, r * 1.25 + 60, s.pop, ang, s.id, ...(bx || [x - r, z - r, x + r, z + r])]);
   }
-  return { towns, paths, blocks };
+  return { towns, paths, blocks, streets: history.streets || null };
 }
 
 /** @param {import('./world.js').World} world @param {{ towns: number[][], paths: { pts: Float32Array, cls: number }[] }} [net] */
@@ -145,20 +145,21 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
   net.paths.forEach((path, pi) => {
     const P = path.pts, n = P.length / 2;
     if (n < 2) return;
-    const out = [P[0], P[1]];
+    const out = [P[0], P[1]], src = [0];                    // src: the path point each sample comes from
     let carry = 0;
     for (let k = 0; k + 1 < n; k++){
       const ax = P[2 * k], az = P[2 * k + 1], bx = P[2 * k + 2], bz = P[2 * k + 3], L = Math.hypot(bx - ax, bz - az);
       let t = STEP - carry;
-      while (t <= L){ out.push(ax + (bx - ax) * t / L, az + (bz - az) * t / L); t += STEP; }
+      while (t <= L){ out.push(ax + (bx - ax) * t / L, az + (bz - az) * t / L); src.push(k); t += STEP; }
       carry = L - (t - STEP);
     }
-    if (carry > 1){ out.push(P[2 * n - 2], P[2 * n - 1]); }
+    if (carry > 1){ out.push(P[2 * n - 2], P[2 * n - 1]); src.push(n - 1); }
     const m = out.length / 2;
     for (let s0 = 0, run = 0; s0 + 1 < m; s0 += SAMPLES, run++){
       const pts = new Float32Array((SAMPLES + 1) * 2);
       for (let q = 0; q <= SAMPLES; q++){ const idx = Math.min(s0 + q, m - 1); pts[2 * q] = out[2 * idx]; pts[2 * q + 1] = out[2 * idx + 1]; }
-      const cls = path.cls, mid = SAMPLES;                   // centre point of the piece
+      const mid = SAMPLES;                                   // centre point of the piece
+      const cls = path.clsAt ? path.clsAt[src[Math.min(s0 + 3, m - 1)]] : path.cls;   // (its class there, when it varies along the road)
       const town = inTown(pts[mid], pts[mid + 1]);
       const e = { id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town };
       const k = key2(Math.floor(pts[0] / ROAD_CHUNK), Math.floor(pts[1] / ROAD_CHUNK));
@@ -199,8 +200,27 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
   }
   // on or next to the town's blocks (within one block)?
   const nearTown = (t, x, z) => { for (const [a, b] of [[0, 0], [40, 0], [-40, 0], [0, 40], [0, -40]]){ const q = block(x + a, z + b); if (q >= 0 && BL.owner[q] === t[5]) return true; } return false; };
+  // streets grown by the history simulation (src/gen/streets.js): each a straight piece, by chunk of its start
+  const ST = net.streets, simStreets = new Map();
+  if (ST) for (let i = 0; i < ST.n; i++){
+    const ax = ST.ax[i], az = ST.az[i], bx = ST.bx[i], bz = ST.bz[i], cls = ST.cls[i];
+    const pts = new Float32Array((SAMPLES + 1) * 2);
+    for (let q = 0; q <= SAMPLES; q++){ pts[2 * q] = ax + (bx - ax) * q / SAMPLES; pts[2 * q + 1] = az + (bz - az) * q / SAMPLES; }
+    // junction controls at its ends (0 none, 1 stop, 2 signals, 3 roundabout), for the markings
+    const e = { id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true };
+    const k = key2(Math.floor(ax / ROAD_CHUNK), Math.floor(az / ROAD_CHUNK));
+    let l = simStreets.get(k); if (!l){ l = []; simStreets.set(k, l); } l.push(e);
+  }
   /** town streets whose first point lies in chunk (cx, cz) */
   function townStreets(cx, cz, out){
+    if (ST){
+      for (const e of simStreets.get(key2(cx, cz)) || []){
+        const p = e.pts, n2 = 2 * SAMPLES;
+        if (e.town && alongRoad((p[0] + p[n2]) / 2, (p[1] + p[n2 + 1]) / 2, p[n2] - p[0], p[n2 + 1] - p[1], 15)) continue;
+        out.push(e);
+      }
+      return;
+    }
     if (!BL) return;
     const x0 = cx * ROAD_CHUNK, z0 = cz * ROAD_CHUNK, x1 = x0 + ROAD_CHUNK, z1 = z0 + ROAD_CHUNK;
     const seen = new Set();

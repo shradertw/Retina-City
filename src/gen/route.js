@@ -56,34 +56,63 @@ export function makeRouter(w){
     }
     return null;
   }
-  /** route between two world points and keep it as a road built at step */
+  /** route between two world points and keep it as a road built at step @returns {number} its index or -1 */
   function link(ax, az, bx, bz, step, kind = 'road'){
     const p = route(at(ax, az), at(bx, bz));
-    if (!p || p.length < 2) return false;
+    if (!p || p.length < 2) return -1;
     for (const k of p){ if (!road[k]) since[k] = step; road[k] = Math.min(65535, road[k] + 1); }
-    paths.push({ cells: Int32Array.from(p), step, kind });
-    return true;
+    paths.push({ cells: Int32Array.from(p), step, kind, traffic: 0 });
+    return paths.length - 1;
   }
-  /** the roads as world polylines (smoothed), each with its class from how many routes share it:
-   *  0 track, 1 road, 2 main road */
+  /** the roads as world polylines (smoothed), each with its class: from the traffic each path carries (when
+   *  given: summed over the paths sharing each cell; the busiest sixth are main roads), else from how many
+   *  routes share it: 0 track, 1 road, 2 main road */
   function finish(){
-    for (const r of paths){
-      let use = 0;
-      const pts = new Float32Array(r.cells.length * 2);
-      r.cells.forEach((k, n) => { pts[2 * n] = -half + ((k % rres) + 0.5) * rcell; pts[2 * n + 1] = -half + (((k / rres) | 0) + 0.5) * rcell; use = Math.max(use, road[k]); });
+    const byTraffic = paths.some((r) => r.traffic > 0);
+    let cellT = null, mainAt = Infinity;
+    if (byTraffic){
+      cellT = new Float32Array(RN);
+      for (const r of paths) for (const k of r.cells) cellT[k] += r.traffic;
+      // main road: the busiest sixth of the road network's cells
+      const vals = [];
+      for (let k = 0; k < RN; k++) if (road[k]) vals.push(cellT[k]);
+      vals.sort((a, b) => a - b);
+      mainAt = Math.max(1, vals[Math.floor(vals.length * 5 / 6)] || 1);
+    }
+    // Each path is cut into runs: a stretch already laid by an earlier path is not laid again (routes that
+    // follow existing roads would otherwise lie on top of them), and a run ends where the class changes.
+    const clsOf = (r, k) => byTraffic ? (cellT[k] >= mainAt ? 2 : 1) : (r.kind === 'track' && road[k] < 3 ? 0 : road[k] >= 6 ? 2 : 1);
+    const laid = new Set(), out = [];
+    const emit = (r, cells) => {
+      const pts = new Float32Array(cells.length * 2);
+      cells.forEach((k, n) => { pts[2 * n] = -half + ((k % rres) + 0.5) * rcell; pts[2 * n + 1] = -half + (((k / rres) | 0) + 0.5) * rcell; });
       for (let pass = 0; pass < 3; pass++){
         const q = pts.slice();
-        for (let n = 1; n < r.cells.length - 1; n++){
+        for (let n = 1; n < cells.length - 1; n++){
           q[2 * n] = 0.25 * pts[2 * n - 2] + 0.5 * pts[2 * n] + 0.25 * pts[2 * n + 2];
           q[2 * n + 1] = 0.25 * pts[2 * n - 1] + 0.5 * pts[2 * n + 1] + 0.25 * pts[2 * n + 3];
         }
         pts.set(q);
       }
-      r.pts = pts; r.use = use; r.cls = r.kind === 'track' && use < 3 ? 0 : use >= 6 ? 2 : 1;
+      out.push({ cells: Int32Array.from(cells), pts, step: r.step, kind: r.kind, cls: Math.max(...cells.slice(0, -1).map((k, n) => Math.min(clsOf(r, k), clsOf(r, cells[n + 1])))), traffic: r.traffic });
+    };
+    for (const r of paths){
+      let run = [];
+      for (let n = 0; n + 1 < r.cells.length; n++){
+        const a = r.cells[n], b = r.cells[n + 1], pk = Math.min(a, b) * RN + Math.max(a, b);
+        const fresh = !laid.has(pk), cl = Math.min(clsOf(r, a), clsOf(r, b));
+        if (run.length && (!fresh || cl !== run.cl)){ if (run.length > 1) emit(r, run); run = []; }
+        if (!fresh) continue;
+        laid.add(pk);
+        if (!run.length){ run.push(a); run.cl = cl; }
+        run.push(b);
+      }
+      if (run.length > 1) emit(r, run);
     }
+    paths.length = 0; paths.push(...out);
     return { roads: paths, roadGrid: { res: rres, cell: rcell, use: road, since } };
   }
-  return { at, route, link, finish, rres, rcell, road };
+  return { at, route, link, finish, rres, rcell, road, paths };
 }
 
 // a binary heap of cell indices by a float priority (smallest first)

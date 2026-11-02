@@ -80,7 +80,7 @@ export function roadJS(x, z){
   let best = 1e9;
   for (let n = 0; n < c.nR; n++){
     const i = (c.s + c.nB * 3 + c.nL + n * 2) * 4, d = c.d;
-    if (d[i + 7] >= 8) continue;                      // country roads lie level with the fields
+    if (d[i + 7] % 16 >= 8) continue;                 // country roads lie level with the fields
     const ax = d[i], az = d[i + 1], ex = d[i + 2] - ax, ez = d[i + 3] - az;
     const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)));
     best = Math.min(best, Math.hypot(x - ax - ex * t, z - az - ez * t) - d[i + 4]);

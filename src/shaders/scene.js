@@ -447,7 +447,7 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
       best = d; g = gd;
       fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * b.w);
     }
-    if (b.w < 7.5 && d < dC){ dC = d; gC = gd; }
+    if (mod(b.w, 16.0) < 7.5 && d < dC){ dC = d; gC = gd; }
   }
   if (crossing) fr.z = -1.0;
   return best;
@@ -1158,7 +1158,8 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   c = mix(c, c*0.35, vd);
   float paint = 0.0;
   float kind = floor(fr.w / 1000.0), type = mod(kind, 8.0);
-  bool country = kind > 7.5;
+  bool country = mod(kind, 16.0) > 7.5;
+  float jS = mod(floor(kind / 16.0), 4.0), jE = floor(kind / 64.0);   // junction controls at the start and end
   if (type > 1.5 && type < 2.5){
     // a farm track: packed gravel and dirt, no markings
     float hh;
@@ -1190,6 +1191,17 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
     }
   }
   s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint);
+  // junction control (placeholder): a line across the lane arriving at the junction, white for a stop sign,
+  // yellow for signals, blue for a roundabout (traffic keeps right: arriving at the end is the right-hand half,
+  // across < 0; arriving at the start, across > 0)
+  if (fr.z > 0.0 && !country){
+    float sA = fr.x, L = mod(fr.w, 1000.0), hw = fr.z, e = min(sA, L - sA), z0 = hw + 4.5;
+    float jc = sA < L - sA ? jS : jE, arriving = sA < L - sA ? step(0.0, fr.y) : step(fr.y, 0.0);
+    if (jc > 0.5){
+      vec3 jcol = jc > 2.5 ? vec3(0.15, 0.35, 0.85) : jc > 1.5 ? vec3(0.85, 0.7, 0.1) : vec3(0.70, 0.69, 0.64);
+      s.alb = mix(s.alb, jcol, boxF(e, z0 - 0.9, z0 - 0.3, fpAlong(f, dir)) * arriving);
+    }
+  }
   s.h = -0.002*vd - 0.0008*stones.y;
   s.refl = 0.012;
   return s;
