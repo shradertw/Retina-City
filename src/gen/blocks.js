@@ -23,7 +23,7 @@ import { ROAD_CHUNK, SAMPLES, sidewalkOf, distToRoad, key2, LAT, PATTERNS, nearR
               6+            on old-core and grid-era streets, flats wall to wall at the sidewalk (perimeter
                             blocks); elsewhere apartment blocks set back with space around them
      shops and offices  1-4 shops wall to wall; 5-12 offices; 13+ towers on podiums
-     industry           big sheds set back from the street, one or two tall storeys
+     crafts (zone 3)    workshops: small, close together on the street (factories and sheds come with industry)
    Brick for the older buildings, concrete (and glass) more often the newer they are. */
 function form(zone, st, year, r, pattern){
   const brick = (p) => (r(9) < p ? 0 : 1);
@@ -40,7 +40,8 @@ function form(zone, st, year, r, pattern){
     if (st <= 12) return { w: 16 + 14 * r(1), d: 16 + 10 * r(2), back: r(3), gap: 0.5 + 3 * r(4), st: vary(st, 2), kind: brick(old * 0.4) };
     return { w: 24 + 12 * r(1), d: 22 + 8 * r(2), back: 2, gap: 4 + 6 * r(4), st: vary(st, 3), kind: 2, podH: 6.4 };
   }
-  return { w: 25 + 30 * r(1), d: 22 + 20 * r(2), back: 6 + 8 * r(3), gap: 6 + 10 * r(4), st: st > 1 && r(5) < 0.5 ? 2 : 1, kind: 1, storeyH: 5.5 };
+  // workshops of crafts people (before industry): small brick buildings, close together on the street
+  return { w: 8 + 7 * r(1), d: 10 + 8 * r(2), back: 1.5 * r(3), gap: r(4) < 0.7 ? 0.2 : 3, st: vary(st, 0), kind: brick(old + 0.2), storeyH: 3.6 };
 }
 /** @param {import('./world.js').World} world @param {ReturnType<import('./roads.js').makeRoads>} roads */
 export function makeBlocks(world, roads){

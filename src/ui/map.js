@@ -35,7 +35,7 @@ export function initMap(){
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
-  const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Town streets (as in 3D)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Settlements and their buildings'], ['names', 'Names'], ['farms', 'Farmland'],
+  const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Town streets (as in 3D)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Buildings: farm homes (cream), workshops (brown), shops (blue)'], ['names', 'Names'], ['farms', 'Farmland'],
     ['roads', 'Roads'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
@@ -179,19 +179,19 @@ export function initMap(){
       }
       ctx.stroke();
     }
-    // buildings standing this year: homes small and light, crafts (workshops) darker
+    // buildings standing this year: farm homes light, workshops brown, shops blue
     const Bd = hist.buildings, bs = Math.max(1.6 * d, 12 * scale * d);
     if (show.towns && scale > 0.004){
-      const homes = new Path2D(), crafts = new Path2D();
+      const homes = new Path2D(), crafts = new Path2D(), shops = new Path2D();
       const x0 = cx - W() / 2 / (scale * d) - 50, x1 = cx + W() / 2 / (scale * d) + 50, z0 = cz - H() / 2 / (scale * d) - 50, z1 = cz + H() / 2 / (scale * d) + 50;
       for (let b = 0; b < Bd.n; b++){
         if (Bd.born[b] > step || (Bd.died[b] && Bd.died[b] <= step)) continue;
         const x = Bd.x[b], z = Bd.z[b];
         if (x < x0 || x > x1 || z < z0 || z > z1) continue;
-        (Bd.kind[b] === 2 ? crafts : homes).rect(toX(x) - bs / 2, toY(z) - bs / 2, bs, bs);
+        (Bd.kind[b] === 3 ? shops : Bd.kind[b] === 2 ? crafts : homes).rect(toX(x) - bs / 2, toY(z) - bs / 2, bs, bs);
       }
-      ctx.fillStyle = '#f4e3c0'; ctx.fill(homes); ctx.fillStyle = '#7a3b22'; ctx.fill(crafts);
-      ctx.strokeStyle = 'rgba(20,14,8,0.7)'; ctx.lineWidth = 1; ctx.stroke(homes); ctx.stroke(crafts);
+      ctx.fillStyle = '#f4e3c0'; ctx.fill(homes); ctx.fillStyle = '#a0522d'; ctx.fill(crafts); ctx.fillStyle = '#4f86d6'; ctx.fill(shops);
+      ctx.strokeStyle = 'rgba(20,14,8,0.7)'; ctx.lineWidth = 1; ctx.stroke(homes); ctx.stroke(crafts); ctx.stroke(shops);
     }
     // names, biggest first, as many as fit
     if (show.names){
@@ -432,7 +432,7 @@ export function initMap(){
         if (Bd.born[b] > step || (Bd.died[b] && Bd.died[b] <= step)) continue;
         const dd = Math.hypot(Bd.x[b] - x, Bd.z[b] - z); if (dd < bd){ bd = dd; best = b; }
       }
-      if (best >= 0) town += `\n${Bd.kind[best] === 2 ? 'Workshop and home of crafts people' : 'Home of a farming family'}, built year ${h.year[Bd.born[best]]}` + (Bd.died[best] ? `, abandoned year ${h.year[Bd.died[best]]}` : '');
+      if (best >= 0) town += `\n${['Home of a farming family', '', 'Workshop and home of crafts people', 'Shop and home of traders'][Bd.kind[best]]}, built year ${h.year[Bd.born[best]]}` + (Bd.died[best] ? `, abandoned year ${h.year[Bd.died[best]]}` : '');
       const recent = h.log.filter((e) => e.step <= step).slice(-3).map((e) => `${h.year[e.step]}: ${e.text}`);
       if (recent.length) town += `\nLatest: ${recent.join(' · ')}`;
       hover = `\nHere: ${wt === 1 ? 'sea' : wt === 2 ? 'lake' : wt === 3 ? 'river' : LIFE[w.life[k]]} · height ${Math.round(w.elev[k])} m · fertility ${(w.fert[k] * 100).toFixed(0)}%` + town;

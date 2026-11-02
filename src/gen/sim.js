@@ -12,8 +12,11 @@
                 spare; the harvest per km2 grows with discoveries. Too little food and they shrink.
      Crafts     live off the settlement's surplus (what its farmers grow beyond their own needs) and build in
                 its middle, close together: where farmland is rich, villages become towns.
-   A household above SPLIT people splits: a branch of 8-15 becomes crafts people if the settlement's surplus
-   can feed them, else builds next to the family while farmland nearby is free, else starts a farmstead
+   Trade: a settlement's spare food goes to the markets nearby (itself included), more to bigger and nearer
+   ones (the wheel widens the reach), so market towns draw on the villages around them.
+   A household above SPLIT people splits: a branch of 8-15 becomes town people (makers, or traders once the
+   settlement is a market) if the food reaching the settlement can feed them, placed by what the land is
+   worth to them (townSite), else builds next to the family while farmland nearby is free, else starts a farmstead
    further out, else moves on to open land a few km away.
    Settlement tags: a building with no other building within the tag radius starts a new settlement and tags
    the untagged land within the radius. A building on tagged land takes that tag (with the rival chance, the
@@ -28,7 +31,7 @@ import { h2, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
 import { chamfer } from './world.js';
 import { makeName } from './history.js';
-import { TECH, bit, yieldOf, eraOf } from './tech.js';
+import { TECH, bit, yieldOf, eraOf, count } from './tech.js';
 import { makeRouter } from './route.js';
 
 export const STEP_YEARS = 5;
@@ -38,7 +41,7 @@ const YIELD = 55;              // people one km2 of fully fertile farmland feeds
 const SPLIT = 40;              // a household above this splits
 const FARM_REACH = 2000;       // m: how far from home a household farms
 const GAP = 22;                // m: least distance between buildings
-const FARMER = 1, FORAGER = 0, CRAFTS = 2;
+const FARMER = 1, FORAGER = 0, CRAFTS = 2, TRADER = 3;     // ways of living (also the building kinds: 0 farm home, 2 workshop, 3 shop)
 const RES_BITS = { copper: 1, iron: 2, coal: 4, river: 8 };
 
 /** @param {import('./world.js').World} w @param {Record<string, number>} [o] */
@@ -150,7 +153,7 @@ export function runSim(w, o = {}, onProgress = null){
     const id = T.length;
     const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
       popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
-      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
+      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
     return s;
   }
@@ -186,7 +189,7 @@ export function runSim(w, o = {}, onProgress = null){
     B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.hh.push(h.id);
     addTo(bkC, key(Math.floor(x / R), Math.floor(z / R)), id); addTo(bkF, key(Math.floor(x / FG), Math.floor(z / FG)), id);
     const s = T[tag];
-    s.nb++; s.everB++;
+    s.nb++; s.everB++; if (kind >= 2) s.townB++;
     if (shared){ s.know |= h.know; h.know = s.know; }
     h.b = id; h.tag = tag; h.x = x; h.z = z; h.res = resourcesAt(x, z);
     claim(x, z, tag, step);
@@ -198,7 +201,7 @@ export function runSim(w, o = {}, onProgress = null){
       B.died[id] = fr(step);
       removeFrom(bkC, key(Math.floor(B.x[id] / R), Math.floor(B.z[id] / R)), id);
       removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
-      T[B.tag[id]].nb--;
+      T[B.tag[id]].nb--; if (B.kind[id] >= 2) T[B.tag[id]].townB--;
       h.b = -1;
     }
     for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); }
@@ -209,6 +212,10 @@ export function runSim(w, o = {}, onProgress = null){
     H.push(h);
     return h;
   }
+  // how much a farming family grows, relative to its own needs: more as farming knowledge lets each pair of
+  // hands work more land (the surplus feeds the towns)
+  const yieldBits = TECH.reduce((m, t, i) => t.yield ? m | (1 << i) : m, 0);
+  const farmK = (h) => 1.2 + 0.12 * count(h.know & yieldBits);
   const inherit = (ing, a) => Math.min(1, Math.max(0.02, ing + 0.15 * (chance(a, 3) - 0.5)));
   // farmland: take free cells near home (own settlement's land or untagged), best first, until the harvest
   // reaches target people's worth
@@ -256,6 +263,28 @@ export function runSim(w, o = {}, onProgress = null){
     return bs > 0.02 ? best : null;
   }
 
+  /* Where a town household builds: the best of a few spots around the settlement's middle by what the land
+     is worth to its use (bid rent). Traders want the busiest, most central spots, next to other shops; makers
+     take the ring further out, next to water (for mills, once known), away from the dear centre. */
+  const millBit = bit('mill');
+  function townSite(a, s, use, know){
+    const r = 40 + 16 * Math.sqrt(s.townB + 1);
+    let best = null, bs = -1e9;
+    for (let t = 0; t < 16; t++){
+      const ang = chance(a, 4) * 6.2832, d = r * Math.sqrt(chance(a, 5)) * (1 + t / 10);
+      const px = s.core[0] + Math.cos(ang) * d, pz = s.core[1] + Math.sin(ang) * d;
+      if (!buildable(px, pz)) continue;
+      let shops = 0;
+      const ci = Math.floor(px / FG), cj = Math.floor(pz / FG);
+      for (let b = -2; b <= 2; b++) for (let q = -2; q <= 2; q++) for (const id of bkF.get(key(ci + q, cj + b)) || []) if (B.kind[id] === 3) shops++;
+      const central = Math.exp(-d / (0.4 * r)), busy = Math.min(shops, 8) / 8, water = lwater[landAt(px, pz)];
+      const sc = use === TRADER ? 2 * central + 0.6 * busy
+        : 1.2 * Math.exp(-d / (0.8 * r)) - 0.8 * busy - 0.6 * central + (know & millBit ? 0.9 : 0.25) * water;
+      if (sc > bs){ bs = sc; best = [px, pz]; }
+    }
+    return best;
+  }
+
   // ---- start: forager bands over the land, more where wild food is rich ----
   {
     const n = Math.max(1, Math.round(landKm2 / 100 * startDensity / BAND));
@@ -281,7 +310,7 @@ export function runSim(w, o = {}, onProgress = null){
   const farmingBit = bit('farming'), wheelBit = bit('wheel');
   for (let step = 1; step <= steps; step++){
     // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement --
-    for (const s of T){ s.cap = 0; s.crafts = 0; s.pop = 0; s.hh = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); }
+    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); }
     focc.fill(0);
     for (const h of H){
       if (!h.alive) continue;
@@ -289,7 +318,7 @@ export function runSim(w, o = {}, onProgress = null){
       const s = T[h.tag];
       s.pop += h.people; s.hh++;
       if (h.mode === FARMER){ h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2; s.cap += Math.max(0, h.food - h.people); }
-      else s.crafts += h.people;
+      else { s.town += h.people; if (h.mode === TRADER) s.traders += h.people; }
       for (let t = 0; t < TECH.length; t++) if (h.know & (1 << t)) s.kc[t]++;
     }
     // contact between settlements: knowledge exposure from the others nearby (bigger and nearer count more)
@@ -306,6 +335,22 @@ export function runSim(w, o = {}, onProgress = null){
         if (wgt < 0.01) continue;
         for (let t = 0; t < TECH.length; t++) s.ext[t] += wgt * (shared ? ((u.know >> t) & 1) : u.kc[t] / u.hh);
       }
+    }
+    // trade: each settlement's spare food goes to the markets around it (itself included), more to bigger
+    // and nearer ones; the food that reaches a market feeds its town people (crafts and traders)
+    const wheelI = TECH.findIndex((t) => t.key === 'wheel');
+    for (const u of live){
+      if (u.cap <= 0) continue;
+      const range = u.kc[wheelI] > 0 ? 6000 : 3500, ci = Math.floor(u.cx / TB), cj = Math.floor(u.cz / TB);
+      const cand = [];
+      let wsum = 0;
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
+        if (t !== u && t.town <= 0) continue;
+        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * Math.exp(-d / range);
+        if (wt < 1e-3) continue;
+        cand.push([t, wt]); wsum += wt;
+      }
+      for (const [t, wt] of cand) t.inflow += u.cap * wt / wsum;
     }
     lap('settlements');
 
@@ -342,7 +387,7 @@ export function runSim(w, o = {}, onProgress = null){
         if (h.know & farmingBit){
           // settle: a home on good land near water, within a few km
           const sp = site(h.id * 31 + step, h.x, h.z, 0, 3000, 10, true);
-          if (sp){ h.mode = FARMER; build(h, sp[0], sp[1], 0, step); farm(h, h.people * 1.3, step); }
+          if (sp){ h.mode = FARMER; build(h, sp[0], sp[1], 0, step); farm(h, h.people * farmK(h), step); }
         }
         if (h.mode === FORAGER){
           if (h.people < 4){ h.alive = false; continue; }
@@ -354,14 +399,14 @@ export function runSim(w, o = {}, onProgress = null){
       // food: farmers from their fields (taking more land if they can), crafts people from the surplus
       let ratio;
       if (h.mode === FARMER){
-        farm(h, h.people * 1.3, step);
+        farm(h, h.people * farmK(h), step);
         h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2;
         ratio = h.food / h.people;
-      } else ratio = s.crafts > 0 ? s.cap / s.crafts : 1;
+      } else ratio = s.town > 0 ? s.inflow / s.town : 1;
       h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - 0.007)) * (0.95 + 0.1 * rnd(hS, 1));
       // knowledge: discoveries, and learning from the settlement and from settlements in contact
       if (shared) h.know = s.know;
-      const spare = h.mode === CRAFTS ? 2 : 0.5 + Math.min(1, Math.max(0, ratio - 1) * 2);
+      const spare = h.mode >= CRAFTS ? 2 : 0.5 + Math.min(1, Math.max(0, ratio - 1) * 2);
       const size = 1 + 0.5 * Math.log10(1 + s.pop / 100);
       for (let t = 1; t < TECH.length; t++){
         const m = 1 << t, tk = TECH[t];
@@ -389,16 +434,17 @@ export function runSim(w, o = {}, onProgress = null){
         const nh = newHousehold(h.x, h.z, p, inherit(h.ing, h.id), h.know, FARMER, step, h.id);
         h.people -= p;
         let sp = null;
-        if (s.cap - s.crafts > p * 1.2 && s.hh >= 4){
-          // crafts people: in the settlement's middle, close together
-          const r = 30 + 14 * Math.sqrt(s.nb);
-          for (let t = 0; t < 12 && !sp; t++){ const q = site(nh.id * 7 + t, s.core[0], s.core[1], 0, r * (1 + t / 6), 1, false); if (q) sp = q; }
-          if (sp){ nh.mode = CRAFTS; build(nh, sp[0], sp[1], 2, step); continue; }
+        if (s.inflow - s.town > p * 1.2 && s.hh >= 3){
+          // town people: traders once the settlement is a market (it draws food from others), else makers;
+          // where they build is decided by what the land is worth to them (see townSite)
+          const use = s.traders < 0.35 * s.town && (s.inflow > s.cap * 1.1 || s.town > 60) ? TRADER : CRAFTS;
+          sp = townSite(nh.id * 7, s, use, nh.know);
+          if (sp){ nh.mode = use; s.town += p; if (use === TRADER) s.traders += p; build(nh, sp[0], sp[1], use, step); continue; }
         }
         if (freeLandNear(h.x, h.z, 1500) > p / (YIELD * yieldOf(h.know) * cellKm2) * 1.5) sp = site(nh.id * 11, h.x, h.z, 30, 160, 8, false);
         if (!sp) sp = site(nh.id * 13, h.x, h.z, 700, Math.max(1200, R * 1.8), 14, true);       // a farmstead further out
         if (!sp) sp = site(nh.id * 17, h.x, h.z, 3000, 9000, 16, true);                         // open land further away
-        if (sp){ build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * 1.3, step); }
+        if (sp){ build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * farmK(nh), step); }
         else { h.people += p; nh.alive = false; }
       }
     }
@@ -492,8 +538,8 @@ export function runSim(w, o = {}, onProgress = null){
   for (let id = 0; id < nb; id++){
     if (B.died[id]) continue;
     const i = Math.floor((B.x[id] + half) / BS), j = Math.floor((B.z[id] + half) / BS), k = j * BRES + i;
-    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, homes: 0, tag: B.tag[id], born: B.born[id], mason: 0 }; bmap.set(k, e); }
-    if (B.kind[id] === 2) e.crafts++; else e.homes++;
+    let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, tag: B.tag[id], born: B.born[id], mason: 0 }; bmap.set(k, e); }
+    if (B.kind[id] === 2) e.crafts++; else if (B.kind[id] === 3) e.shops++; else e.homes++;
     e.born = Math.min(e.born, B.born[id]);
     if (H[B.hh[id]].know & bit('masonry')) e.mason = 1;
   }
@@ -502,7 +548,9 @@ export function runSim(w, o = {}, onProgress = null){
     born: new Int16Array(bn), snap: [new Uint8Array(bn)], evB: new Int32Array(0), evS: new Int16Array(0) };
   be.forEach((e, q) => {
     blocks.i[q] = e.i; blocks.j[q] = e.j; blocks.owner[q] = e.tag; blocks.born[q] = e.born;
-    const zone = e.crafts > e.homes ? 2 : 1, st = zone === 2 ? 2 + e.mason : 1 + e.mason;
+    // the block's district: whatever most of its buildings are (shops and offices, workshops, homes)
+    const zone = e.shops >= Math.max(e.crafts, e.homes) && e.shops ? 2 : e.crafts >= e.homes ? 3 : 1;
+    const st = zone === 2 ? 2 + e.mason : 1 + e.mason;
     blocks.snap[0][q] = zone << 6 | st;
   });
   // farmland at the end, in the shape the 3D view reads (land use per plot)
