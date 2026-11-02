@@ -10,6 +10,7 @@ export const WORLD_OPTIONS = [
   { key: 'startDensity', group: 'History', label: 'People at the start (foragers), per 100 km² of land', kind: 'range', min: 10, max: 300, step: 10, def: 60, unit: 'people' },
   { key: 'tagRadius', group: 'History', label: 'Settlement radius (a lone building starts a new one)', kind: 'range', min: 0.3, max: 3, step: 0.1, def: 1, unit: 'km' },
   { key: 'rival', group: 'History', label: 'Chance a building joins a rival settlement', kind: 'range', min: 0, max: 30, step: 1, def: 5, unit: '%' },
+  { key: 'absorbPop', group: 'History', label: 'A settlement this small joins a bigger one nearby', kind: 'range', min: 0, max: 200, step: 5, def: 25, unit: 'people' },
   { key: 'discovery', group: 'History', label: 'Pace of discovery: chance an average farming family invents the plough within 100 years', kind: 'range', min: 2, max: 60, step: 1, def: 15, unit: '%' },
   { key: 'sharedKnow', group: 'History', label: 'Knowledge shared by the whole settlement', kind: 'check', min: 0, max: 1, def: 0 },
   { key: 'setbackRisk', group: 'History', label: 'Setbacks: chance a settlement has a fire, plague or raid within 100 years (each costs 15-40% of its people)', kind: 'range', min: 0, max: 90, step: 1, def: 33, unit: '%' },

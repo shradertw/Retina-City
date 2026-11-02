@@ -22,7 +22,9 @@
    the untagged land within the radius. A building on tagged land takes that tag (with the rival chance, the
    tag of another settlement with buildings within the radius). Every building tags untagged land within the
    radius. Every 5 steps land (and the buildings on it) goes to the tag the buildings around it mostly carry,
-   when that tag clearly dominates. A settlement with no buildings left is gone.
+   when that tag clearly dominates. A settlement of absorbPop people or fewer with a bigger one nearby joins it.
+   A household that dies out leaves its building empty; empty buildings are moved into again, or fall down
+   after 100-300 years. A settlement whose people are all gone is a ghost town until its buildings fall down.
    Knowledge: see src/gen/tech.js. A household may make a discovery each step (more likely with more
    ingenuity, more spare food and a bigger settlement); knowledge spreads quickly within a settlement and
    more slowly between settlements in contact (the wheel widens contact). It belongs to households (lost when
@@ -58,7 +60,7 @@ export function runSim(w, o = {}, onProgress = null){
   const pace = perStep(o.discovery ?? 15, 100) / (0.5 / TECH[1].difficulty);
   const startDensity = o.startDensity ?? 60;                    // people per 100 km2 of land at the start
   const setback = perStep(o.setbackRisk ?? 33, 100);            // a settlement's chance of a setback per step
-  const links = Math.round(o.links ?? 2);
+  const links = Math.round(o.links ?? 2), absorbPop = o.absorbPop ?? 25;
   const S = salt(w.seed, 60);
   const { res, cell, half } = w;
   // what is kept for the map: at most 400 frames (a long history keeps one frame per several steps); every
@@ -120,7 +122,9 @@ export function runSim(w, o = {}, onProgress = null){
   const ltag = new Int32Array(LN).fill(-1), lfarm = new Int32Array(LN).fill(-1);
   const tagEv = [], farmEv = [];                                // land changes, for the map's replay: [cell, step, value]
   const H = [];                                                 // households
-  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], hh: [] };    // buildings (died 0 = standing)
+  // buildings: died 0 = standing; empty = the frame its people left (0 = lived in); hh = who lives there (-1 none)
+  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], empty: [], hh: [] };
+  const emptyList = [];                                          // [building, step it falls down]
   const T = [];                                                 // settlements (tags)
   const log = [];
   // buildings in buckets: coarse (tag radius) and fine (for spacing)
@@ -151,7 +155,7 @@ export function runSim(w, o = {}, onProgress = null){
 
   function newSettlement(x, z, step){
     const id = T.length;
-    const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
+    const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), bornStep: step, died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
       popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
       knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, cells: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
@@ -175,6 +179,18 @@ export function runSim(w, o = {}, onProgress = null){
   }
   /** a new building for household h at (x, z); its settlement tag by the rules above */
   function build(h, x, z, kind, step){
+    // an empty building of the same kind close by is moved into
+    {
+      const ci = Math.floor(x / FG), cj = Math.floor(z / FG);
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const id of bkF.get(key(ci + a, cj + b)) || []){
+        if (!B.empty[id] || B.kind[id] !== kind || Math.hypot(B.x[id] - x, B.z[id] - z) > 40) continue;
+        B.empty[id] = 0; B.hh[id] = h.id;
+        const s = T[B.tag[id]];
+        if (shared){ s.know |= h.know; h.know = s.know; }
+        h.b = id; h.tag = B.tag[id]; h.x = B.x[id]; h.z = B.z[id]; h.res = resourcesAt(h.x, h.z);
+        return id;
+      }
+    }
     const c = landAt(x, z), near = buildingsNear(x, z, R);
     let tag = ltag[c];
     if (tag < 0){
@@ -186,7 +202,7 @@ export function runSim(w, o = {}, onProgress = null){
       if (others.length) tag = B.tag[others[Math.floor(chance(h.id, 2) * others.length)]];
     }
     const id = B.x.length;
-    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.hh.push(h.id);
+    B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.empty.push(0); B.hh.push(h.id);
     addTo(bkC, key(Math.floor(x / R), Math.floor(z / R)), id); addTo(bkF, key(Math.floor(x / FG), Math.floor(z / FG)), id);
     const s = T[tag];
     s.nb++; s.everB++; if (kind >= 2) s.townB++;
@@ -195,17 +211,23 @@ export function runSim(w, o = {}, onProgress = null){
     claim(x, z, tag, step);
     return id;
   }
+  // a household dies out or leaves: its building stands empty (and falls down after 100-300 years unless
+  // someone moves in), its fields fall free
   function abandon(h, step){
     if (h.b >= 0){
       const id = h.b;
-      B.died[id] = fr(step);
-      removeFrom(bkC, key(Math.floor(B.x[id] / R), Math.floor(B.z[id] / R)), id);
-      removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
-      T[B.tag[id]].nb--; if (B.kind[id] >= 2) T[B.tag[id]].townB--;
+      B.empty[id] = fr(step); B.hh[id] = -1;
+      emptyList.push(id, step + 20 + Math.floor(40 * chance(id, 9)));
       h.b = -1;
     }
     for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); }
     h.cells = []; h.cap = 0;
+  }
+  function collapse(id, step){
+    B.died[id] = fr(step);
+    removeFrom(bkC, key(Math.floor(B.x[id] / R), Math.floor(B.z[id] / R)), id);
+    removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
+    T[B.tag[id]].nb--; if (B.kind[id] >= 2) T[B.tag[id]].townB--;
   }
   function newHousehold(x, z, people, ing, know, mode, step, parent = -1){
     const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0 };
@@ -261,6 +283,23 @@ export function runSim(w, o = {}, onProgress = null){
       if (s > bs){ bs = s; best = [px, pz]; }
     }
     return bs > 0.02 ? best : null;
+  }
+
+  // settlement s joins u: households, buildings (lived in or empty) and land within reach of s
+  function absorb(s, u, step){
+    for (const h of H) if (h.alive && h.tag === s.id) h.tag = u.id;
+    const n = Math.ceil(3 * R / R), ci = Math.floor(s.core[0] / R), cj = Math.floor(s.core[1] / R);
+    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of bkC.get(key(ci + a, cj + b)) || []){
+      if (B.tag[id] !== s.id) continue;
+      B.tag[id] = u.id; s.nb--; u.nb++; if (B.kind[id] >= 2){ s.townB--; u.townB++; }
+    }
+    const gi = Math.floor((s.core[0] + half) / LC), gj = Math.floor((s.core[1] + half) / LC), m = Math.ceil(3 * R / LC);
+    for (let j = Math.max(0, gj - m); j <= Math.min(lres - 1, gj + m); j++) for (let i = Math.max(0, gi - m); i <= Math.min(lres - 1, gi + m); i++)
+      if (ltag[j * lres + i] === s.id) setTag(j * lres + i, u.id, step);
+    if (shared) u.know |= s.know;
+    u.pop += s.pop;
+    s.alive = false; s.died = fr(step); s.mergedInto = u.id; s.pop = 0;
+    log.push({ step: fr(step), tag: s.id, tech: -1, text: `${s.name} joins ${u.name}` });
   }
 
   /* Where a town household builds: the best of a few spots around the settlement's middle by what the land
@@ -495,12 +534,29 @@ export function runSim(w, o = {}, onProgress = null){
       }
     }
     lap('tags');
+    // empty buildings fall down in time
+    for (let q = 0; q < emptyList.length; q += 2){
+      const id = emptyList[q];
+      if (!B.empty[id] || B.died[id]){ emptyList[q] = emptyList[emptyList.length - 2]; emptyList[q + 1] = emptyList[emptyList.length - 1]; emptyList.length -= 2; q -= 2; continue; }
+      if (step >= emptyList[q + 1]){ collapse(id, step); emptyList[q] = emptyList[emptyList.length - 2]; emptyList[q + 1] = emptyList[emptyList.length - 1]; emptyList.length -= 2; q -= 2; }
+    }
     // record the settlements
     for (const s of T){ s.pop = 0; s.sx = 0; s.sz = 0; s.kn = 0; }
     for (const h of H){
       if (!h.alive || h.b < 0) continue;
       const s = T[h.tag];
       s.pop += h.people; s.sx += h.x * h.people; s.sz += h.z * h.people; s.kn |= h.know;
+    }
+    // a settlement of absorbPop people or fewer, with a bigger settlement near (within twice the tag radius),
+    // joins it: its land, buildings and households take that tag (a new hamlet gets 20 years first)
+    if (absorbPop > 0) for (const s of T){
+      if (!s.alive || s.pop <= 0 || s.pop > absorbPop || step - s.bornStep < 4) continue;
+      let u = null, bd = 2 * R;
+      const ci = Math.floor(s.core[0] / TB), cj = Math.floor(s.core[1] / TB);
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++) for (const t of tb.get(key(ci + a, cj + b)) || [])
+        if (t !== s && t.alive && t.pop > absorbPop){ const d = Math.hypot(t.core[0] - s.core[0], t.core[1] - s.core[1]); if (d < bd){ bd = d; u = t; } }
+      if (!u) continue;
+      absorb(s, u, step);
     }
     for (const s of T){
       if (!s.alive) continue;
@@ -541,7 +597,7 @@ export function runSim(w, o = {}, onProgress = null){
     let e = bmap.get(k); if (!e){ e = { i, j, crafts: 0, shops: 0, homes: 0, tag: B.tag[id], born: B.born[id], mason: 0 }; bmap.set(k, e); }
     if (B.kind[id] === 2) e.crafts++; else if (B.kind[id] === 3) e.shops++; else e.homes++;
     e.born = Math.min(e.born, B.born[id]);
-    if (H[B.hh[id]].know & bit('masonry')) e.mason = 1;
+    if (B.hh[id] >= 0 && H[B.hh[id]].know & bit('masonry')) e.mason = 1;
   }
   const be = [...bmap.values()], bn = be.length;
   const blocks = { size: BS, res: BRES, half, from: frames, n: bn, i: new Int32Array(bn), j: new Int32Array(bn), owner: new Int32Array(bn),
@@ -559,7 +615,7 @@ export function runSim(w, o = {}, onProgress = null){
   lap('blocks');
 
   const buildings = { n: nb, x: Float32Array.from(B.x), z: Float32Array.from(B.z), kind: Uint8Array.from(B.kind), tag: Int32Array.from(B.tag),
-    born: Int16Array.from(B.born), died: Int16Array.from(B.died) };
+    born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty) };
   for (const s of T){ delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
   const aliveN = alive.length;
   return {
