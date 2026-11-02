@@ -33,7 +33,7 @@ import { h2, rnd } from '../world/hash.js';
 import { salt } from './noise.js';
 import { chamfer } from './world.js';
 import { makeName } from './history.js';
-import { TECH, bit, yieldOf, eraOf, count } from './tech.js';
+import { TECH, TECH_INDEX, bit, yieldOf, eraOf, count } from './tech.js';
 import { makeRouter } from './route.js';
 import { makeStreets } from './streets.js';
 import { NT, TI, inclination } from './traits.js';
@@ -318,11 +318,12 @@ export function runSim(w, o = {}, onProgress = null){
   // settlement s joins u: households, buildings (lived in or empty) and land within reach of s
   function absorb(s, u, step, verb = 'joins'){
     for (const h of H) if (h.alive && h.tag === s.id) h.tag = u.id;
-    const n = Math.ceil(3 * R / R), ci = Math.floor(s.core[0] / R), cj = Math.floor(s.core[1] / R);
-    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of bkC.get(key(ci + a, cj + b)) || []){
-      if (B.tag[id] !== s.id) continue;
-      B.tag[id] = u.id; s.nb--; u.nb++; if (B.kind[id] >= 2){ s.townB--; u.townB++; u.bl.push(id); }
-    }
+    // (its buildings, wherever they are: those of its households and its town buildings, then any left near)
+    const move = (id) => { if (B.tag[id] !== s.id || B.died[id]) return; B.tag[id] = u.id; s.nb--; u.nb++; if (B.kind[id] >= 2){ s.townB--; u.townB++; u.bl.push(id); } };
+    for (const h of H) if (h.alive && h.b >= 0 && B.tag[h.b] === s.id) move(h.b);
+    for (const id of s.bl) move(id);
+    const n = 3, ci = Math.floor(s.core[0] / R), cj = Math.floor(s.core[1] / R);
+    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of bkC.get(key(ci + a, cj + b)) || []) move(id);
     const gi = Math.floor((s.core[0] + half) / LC), gj = Math.floor((s.core[1] + half) / LC), m = Math.ceil(3 * R / LC);
     for (let j = Math.max(0, gj - m); j <= Math.min(lres - 1, gj + m); j++) for (let i = Math.max(0, gi - m); i <= Math.min(lres - 1, gi + m); i++)
       if (ltag[j * lres + i] === s.id) setTag(j * lres + i, u.id, step);
@@ -347,7 +348,11 @@ export function runSim(w, o = {}, onProgress = null){
       if (A.pop < 30) continue;
       const short = Math.max(0, 1 - (A.ff + A.inflow) / Math.max(1, A.pop)), incl = inclination(A.tm, 'raid');
       const hR = h2(A.id, step, S + 71);
-      if (rnd(hR, 1) >= Math.min(0.5, 0.025 * incl * incl * (0.4 + 3 * short))) continue;
+      // (law: where printing and then electricity are common, and people plan and keep rules, raiding a
+      // neighbour becomes rare: courts, written laws and policing; a guess at how strongly)
+      const fk = (k) => A.hh > 0 ? A.kc[TECH_INDEX[k]] / A.hh : 0;
+      const law = 1 + (2 * fk('printing') + 4 * fk('electricity')) * (0.5 + A.tm[TI.order]);
+      if (rnd(hR, 1) >= Math.min(0.5, 0.025 * incl * incl * (0.4 + 3 * short)) / law) continue;
       const range = A.kc[wheelI] > 0 ? 7000 : 4000, ci = Math.floor(A.cx / TB), cj = Math.floor(A.cz / TB);
       const weap = 1 + 0.25 * (A.kc[TECH.findIndex((t) => t.key === 'bronze')] > 0 ? 1 : 0) + 0.25 * (A.kc[TECH.findIndex((t) => t.key === 'iron')] > 0 ? 1 : 0);
       const att = A.pop * 0.25 * (0.5 + A.tm[TI.force]) * weap;
@@ -538,7 +543,7 @@ export function runSim(w, o = {}, onProgress = null){
         cand.push([t, wt]); wsum += wt;
       }
       for (const [t, wt] of cand){
-        const amt = u.cap * wt / wsum;
+        const amt = wsum > 0 && Number.isFinite(wsum) ? u.cap * wt / wsum : 0;
         t.inflow += amt;
         if (t === u || amt < LINK_FLOW * 0.25) continue;
         // a road once the trade between two settlements is enough; its traffic decides its class
@@ -562,6 +567,12 @@ export function runSim(w, o = {}, onProgress = null){
     for (const L of tradeLinks.values()){ if (L.path >= 0) router.paths[L.path].traffic += L.ema * STEP_YEARS; L.ema = 0; }
     for (const s of live) s.townPeak = Math.max(s.townPeak || 0, s.town);
     raidStep(live, tb, TB, step);
+    if (o.debug){                       // (a hook for test scripts: totals each step)
+      let fp = 0, tp = 0, ff = 0, inf = 0, nh = 0, know = 0, ratioLow = 0;
+      for (const s2 of live){ fp += s2.fp; tp += s2.town; ff += s2.ff; inf += s2.inflow; }
+      for (const h of H) if (h.alive && h.mode !== FORAGER){ nh++; know |= h.know; }
+      o.debug({ step, year: step * STEP_YEARS, farmers: fp, town: tp, farmFood: ff, inflow: inf, households: nh, know, raids: raidLog.length / 4 });
+    }
     lap('settlements');
 
     // -- households --
@@ -620,8 +631,8 @@ export function runSim(w, o = {}, onProgress = null){
         ratio = ((1 - sh) * h.food / h.people + sh * avg) * keep + extra;
       } else ratio = (s.town > 0 ? s.inflow / s.town : 1) * keep + extra;
       // being raided makes people warier and readier to use force; winning raids, readier still
-      if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.03); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.02); }
-      if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.015);
+      if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.02); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01); }
+      if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01);
       // (medicine: fewer deaths)
       h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - (h.know & medBit ? 0.0045 : 0.007))) * (0.95 + 0.1 * rnd(hS, 1));
       // knowledge: discoveries, and learning from the settlement and from settlements in contact
@@ -743,18 +754,24 @@ export function runSim(w, o = {}, onProgress = null){
       if (step >= emptyList[q + 1]){ collapse(id, step); emptyList[q] = emptyList[emptyList.length - 2]; emptyList[q + 1] = emptyList[emptyList.length - 1]; emptyList.length -= 2; q -= 2; }
     }
     // record the settlements
-    for (const s of T){ s.pop = 0; s.sx = 0; s.sz = 0; s.kn = 0; if (s.alive) (s.trs || (s.trs = new Float32Array(NT))).fill(0); }
+    // (the sums start from zero for every settlement, gone ones too: a gone settlement's sums once kept
+    // growing, and a household still carrying its tag drifted toward them until the numbers broke)
+    for (const s of T){ s.pop = 0; s.sx = 0; s.sz = 0; s.kn = 0; (s.trs || (s.trs = new Float32Array(NT))).fill(0); }
     for (const h of H){
       if (!h.alive || h.b < 0) continue;
+      if (!T[h.tag].alive) h.tag = B.tag[h.b];
       const s = T[h.tag];
       s.pop += h.people; s.sx += h.x * h.people; s.sz += h.z * h.people; s.kn |= h.know;
       for (let i = 0; i < NT; i++) s.trs[i] += h.tr[i] * h.people;
     }
-    // households take on the ways of their settlement a little each step (a twentieth of the difference)
+    // households take on the ways of their settlement a little each step (a twentieth of the difference);
+    // how ready people are to use force and how wary of outsiders they are fade back toward the middle in
+    // peaceful times (under a hundredth of the way per step), so feuds do not harden for ever
     for (const h of H){
       if (!h.alive || h.b < 0) continue;
       const s = T[h.tag];
-      if (s.pop > 0) for (let i = 0; i < NT; i++) h.tr[i] += 0.05 * (s.trs[i] / s.pop - h.tr[i]);
+      if (s.pop > 0) for (let i = 0; i < NT; i++) h.tr[i] = Math.min(1, Math.max(0, h.tr[i] + 0.05 * (s.trs[i] / s.pop - h.tr[i])));
+      if (!s.raidedNow){ h.tr[TI.force] += 0.008 * (0.5 - h.tr[TI.force]); h.tr[TI.trust] += 0.008 * (0.5 - h.tr[TI.trust]); }
     }
     // a settlement of absorbPop people or fewer, with a bigger settlement near (within twice the tag radius),
     // joins it: its land, buildings and households take that tag (a new hamlet gets 20 years first)

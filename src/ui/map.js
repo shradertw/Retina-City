@@ -209,6 +209,7 @@ export function initMap(){
       for (let i = 0; i < RD.length; i += 4){
         const f = RD[i]; if (f > step || f < step - 4) continue;
         const A = hist.settlements[RD[i + 1]], T2 = hist.settlements[RD[i + 2]];
+        if (!(A.popAt[f] > 0 && T2.popAt[f] > 0)) continue;           // (one side gone that same step: no place to draw from)
         ctx.strokeStyle = RD[i + 3] ? 'rgba(220,40,30,0.9)' : 'rgba(150,150,150,0.8)';
         ctx.beginPath(); ctx.moveTo(toX(A.xAt[f] * 1000), toY(A.zAt[f] * 1000)); ctx.lineTo(toX(T2.xAt[f] * 1000), toY(T2.zAt[f] * 1000)); ctx.stroke();
       }
