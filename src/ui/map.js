@@ -37,7 +37,7 @@ export function initMap(){
   const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
   // what the map shows (the Show menu); the choices are remembered
   const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Streets and junctions (grey none, white stop, yellow signals, blue roundabout)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Buildings: farm homes (cream), workshops (brown), shops (blue), factories (purple), housing (green), empty (grey)'], ['names', 'Names'], ['farms', 'Farmland'],
-    ['roads', 'Roads'], ['raids', 'Raids (recent: red won, grey driven off)'], ['tracks', 'Farm tracks'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
+    ['roads', 'Main roads and freeways'], ['raids', 'Raids (recent: red won, grey driven off)'], ['tracks', 'Tracks and footpaths'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
   const show = Object.fromEntries(SHOW.map(([k]) => [k, true]));
   try { Object.assign(show, JSON.parse(localStorage.getItem('retina-map-show') || '{}')); } catch (_){ }
   const filterBox = document.getElementById('mapFilter'), filterList = document.getElementById('mapFilterList');
@@ -182,17 +182,23 @@ export function initMap(){
     }
     // streets grown with the towns, built by this year: tracks, streets, main streets; junction controls
     const ST = hist.streets;
-    if (show.streets && ST){
-      const P = [new Path2D(), new Path2D(), new Path2D()];
+    if (ST && (show.streets || show.roads || show.tracks)){
+      // the road network by level (footpaths, tracks, streets and roads, main roads, freeways); older histories:
+      // tracks, streets, main streets
+      const net = !!ST.level, P = [new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D()];
       for (let i = 0; i < ST.n; i++){
         if (ST.born[i] > step || (ST.died && ST.died[i] && ST.died[i] <= step)) continue;
-        const p = P[ST.cls[i]]; p.moveTo(toX(ST.ax[i]), toY(ST.az[i])); p.lineTo(toX(ST.bx[i]), toY(ST.bz[i]));
+        const lv = net ? ST.level[i] : ST.cls[i] + 1;
+        if (lv <= 1 ? !show.tracks : lv === 2 ? !show.streets : !(show.roads || show.streets)) continue;
+        const p = P[lv]; p.moveTo(toX(ST.ax[i]), toY(ST.az[i])); p.lineTo(toX(ST.bx[i]), toY(ST.bz[i]));
       }
       ctx.lineCap = 'round';
-      ctx.setLineDash([3 * d, 3 * d]); ctx.strokeStyle = 'rgba(120,84,48,0.9)'; ctx.lineWidth = Math.max(0.8 * d, 4 * scale * d); ctx.stroke(P[0]);
+      ctx.setLineDash([1.5 * d, 3 * d]); ctx.strokeStyle = 'rgba(150,120,80,0.8)'; ctx.lineWidth = Math.max(0.6 * d, 2 * scale * d); ctx.stroke(P[0]);
+      ctx.setLineDash([3 * d, 3 * d]); ctx.strokeStyle = 'rgba(120,84,48,0.9)'; ctx.lineWidth = Math.max(0.8 * d, 4 * scale * d); ctx.stroke(P[1]);
       ctx.setLineDash([]);
-      ctx.strokeStyle = 'rgba(236,228,210,0.95)'; ctx.lineWidth = Math.max(1 * d, 10 * scale * d); ctx.stroke(P[1]);
-      ctx.strokeStyle = 'rgba(255,214,140,1)'; ctx.lineWidth = Math.max(1.4 * d, 20 * scale * d); ctx.stroke(P[2]);
+      ctx.strokeStyle = 'rgba(236,228,210,0.95)'; ctx.lineWidth = Math.max(1 * d, 10 * scale * d); ctx.stroke(P[2]);
+      ctx.strokeStyle = 'rgba(255,214,140,1)'; ctx.lineWidth = Math.max(1.4 * d, 18 * scale * d); ctx.stroke(P[3]);
+      ctx.strokeStyle = 'rgba(240,150,70,1)'; ctx.lineWidth = Math.max(2 * d, 28 * scale * d); ctx.stroke(P[4]);
       const J = hist.junctions;
       if (J && scale > 0.05){
         const col = ['#9a9a9a', '#ffffff', '#f2c230', '#3b6fd8'], r = Math.max(2 * d, 5 * scale * d);

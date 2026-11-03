@@ -238,15 +238,29 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
   }
   // on or next to the town's blocks (within one block)?
   const nearTown = (t, x, z) => { for (const [a, b] of [[0, 0], [40, 0], [-40, 0], [0, 40], [0, -40]]){ const q = block(x + a, z + b); if (q >= 0 && BL.owner[q] === t[5]) return true; } return false; };
-  // streets grown by the history simulation (src/gen/streets.js): each a straight piece, by chunk of its start
+  // the history's road network (src/gen/network.js), or the streets of older histories: each a straight piece, by chunk of its start
   const ST = net.streets, simStreets = new Map();
+  // (an edge longer than 200 m is cut into pieces: chunks look for roads in their neighbours only)
+  const spans = [];
   if (ST) for (let i = 0; i < ST.n; i++){
-    if (ST.died && ST.died[i]) continue;                    // worn away
-    const ax = ST.ax[i], az = ST.az[i], bx = ST.bx[i], bz = ST.bz[i], cls = ST.cls[i];
+    if (ST.died && ST.died[i]) continue;
+    const L = Math.hypot(ST.bx[i] - ST.ax[i], ST.bz[i] - ST.az[i]), m = Math.max(1, Math.ceil(L / 200));
+    for (let k = 0; k < m; k++) spans.push([i, k / m, (k + 1) / m, k === 0, k === m - 1]);
+  }
+  for (const [i, t0, t1, first, last] of spans){
+    const X0 = ST.ax[i], Z0 = ST.az[i], X1 = ST.bx[i], Z1 = ST.bz[i];
+    const ax = X0 + (X1 - X0) * t0, az = Z0 + (Z1 - Z0) * t0, bx = X0 + (X1 - X0) * t1, bz = Z0 + (Z1 - Z0) * t1, cls = ST.cls[i];
     const pts = new Float32Array((SAMPLES + 1) * 2);
     for (let q = 0; q <= SAMPLES; q++){ pts[2 * q] = ax + (bx - ax) * q / SAMPLES; pts[2 * q + 1] = az + (bz - az) * q / SAMPLES; }
     // junction controls at its ends (0 none, 1 stop, 2 signals, 3 roundabout), for the markings
-    const e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true,
+    let e;
+    if (ST.level){
+      // the road network (src/gen/network.js): level 0 footpath, 1 track, 2 street or road, 3 main road, 4 freeway;
+      // in town (on or next to its blocks) with curbs and buildings, else a country road
+      const lv = cls, town = lv >= 2 && inTown((ax + bx) / 2, (az + bz) / 2);
+      e = dress({ id: h2(i, 7 + Math.round(t0 * 64), sId), pts, w: ST.w[i], major: lv >= 3, type: lv >= 3 ? 1 : lv === 2 ? (town ? 0 : 3) : 2, town, jc: lv >= 2 ? (first ? ST.ja[i] : 0) + 4 * (last ? ST.jb[i] : 0) : 0, street: true, level: lv,
+        surf: ST.surf[i], health: ST.health[i] });
+    } else e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true,
       surf: ST.surf ? ST.surf[i] : undefined, health: ST.health ? ST.health[i] : undefined });
     const k = key2(Math.floor(ax / ROAD_CHUNK), Math.floor(az / ROAD_CHUNK));
     let l = simStreets.get(k); if (!l){ l = []; simStreets.set(k, l); } l.push(e);

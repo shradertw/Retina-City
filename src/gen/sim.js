@@ -12,8 +12,11 @@
                 spare; the harvest per km2 grows with discoveries. Too little food and they shrink.
      Crafts     live off the settlement's surplus (what its farmers grow beyond their own needs) and build in
                 its middle, close together: where farmland is rich, villages become towns.
-   Trade: a settlement's spare food goes to the markets nearby (itself included), more to bigger and nearer
-   ones (the wheel widens the reach), so market towns draw on the villages around them.
+   Trade: a settlement's spare food goes to the markets nearby (itself included), in proportion to their town
+   people and less with distance (the wheel, rail and cars widen the reach).
+   Roads: every road, street, track and footpath is one network (src/gen/network.js): streets grow as towns
+   need frontage, roads between towns are laid where trade calls for them, and every 25 years traffic decides
+   which roads rise a level, which fall back, and which wear away.
    Families grow by the children they choose to have and how many survive, held back by unmet needs (see
    "Needs and children"). A grown branch of 8-15 leaves home when the family is too big for one home or the
    farm has more hands than its land can use; it weighs its offers (a farm next to the family, a farmstead
@@ -36,7 +39,7 @@ import { chamfer } from './world.js';
 import { makeName } from './history.js';
 import { TECH, TECH_INDEX, bit, yieldOf, eraOf, count } from './tech.js';
 import { makeRouter } from './route.js';
-import { makeStreets } from './streets.js';
+import { makeNetwork } from './network.js';
 import { NT, TI, inclination } from './traits.js';
 import { nearRiver } from './roads.js';
 
@@ -137,8 +140,12 @@ export function runSim(w, o = {}, onProgress = null){
   const emptyList = [];                                          // [building, step it falls down]
   const T = [];                                                 // settlements (tags)
   // roads between settlements (built when trade between them is enough) and town streets (grown as towns need)
-  const router = makeRouter(w), tradeLinks = new Map(), coreLinks = new Map();
-  const streets = makeStreets({ rnd: (a, k) => chance(a, k), landOk: (x, z) => { const c = landAt(x, z); return c >= 0 && lbuild[c] === 1 && !nearRiver(w, x, z, 20); } });
+  // (one network for every road, street, track and footpath: src/gen/network.js; the router finds routes for
+  // new roads between towns over the land)
+  const router = makeRouter(w), tradeLinks = new Map();
+  const streets = makeNetwork({ rnd: (a, k) => chance(a, k), router, half,
+    landOk: (x, z) => { const c = landAt(x, z); return c >= 0 && lbuild[c] === 1 && !nearRiver(w, x, z, 20); },
+    tagAt: (x, z) => { const c = landAt(x, z); return c >= 0 ? ltag[c] : -1; } });
   const LINK_FLOW = 12;                                         // food (people's worth per step) that calls for a road
   const log = [];
   // buildings in buckets: coarse (tag radius) and fine (for spacing)
@@ -406,8 +413,11 @@ export function runSim(w, o = {}, onProgress = null){
      gravel with cars. */
   const masonBit = bit('masonry');
   const kOf = (s) => s.kn || s.know || 0;
-  const bestRoad = (s) => { const k = kOf(s); return k & carBit ? 3 : k & wheelBit ? 1 : 0; };
-  const bestStreet = (s, cls) => { const k = kOf(s); return cls === 0 ? (k & carBit ? 1 : 0) : k & carBit ? 3 : k & masonBit ? 2 : 0; };
+  // (by the road's level: footpaths and tracks dirt, gravel with cars; streets and roads up: setts with masonry,
+  // asphalt with cars, gravel with the wheel)
+  const bestStreet = (s, lev) => { const k = kOf(s); return lev <= 1 ? (k & carBit ? 1 : 0) : k & carBit ? 3 : k & masonBit ? 2 : k & wheelBit ? 1 : 0; };
+  // how much a town's people plan its streets (a grid along its axis): those who plan and keep rules
+  const planOf = (s) => Math.min(1, Math.max(0, (s.tm[TI.order] - 0.44) * 6));       // (0.44 and below: none; 0.61 and up: a full grid)
   const storeyCap = (k) => k & elevBit ? 40 : k & steelBit ? 12 : k & bit('masonry') ? 3 : 2;
   function storeysFor(s, x, z, kind, know){
     if (kind === FACTORY) return know & steelBit ? 2 : 1;
@@ -448,8 +458,8 @@ export function runSim(w, o = {}, onProgress = null){
       const v = score(B.x[id], B.z[id]); if (v > bs){ bs = v; best = id; }
     }
     // or a new building facing a street (with cars the town also spreads outward: see streets.grow)
-    let cands = streets.frontage(s, 12, h.id * 3).filter(([x, z]) => buildable(x, z));
-    if (cands.length < 3){ streets.grow(s, fr(step), true, h.id * 7, !!(h.know & carBit), bestStreet(s, 1)); cands = cands.concat(streets.frontage(s, 8, h.id * 9).filter(([x, z]) => buildable(x, z))); }
+    let cands = streets.frontage(s, 12, h.id * 3, r * 2).filter(([x, z]) => buildable(x, z));
+    if (cands.length < 3){ streets.grow(s, fr(step), h.id * 7, !!(h.know & carBit), bestStreet(s, 2), planOf(s)); cands = cands.concat(streets.frontage(s, 8, h.id * 9).filter(([x, z]) => buildable(x, z))); }
     let bp = null;
     for (const [x, z] of cands){ const v = score(x, z); if (v > bs){ bs = v; bp = [x, z]; best = null; } }
     h.mode = WORKER; h.job = job; B.occ[job]++;
@@ -461,11 +471,14 @@ export function runSim(w, o = {}, onProgress = null){
   }
   function townSite(a, s, use, know, step){
     const r = 40 + 16 * Math.sqrt(s.townB + 1), wide = !!(know & wheelBit);
-    // spots facing the settlement's streets; when few are free, the streets grow (see src/gen/streets.js)
-    let cands = streets.frontage(s, 14, a).filter(([x, z]) => buildable(x, z));
-    for (let g = 0; g < 3 && cands.length < 3; g++){
-      streets.grow(s, fr(step), wide, a * 3 + g, false, bestStreet(s, 1));
-      cands = cands.concat(streets.frontage(s, 10, a * 5 + g).filter(([x, z]) => buildable(x, z)));
+    // spots facing the settlement's streets; when few are free, the streets grow (see src/gen/network.js)
+    // (near the middle first: when the frontage near the middle is used up, the town grows side streets there
+    // instead of stretching out along its roads)
+    const nearMid = (cs) => cs.filter(([x, z]) => Math.hypot(x - s.core[0], z - s.core[1]) < r * 1.8).length;
+    let cands = streets.frontage(s, 14, a, r * 1.5).filter(([x, z]) => buildable(x, z));
+    for (let g = 0; g < 3 && (cands.length < 3 || nearMid(cands) < 2); g++){
+      streets.grow(s, fr(step), a * 3 + g, false, bestStreet(s, 2), planOf(s), wide);
+      cands = cands.concat(streets.frontage(s, 10, a * 5 + g, r * 1.5).filter(([x, z]) => buildable(x, z)));
     }
     let best = null, bs = -1e9;
     for (const [px, pz] of cands){
@@ -658,18 +671,14 @@ export function runSim(w, o = {}, onProgress = null){
         // towns in between; at most 12 new roads per step)
         if (!L && amt >= LINK_FLOW && roadsThisStep < 12 && Math.hypot(t.cx - u.cx, t.cz - u.cz) < 15000){
           roadsThisStep++;
-          const pi = router.link(u.core[0], u.core[1], t.core[0], t.core[1], fr(step), 'road', bestRoad(u), u.id);
-          L = { path: pi, ema: 0 };
+          const ok = streets.link(u, t, fr(step), kOf(u) & wheelBit ? 2 : 1, bestStreet(u, 2));
+          L = { u, t, ok, flow: 0 };
           tradeLinks.set(k, L);
-          if (pi >= 0){
-            u.onRoad = t.onRoad = true;
-            for (const v of [u, t]){ const n = streets.core(v, fr(step)); coreLinks.set(n, (coreLinks.get(n) || 0) + 1); }
-          }
+          if (ok) u.onRoad = t.onRoad = true;
         }
-        if (L) L.ema += amt;
+        if (L) L.flow += amt;
       }
     }
-    for (const L of tradeLinks.values()){ if (L.path >= 0){ router.paths[L.path].traffic += L.ema * STEP_YEARS; router.paths[L.path].recent += L.ema; } L.ema = 0; }
     for (const s of live) s.townPeak = Math.max(s.townPeak || 0, s.town);
     raidStep(live, tb, TB, step);
     markets = new Map();
@@ -837,20 +846,18 @@ export function runSim(w, o = {}, onProgress = null){
       }
     }
     lap('tags');
-    // road and street health, every 25 years (see src/gen/route.js and src/gen/streets.js)
+    // the road network every 25 years: traffic (town trips and trade), levels, wear and repair (src/gen/network.js)
     if (step % 5 === 0){
       const keeper = (id) => { let t = id >= 0 ? T[id] : null; while (t && !t.alive && t.mergedInto >= 0) t = T[t.mergedInto]; return t && t.alive && t.pop > 0 ? t : null; };
-      // (a settlement repairs while it has people and they are fed)
+      // (a settlement repairs and builds while it has people and they are fed)
       const canRepair = (t) => t.pop >= 20 && (t.ff + t.inflow) / t.pop > 0.8;
-      const rr = router.rres, rc = router.rcell;
-      router.tick(fr(step), (k) => { const c = landAt(-half + ((k % rr) + 0.5) * rc, -half + (((k / rr) | 0) + 0.5) * rc); return keeper(c >= 0 && ltag[c] >= 0 ? ltag[c] : router.owner[k]); },
-        canRepair, (t) => bestRoad(t));
-      // a street's use: the lived-in buildings within 60 m (of its middle; of its far end for a farm track)
-      const useAt = (x, z) => { let n = 0; const ci = Math.floor(x / FG), cj = Math.floor(z / FG);
-        for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) for (const id of bkF.get(key(ci + a, cj + b)) || [])
-          if (B.occ[id] > 0 && !B.died[id] && Math.hypot(B.x[id] - x, B.z[id] - z) < 60) n++;
-        return n; };
-      streets.tick(fr(step), useAt, keeper, canRepair, bestStreet);
+      const homes = new Map();
+      for (const h of H){ if (!h.alive || h.b < 0) continue; let l = homes.get(h.tag); if (!l){ l = []; homes.set(h.tag, l); } l.push(B.x[h.b], B.z[h.b], h.people); }
+      const towns = [];
+      for (const s of live) if (s.alive && s.coreNode !== undefined) towns.push([s, kOf(s) & carBit ? 5000 : 3000]);
+      const flows = [];
+      for (const L of tradeLinks.values()){ if (L.ok && L.flow > 0) flows.push([L.u, L.t, L.flow]); L.flow = 0; }
+      streets.tick(fr(step), { keeper, canRepair, best: bestStreet, maxLevel: (t) => kOf(t) & wheelBit ? 3 : 2, homes, towns, flows });
     }
     // every 50 years central shops and housing are rebuilt taller where knowledge now allows it
     if (step % 10 === 0) for (const s of live){
@@ -924,13 +931,12 @@ export function runSim(w, o = {}, onProgress = null){
     for (let n = 0; n < Math.min(links, others.length); n++){
       const t = others[n][1], k = Math.min(s.id, t.id) * 1e6 + Math.max(s.id, t.id);
       if (tradeLinks.has(k)) continue;
-      const pi = router.link(s.core[0], s.core[1], t.core[0], t.core[1], frames, 'road', bestRoad(s), s.id);
-      tradeLinks.set(k, { path: pi, ema: 0 });
-      if (pi >= 0){ s.onRoad = t.onRoad = true; for (const v of [s, t]){ const nd = streets.core(v, frames); coreLinks.set(nd, (coreLinks.get(nd) || 0) + 1); } }
+      const ok = streets.link(s, t, frames, kOf(s) & wheelBit ? 2 : 1, bestStreet(s, 2));
+      tradeLinks.set(k, { u: s, t, ok, flow: 0 });
+      if (ok) s.onRoad = t.onRoad = true;
     }
   }
-  const net = router.finish();
-  const town = streets.finish(T, coreLinks);
+  const town = streets.finish();
   lap('roads');
 
   // ---- town blocks (64 m) from the buildings standing at the end, for the 3D view (until districts come
@@ -1006,6 +1012,6 @@ export function runSim(w, o = {}, onProgress = null){
     knowMap: { res: lres, cell: LC, half, know: kmap },
     log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
-    centres: [], roads: net.roads, roadGrid: net.roadGrid, blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
+    centres: [], roads: [], network: streets.stats(), blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
     ms: performance.now() - t0, times };
 }

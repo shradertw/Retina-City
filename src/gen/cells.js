@@ -21,7 +21,7 @@
                kind: 0 street, 1 main street or main road, 2 farm track, 3 road; + 8 for a road level with the
                ground (no curb, no sidewalk: country roads, and town streets before sidewalks); + 16 x the junction
                control at the start, + 64 x at the end (0 none, 1 stop, 2 signals, 3 roundabout: see
-               src/gen/streets.js); + 256 x the surface (0 dirt, 1 gravel, 2 stone setts, 3 asphalt); + 1024 x
+               src/gen/network.js); + 256 x the surface (0 dirt, 1 gravel, 2 stone setts, 3 asphalt); + 1024 x
                its health (3 good, 2 worn, 1 broken, 0 overgrown)
      cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, tops)
                counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings
