@@ -852,7 +852,7 @@ export function runSim(w, o = {}, onProgress = null){
       // (a settlement repairs and builds while it has people and they are fed)
       const canRepair = (t) => t.pop >= 20 && (t.ff + t.inflow) / t.pop > 0.8;
       const homes = new Map();
-      for (const h of H){ if (!h.alive || h.b < 0) continue; let l = homes.get(h.tag); if (!l){ l = []; homes.set(h.tag, l); } l.push(B.x[h.b], B.z[h.b], h.people); }
+      for (const h of H){ if (!h.alive || h.b < 0) continue; let l = homes.get(h.tag); if (!l){ l = []; homes.set(h.tag, l); } l.push(B.x[h.b], B.z[h.b], h.people, B.kind[h.b] >= 2 ? 1 : 0); }
       const towns = [];
       for (const s of live) if (s.alive && s.coreNode !== undefined) towns.push([s, kOf(s) & carBit ? 5000 : 3000]);
       const flows = [];

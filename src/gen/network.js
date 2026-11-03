@@ -397,25 +397,28 @@ export function makeNetwork(c){
 
   // ---- traffic, levels and health, every 25 years ----
   /* o: { keeper(tag) the settlement keeping a road or null; canRepair(s); best(s, level) the best surface s
-     knows for that level; maxLevel(s) the highest level it can build; homes: Map tag -> [x, z, people, ...];
+     knows for that level; maxLevel(s) the highest level it can build; homes: Map tag -> [x, z, people, town home (1) or farm (0), ...];
      towns: settlements (with core nodes) and the reach of their trips (m); flows: [settlementA, B, amount] } */
   let lastRoutes = new Map();
   function tick(born, o){
-    // town trips: from each home to the town's middle, along the fastest ways (a tree from the middle)
+    // town trips: from each home to the town's middle, along the fastest ways (a tree from the middle); the
+    // ways town homes' people take (shops, flats, workshops) stay streets at least
+    const townWay = new Set();
     for (const [s, reach] of o.towns){
       if (s.coreNode === undefined || !nedges[s.coreNode].length) continue;
       const hs = o.homes.get(s.id);
       if (!hs) continue;
-      const T0 = tree(s.coreNode, reach), w = new Map();
-      for (let k = 0; k < hs.length; k += 3){
+      const T0 = tree(s.coreNode, reach), w = new Map(), tw = new Set();
+      for (let k = 0; k < hs.length; k += 4){
         const n = nearestNode(hs[k], hs[k + 1], 250);
-        if (n >= 0 && T0.reached(n)) w.set(n, (w.get(n) || 0) + hs[k + 2]);
+        if (n >= 0 && T0.reached(n)){ w.set(n, (w.get(n) || 0) + hs[k + 2]); if (hs[k + 3]) tw.add(n); }
       }
       for (let k = T0.order.length - 1; k > 0; k--){
         const n = T0.order[k], v = w.get(n);
         if (!v) continue;
         const e = T0.via(n); if (e < 0) continue;
         euse[e] += v; const p = other(e, n); w.set(p, (w.get(p) || 0) + v);
+        if (tw.has(n)){ townWay.add(e); tw.add(p); }
       }
     }
     // trade between towns along the fastest ways (the busiest flows first; ways found again each tick)
@@ -432,11 +435,28 @@ export function makeNetwork(c){
     if (born % 2 === 0) lastRoutes.clear();               // (and found afresh every other tick: roads change)
     // roads homes face (within 40 m of a lived-in home) are never let down a level: homes need their street
     const fronted = new Set();
-    for (const hs of o.homes.values()) for (let k = 0; k < hs.length; k += 3){
-      const x = hs[k], z = hs[k + 1];
-      let be = -1, bd = 40;
-      edgesNear(x - 40, z - 40, x + 40, z + 40, (e) => { const d = segDist(x, z, nx[ea[e]], nz[ea[e]], nx[eb[e]], nz[eb[e]]); if (d < bd){ bd = d; be = e; } });
-      if (be >= 0) fronted.add(be);
+    let access = 0;
+    for (const hs of o.homes.values()) for (let k = 0; k < hs.length; k += 4){
+      const x = hs[k], z = hs[k + 1], townHome = hs[k + 3];
+      // (the nearest street or road it faces, else the nearest track or path)
+      let be = -1, bd = 40, bs = -1, bsd = 40;
+      edgesNear(x - 40, z - 40, x + 40, z + 40, (e) => { const d = segDist(x, z, nx[ea[e]], nz[ea[e]], nx[eb[e]], nz[eb[e]]); if (d < bd){ bd = d; be = e; } if (elev[e] >= 2 && d < bsd){ bsd = d; bs = e; } if (elev[e] >= 2 && d < 25) fronted.add(e); });
+      if (bs >= 0) fronted.add(bs);
+      else if (be < 0){
+        // a town home with no road at all near (its street wore away while it stood empty): a street to it
+        // from the nearest road, ending in front of it
+        if (townHome && access++ < 400){
+          const m = nearestNode(x, z, 150);
+          if (m >= 0){
+            const d = Math.hypot(nx[m] - x, nz[m] - z), qx = x + (nx[m] - x) * 14 / d, qz = z + (nz[m] - z) * 14 / d;
+            if (d > 30){ const tg = c.tagAt(x, z); const f = addEdge(m, addNode(qx, qz, tg, born), 2, born, tg >= 0 ? tg : ntag[m], 0); for (const q of f) fronted.add(q); }
+          }
+        }
+      } else {
+        // a town home on a track or path: it is made a street again (shops and flats need one)
+        fronted.add(be);
+        if (townHome && elev[be] < 2){ elev[be] = 2; ew[be] = LEVEL_W[2]; }
+      }
     }
     // levels and health
     let gone = 0, up = 0, down = 0;
@@ -445,9 +465,10 @@ export function makeNetwork(c){
       if (edied[e]) continue;
       const lev = elev[e], ld = euse[e] / CAP[lev];
       eload[e] = 0.5 * eload[e] + 0.5 * ld;
-      const own = o.keeper(etag[e]);
-      if (eload[e] > 1 && own && lev < o.maxLevel(own) && o.canRepair(own)){ raise(e, born); up++; }
-      else if (eload[e] < 0.02 && lev > 0 && !fronted.has(e)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
+      // (kept by the settlement whose land it is on now, else the one that built it)
+      const own = o.keeper(c.tagAt((nx[ea[e]] + nx[eb[e]]) / 2, (nz[ea[e]] + nz[eb[e]]) / 2)) || o.keeper(etag[e]);
+      if (eload[e] > 1 && own && lev < o.maxLevel(own) && o.canRepair(own)){ raise(e, born, fronted); up++; }
+      else if (eload[e] < 0.02 && lev > 0 && !fronted.has(e) && !(townWay.has(e) && lev <= 2)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
       else equiet[e] = 0;
       // wear, repair, worn away
       const sf = esf[e], u = eload[e] / (eload[e] + 1);
@@ -460,7 +481,7 @@ export function makeNetwork(c){
   }
   // raise edge e a level; lower roads crowding it alongside are removed to make room; a main road too close
   // beside another main road: the quieter one falls back
-  function raise(e, born){
+  function raise(e, born, fronted){
     const lev = elev[e] + 1, p = ea[e], q = eb[e], mx = (nx[p] + nx[q]) / 2, mz = (nz[p] + nz[q]) / 2, L = elen(e) || 1;
     const dx = (nx[q] - nx[p]) / L, dz = (nz[q] - nz[p]) / L;
     elev[e] = lev; ew[e] = LEVEL_W[lev]; equiet[e] = 0;
@@ -473,7 +494,7 @@ export function makeNetwork(c){
       // along the same line is its continuation, not a neighbour)
       const fx = (nx[a] + nx[b]) / 2 - mx, fz = (nz[a] + nz[b]) / 2 - mz, along = fx * dx + fz * dz, d = Math.abs(fx * dz - fz * dx);
       if (Math.abs(along) > L / 2 + fl / 2 || d < 6) return;
-      if (elev[f] < lev && d < LEVEL_W[lev] / 2 + 15 && eload[f] < eload[e] * 0.5) removeEdge(f, born);        // make room
+      if (elev[f] < lev && d < LEVEL_W[lev] / 2 + 15 && eload[f] < eload[e] * 0.5 && !fronted.has(f)) removeEdge(f, born);        // make room
       else if (lev >= 3 && elev[f] >= 3 && d < MAIN_GAP){
         if (eload[f] <= eload[e]){ elev[f] = 2; ew[f] = LEVEL_W[2]; } else { elev[e] = 2; ew[e] = LEVEL_W[2]; }
       }
