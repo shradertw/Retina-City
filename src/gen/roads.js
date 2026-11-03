@@ -42,22 +42,27 @@ export const VERGE = 1;                                      // the strip kept c
 /** the sidewalk width along road e (the shader uses the same rule: half width over 9 m; none on old streets) */
 export const sidewalkOf = (e) => (e.walk === false ? VERGE : e.w > 18 ? SIDEWALK_MAIN : SIDEWALK);
 
-/* What a road is made of and what it has beside it, from what is known where it runs (the history's knowledge
-   map: each settlement's at the end; land between towns takes the nearest town's):
-     surface   0 dirt, 1 gravel, 2 stone setts, 3 asphalt
-               town streets: dirt, setts once masonry is known, asphalt with cars
-               country roads: dirt, gravel once the wheel is known, asphalt with cars; farm tracks: dirt, gravel with cars
-     walk      curbs and sidewalks: town streets, once printing is known (before that, level with the ground)
+/* What a road is made of and what it has beside it.
+     surface   0 dirt, 1 gravel, 2 stone setts, 3 asphalt; health 3 good, 2 worn, 1 broken, 0 overgrown: both
+               from the history (roads and streets wear, are repaired and upgraded: src/gen/route.js). Older
+               histories without them: the surface from what is known where it runs (the history's knowledge map),
+               as the history would lay it (town streets: setts with masonry, asphalt with cars; country roads:
+               gravel with the wheel, asphalt with cars; farm tracks: gravel with cars)
+     walk      curbs and sidewalks: paved town streets kept in repair, once printing is known there (before that,
+               level with the ground)
      lamp      street lights along streets with sidewalks: 1 gas lamps (steam), 2 electric (electricity), 0 none */
 const KB = (k) => 1 << TECH_INDEX[k];
 const K_MASON = KB('masonry'), K_WHEEL = KB('wheel'), K_PRINT = KB('printing'), K_STEAM = KB('steam'), K_ELEC = KB('electricity'), K_CAR = KB('car');
 export const SURF_DIRT = 0, SURF_GRAVEL = 1, SURF_SETTS = 2, SURF_ASPHALT = 3;
 /** sets e.surf, e.walk and e.lamp from the knowledge mask where road e runs (-1: everything known) */
 export function dressRoad(e, know){
-  if (e.type === 2) e.surf = know & K_CAR ? SURF_GRAVEL : SURF_DIRT;
-  else if (e.town) e.surf = know & K_CAR ? SURF_ASPHALT : know & K_MASON ? SURF_SETTS : SURF_DIRT;
-  else e.surf = know & K_CAR ? SURF_ASPHALT : know & K_WHEEL ? SURF_GRAVEL : SURF_DIRT;
-  e.walk = e.town && e.type !== 2 && (know & K_PRINT) !== 0;
+  if (e.surf === undefined){
+    if (e.type === 2) e.surf = know & K_CAR ? SURF_GRAVEL : SURF_DIRT;
+    else if (e.town) e.surf = know & K_CAR ? SURF_ASPHALT : know & K_MASON ? SURF_SETTS : SURF_DIRT;
+    else e.surf = know & K_CAR ? SURF_ASPHALT : know & K_WHEEL ? SURF_GRAVEL : SURF_DIRT;
+  }
+  if (e.health === undefined) e.health = 3;
+  e.walk = e.town && e.type !== 2 && e.surf >= SURF_SETTS && e.health >= 2 && (know & K_PRINT) !== 0;
   e.lamp = !e.walk ? 0 : know & K_ELEC ? 2 : know & K_STEAM ? 1 : 0;
   return e;
 }
@@ -76,7 +81,7 @@ const CLASS_W = [4, 8, 18], CLASS_W_TOWN = [6, 12, 16], CLASS_TYPE = [2, 3, 1];
  *  blocks: every standing block: key (j x res + i), district, storeys, owner, year first built, year last built
  *  @param {any} history */
 export function roadNetwork(history){
-  const towns = [], paths = history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls, clsAt: r.clsAt })) : [];
+  const towns = [], paths = history ? history.roads.map((r) => ({ pts: r.pts, cls: r.cls, clsAt: r.clsAt, surf: r.surf, health: r.health })) : [];
   if (!history) return { towns, paths, blocks: null };
   const BK = history.blocks;
   // blocks still standing at the end
@@ -194,7 +199,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
       const mid = SAMPLES;                                   // centre point of the piece
       const cls = path.clsAt ? path.clsAt[src[Math.min(s0 + 3, m - 1)]] : path.cls;   // (its class there, when it varies along the road)
       const town = inTown(pts[mid], pts[mid + 1]);
-      const e = dress({ id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town });
+      const e = dress({ id: h2(pi, run, sP), pts, w: (town ? CLASS_W_TOWN : CLASS_W)[cls], major: cls === 2, type: CLASS_TYPE[cls], town, surf: path.surf, health: path.health });
       const k = key2(Math.floor(pts[0] / ROAD_CHUNK), Math.floor(pts[1] / ROAD_CHUNK));
       let l = pieces.get(k); if (!l){ l = []; pieces.set(k, l); } l.push(e);
     }
@@ -236,11 +241,13 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
   // streets grown by the history simulation (src/gen/streets.js): each a straight piece, by chunk of its start
   const ST = net.streets, simStreets = new Map();
   if (ST) for (let i = 0; i < ST.n; i++){
+    if (ST.died && ST.died[i]) continue;                    // worn away
     const ax = ST.ax[i], az = ST.az[i], bx = ST.bx[i], bz = ST.bz[i], cls = ST.cls[i];
     const pts = new Float32Array((SAMPLES + 1) * 2);
     for (let q = 0; q <= SAMPLES; q++){ pts[2 * q] = ax + (bx - ax) * q / SAMPLES; pts[2 * q + 1] = az + (bz - az) * q / SAMPLES; }
     // junction controls at its ends (0 none, 1 stop, 2 signals, 3 roundabout), for the markings
-    const e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true });
+    const e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true,
+      surf: ST.surf ? ST.surf[i] : undefined, health: ST.health ? ST.health[i] : undefined });
     const k = key2(Math.floor(ax / ROAD_CHUNK), Math.floor(az / ROAD_CHUNK));
     let l = simStreets.get(k); if (!l){ l = []; simStreets.set(k, l); } l.push(e);
   }

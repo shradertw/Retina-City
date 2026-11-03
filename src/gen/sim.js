@@ -14,10 +14,11 @@
                 its middle, close together: where farmland is rich, villages become towns.
    Trade: a settlement's spare food goes to the markets nearby (itself included), more to bigger and nearer
    ones (the wheel widens the reach), so market towns draw on the villages around them.
-   A household above SPLIT people splits: a branch of 8-15 becomes town people (makers, or traders once the
-   settlement is a market) if the food reaching the settlement can feed them, placed by what the land is
-   worth to them (townSite), else builds next to the family while farmland nearby is free, else starts a farmstead
-   further out, else moves on to open land a few km away.
+   Families grow by the children they choose to have and how many survive, held back by unmet needs (see
+   "Needs and children"). A grown branch of 8-15 leaves home when the family is too big for one home or the
+   farm has more hands than its land can use; it weighs its offers (a farm next to the family, a farmstead
+   further out, open land far away, work in a town within reach, or staying) by how well it expects its needs
+   met there, and picks one (see moveOut). A family whose needs are badly unmet may move as a whole.
    Settlement tags: a building with no other building within the tag radius starts a new settlement and tags
    the untagged land within the radius. A building on tagged land takes that tag (with the rival chance, the
    tag of another settlement with buildings within the radius). Every building tags untagged land within the
@@ -43,7 +44,10 @@ export const STEP_YEARS = 5;
 const BAND = 20;               // people in a forager band at the start
 const WILD = 0.35;             // people one km2 of rich wild land feeds
 const YIELD = 55;              // people one km2 of fully fertile farmland feeds, before discoveries
-const SPLIT = 40;              // a household above this splits
+const SPLIT = 40;              // a household above this splits (too many for one family group)
+const ROOM = 24;               // people a family home holds comfortably
+const GEN = 25;                // years per generation
+const CMAX = 3.2;              // children born per adult per generation, at most (about six per woman)
 const FARM_REACH = 2000;       // m: how far from home a household farms
 const GAP = 22;                // m: least distance between buildings
 const FARMER = 1, FORAGER = 0, CRAFTS = 2, TRADER = 3, WORKER = 4;
@@ -397,6 +401,13 @@ export function runSim(w, o = {}, onProgress = null){
   const medBit = bit('medicine'), printBit = bit('printing'), steelBit = bit('steel'), elevBit = bit('elevator'), elecBit = bit('electricity');
   /* Storeys: the most anyone can build (masonry 3, steel frames 12, elevators 40; else 2), and how much of it
      a spot gets: the more central and the bigger the town, the taller (land is dearer there). */
+  /* Road surfaces a settlement can lay (0 dirt, 1 gravel, 2 stone setts, 3 asphalt): roads between towns
+     gravel with the wheel, asphalt with cars; town streets setts with masonry, asphalt with cars; farm tracks
+     gravel with cars. */
+  const masonBit = bit('masonry');
+  const kOf = (s) => s.kn || s.know || 0;
+  const bestRoad = (s) => { const k = kOf(s); return k & carBit ? 3 : k & wheelBit ? 1 : 0; };
+  const bestStreet = (s, cls) => { const k = kOf(s); return cls === 0 ? (k & carBit ? 1 : 0) : k & carBit ? 3 : k & masonBit ? 2 : 0; };
   const storeyCap = (k) => k & elevBit ? 40 : k & steelBit ? 12 : k & bit('masonry') ? 3 : 2;
   function storeysFor(s, x, z, kind, know){
     if (kind === FACTORY) return know & steelBit ? 2 : 1;
@@ -438,7 +449,7 @@ export function runSim(w, o = {}, onProgress = null){
     }
     // or a new building facing a street (with cars the town also spreads outward: see streets.grow)
     let cands = streets.frontage(s, 12, h.id * 3).filter(([x, z]) => buildable(x, z));
-    if (cands.length < 3){ streets.grow(s, fr(step), true, h.id * 7, !!(h.know & carBit)); cands = cands.concat(streets.frontage(s, 8, h.id * 9).filter(([x, z]) => buildable(x, z))); }
+    if (cands.length < 3){ streets.grow(s, fr(step), true, h.id * 7, !!(h.know & carBit), bestStreet(s, 1)); cands = cands.concat(streets.frontage(s, 8, h.id * 9).filter(([x, z]) => buildable(x, z))); }
     let bp = null;
     for (const [x, z] of cands){ const v = score(x, z); if (v > bs){ bs = v; bp = [x, z]; best = null; } }
     h.mode = WORKER; h.job = job; B.occ[job]++;
@@ -453,7 +464,7 @@ export function runSim(w, o = {}, onProgress = null){
     // spots facing the settlement's streets; when few are free, the streets grow (see src/gen/streets.js)
     let cands = streets.frontage(s, 14, a).filter(([x, z]) => buildable(x, z));
     for (let g = 0; g < 3 && cands.length < 3; g++){
-      streets.grow(s, fr(step), wide, a * 3 + g);
+      streets.grow(s, fr(step), wide, a * 3 + g, false, bestStreet(s, 1));
       cands = cands.concat(streets.frontage(s, 10, a * 5 + g).filter(([x, z]) => buildable(x, z)));
     }
     let best = null, bs = -1e9;
@@ -494,6 +505,98 @@ export function runSim(w, o = {}, onProgress = null){
   }
   const fAt = (x, z) => Math.min(fres - 1, Math.max(0, Math.floor((z + half) / FCm))) * fres + Math.min(fres - 1, Math.max(0, Math.floor((x + half) / FCm)));
   lap('start');
+
+  /* Needs and children. Each family's needs, each 0 (unmet) to 1 (fully met):
+       food     what it eats over what it needs (above 1: plenty)
+       room     its home's room (ROOM people) over its people
+       health   better with medicine; towns without medicine are unhealthy (crowding, dirty water)
+       safety   less after raids and setbacks in its settlement (fading over a few steps)
+     Children are a choice each family makes over a generation: how many surviving children each adult wants
+     (want) weighs what more hands are worth (much on a farm with land to clear, little on a full farm, a
+     little in a town), what children cost (food bought at a market in town; crowding at home) and plenty; the
+     births it takes depend on how many survive (health: medicine), and are held back by unmet needs (birthOk).
+     So families get smaller where children survive and cost more, with nothing saying so directly. Hunger
+     also kills adults (famine). */
+  function needsOf(h, s, ratio){
+    const town = h.mode >= CRAFTS, med = !!(h.know & medBit);
+    const food = Math.max(0, ratio), room = Math.min(1, ROOM / Math.max(1, h.people));
+    const health = Math.min(0.95, 0.55 + (med ? 0.35 : 0) - (town && !med ? 0.1 : 0));
+    const safety = 1 - Math.min(0.7, s.danger || 0);
+    const surv = Math.pow(health, 1.2);                                      // share of children who grow up
+    const hands = h.mode === FARMER ? (h.full ? 0 : 1) : 0.2;
+    const cost = (town ? 0.3 : 0) + (1 - room);
+    const plenty = Math.min(1, Math.max(0, food - 1));
+    const want = Math.max(0.3, 1 + 0.6 * hands - 0.4 * cost + 0.3 * plenty);  // surviving children wanted per adult
+    const birthOk = Math.min(1, food) ** 2 * safety * (0.7 + 0.3 * room);
+    const met = Math.min(1, food) * (0.5 + 0.5 * room) * safety;            // (health shows in deaths, not here)
+    return { food, room, health, safety, surv, want, birthOk, met };
+  }
+  // what staying at home is worth to a branch: the family's food per person, in a more crowded home
+  const stayValue = (h, s, ratio) => Math.min(1, ratio) * (0.5 + 0.5 * Math.min(1, ROOM / (h.people + 4))) * (1 - Math.min(0.7, s.danger || 0));
+  // towns (settlements whose markets feed town people) by 12 km bucket, refreshed each step
+  let markets = new Map();
+  /* Moving out (a branch, or a whole family): its offers, each valued by how well it expects its needs met
+     there (food first, a home of its own, safety), less a little for distance; it does not know far places
+     well (its guess is blurred, and fades with distance by how far news travels: carts, rail, cars). One offer
+     is picked at random, likelier the better it looks (and tilted by the family's ways: how readily it moves
+     on, tries new ways, trusts outsiders); if it falls through, the next. Staying (stay) is one of the offers.
+       near     a farm next to the family, on free land close by
+       out      a farmstead further out
+       far      open land a few km away (or further, for those who move on readily)
+       town     work in a town within reach (its own or another): its market's food per town person,
+                with the newcomers counted */
+  function moveOut(nh, h, s, step, stay){
+    const p = nh.people, a = nh.id, yf = YIELD * yieldOf(nh.know) * cellKm2;
+    const offers = [['stay', stay, 1, null]];
+    const fl = freeLandNear(h.x, h.z, 1500) * yf;                        // people's worth of free land near
+    if (fl > p * 1.5) offers.push(['near', Math.min(1, fl / (p * 3)) * 0.98, 1, null]);
+    const flo = freeLandNear(h.x, h.z, Math.max(2500, R * 2)) * yf;
+    offers.push(['out', flo > p * 2 ? 0.95 : 0.5, 1, null]);
+    offers.push(['far', 0.8, inclination(nh.tr, 'leave'), null]);
+    const news = nh.know & carBit ? 35000 : nh.know & railBit ? 18000 : nh.know & wheelBit ? 6000 : 3500;
+    const ci = Math.floor(h.x / 12000), cj = Math.floor(h.z / 12000), nb = Math.ceil(news * 1.5 / 12000);
+    for (let b = -nb; b <= nb; b++) for (let q = -nb; q <= nb; q++) for (const t of markets.get(key(ci + q, cj + b)) || []){
+      const d = Math.hypot(t.core[0] - h.x, t.core[1] - h.z);
+      if (d > news * 1.5) continue;
+      const fpp = t.inflow / (t.town + p);
+      const v = Math.min(1, fpp) * (1 - Math.min(0.7, t.danger || 0)) * Math.exp(-d / (3 * news)) * (0.85 + 0.3 * chance(a, 50 + t.id % 50));
+      offers.push(['town', v, inclination(nh.tr, 'town') * (t === s ? 1 : inclination(nh.tr, 'trade')), t]);
+    }
+    for (let tries = 0; tries < 4 && offers.length; tries++){
+      let vmax = -1e9; for (const o of offers) vmax = Math.max(vmax, o[1]);
+      let sum = 0; const wts = offers.map((o) => { const w2 = Math.exp((o[1] - vmax) / 0.08) * o[2]; sum += w2; return w2; });
+      let u = chance(a, 60 + tries) * sum, k = 0;
+      while (k < offers.length - 1 && u > wts[k]){ u -= wts[k]; k++; }
+      const [kind, , , t] = offers[k];
+      if (kind === 'stay') return false;
+      if (placeAt(nh, h, kind, t, step)) return true;
+      offers.splice(k, 1);
+    }
+    return false;
+  }
+  // carry out a move: build (or move into) a home and take up the work there
+  function placeAt(nh, h, kind, t, step){
+    const p = nh.people;
+    if (kind === 'town'){
+      // traders once the settlement is a market, factory work once steam is known, else makers
+      const steam = !!(nh.know & steamBit);
+      const use = t.traders < 0.3 * t.town && (t.inflow > t.cap * 1.1 || t.town > 60) ? TRADER : steam ? WORKER : CRAFTS;
+      if (use === WORKER){ if (!industrial(nh, t, step)) return false; t.town += p; t.workers += p; return true; }
+      const sp = townSite(nh.id * 7, t, use, nh.know, step);
+      if (!sp) return false;
+      nh.mode = use; t.town += p; if (use === TRADER) t.traders += p;
+      build(nh, sp[0], sp[1], use, step, storeysFor(t, sp[0], sp[1], use, nh.know), 1);
+      return true;
+    }
+    let sp = null;
+    if (kind === 'near') sp = site(nh.id * 11, h.x, h.z, 30, 160, 8, false);
+    else if (kind === 'out') sp = site(nh.id * 13, h.x, h.z, 700, Math.max(1200, R * 1.8), 14, true);
+    else sp = site(nh.id * 17, h.x, h.z, 3000, chance(nh.id, 8) < 0.3 * inclination(nh.tr, 'leave') ? 12000 : 9000, 16, true);
+    if (!sp) return false;
+    nh.mode = FARMER;
+    build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * farmK(nh), step); streets.track(B.x[nh.b], B.z[nh.b], nh.tag, fr(step));
+    return true;
+  }
 
   const farmingBit = bit('farming');
   for (let step = 1; step <= steps; step++){
@@ -538,7 +641,9 @@ export function runSim(w, o = {}, onProgress = null){
       for (let b = -nb2; b <= nb2; b++) for (let a = -nb2; a <= nb2; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
         if (t !== u && t.town <= 0) continue;
         // (a settlement wary of outsiders sends less to other settlements' markets)
-        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = Math.pow(t.town + 10, 1.15) * (1 + t.workers / (t.town + 1)) * Math.exp(-d / range) * (t === u ? 1 : inclination(u.tm, 'trade'));
+        // (food goes to mouths: a market draws in proportion to its town people, so food per town person
+        // evens out between towns, nearer ones better supplied)
+        const d = Math.hypot(t.cx - u.cx, t.cz - u.cz), wt = (t.town + 10) * Math.exp(-d / range) * (t === u ? 1 : inclination(u.tm, 'trade'));
         if (wt < 1e-3) continue;
         cand.push([t, wt]); wsum += wt;
       }
@@ -553,7 +658,7 @@ export function runSim(w, o = {}, onProgress = null){
         // towns in between; at most 12 new roads per step)
         if (!L && amt >= LINK_FLOW && roadsThisStep < 12 && Math.hypot(t.cx - u.cx, t.cz - u.cz) < 15000){
           roadsThisStep++;
-          const pi = router.link(u.core[0], u.core[1], t.core[0], t.core[1], fr(step));
+          const pi = router.link(u.core[0], u.core[1], t.core[0], t.core[1], fr(step), 'road', bestRoad(u), u.id);
           L = { path: pi, ema: 0 };
           tradeLinks.set(k, L);
           if (pi >= 0){
@@ -564,14 +669,16 @@ export function runSim(w, o = {}, onProgress = null){
         if (L) L.ema += amt;
       }
     }
-    for (const L of tradeLinks.values()){ if (L.path >= 0) router.paths[L.path].traffic += L.ema * STEP_YEARS; L.ema = 0; }
+    for (const L of tradeLinks.values()){ if (L.path >= 0){ router.paths[L.path].traffic += L.ema * STEP_YEARS; router.paths[L.path].recent += L.ema; } L.ema = 0; }
     for (const s of live) s.townPeak = Math.max(s.townPeak || 0, s.town);
     raidStep(live, tb, TB, step);
+    markets = new Map();
+    for (const s of live) if (s.alive && s.inflow > 0) addTo(markets, key(Math.floor(s.core[0] / 12000), Math.floor(s.core[1] / 12000)), s);
     if (o.debug){                       // (a hook for test scripts: totals each step)
       let fp = 0, tp = 0, ff = 0, inf = 0, nh = 0, know = 0, ratioLow = 0;
       for (const s2 of live){ fp += s2.fp; tp += s2.town; ff += s2.ff; inf += s2.inflow; }
       for (const h of H) if (h.alive && h.mode !== FORAGER){ nh++; know |= h.know; }
-      o.debug({ step, year: step * STEP_YEARS, farmers: fp, town: tp, farmFood: ff, inflow: inf, households: nh, know, raids: raidLog.length / 4 });
+      o.debug({ T, H, step, year: step * STEP_YEARS, farmers: fp, town: tp, farmFood: ff, inflow: inf, households: nh, know, raids: raidLog.length / 4 });
     }
     lap('settlements');
 
@@ -622,8 +729,10 @@ export function runSim(w, o = {}, onProgress = null){
       // raids: food taken from the settlement comes off everyone's share; food taken by it goes to everyone
       const keep = 1 - Math.min(0.6, (s.lootLost || 0) / Math.max(1, s.ff + s.inflow)), extra = s.loot / Math.max(1, s.pop);
       if (h.mode === FARMER){
-        farm(h, h.people * farmK(h), step);
+        const want = h.people * farmK(h);
+        farm(h, want, step);
         h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2;
+        h.full = h.food < want * 0.95;                       // no more land within reach: more hands add little
         // sharing: part of each family's harvest is pooled with the settlement's other farmers (up to 60% where
         // everyone shares readily, none where no one does)
         const sh = 0.6 * Math.min(1, s.tm[TI.sharing] * inclination(h.tr, 'share') * 0.5);
@@ -633,8 +742,12 @@ export function runSim(w, o = {}, onProgress = null){
       // being raided makes people warier and readier to use force; winning raids, readier still
       if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.02); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01); }
       if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01);
-      // (medicine: fewer deaths)
-      h.people *= Math.exp(STEP_YEARS * (0.011 * Math.min(ratio, 1.3) - (h.know & medBit ? 0.0045 : 0.007))) * (0.95 + 0.1 * rnd(hS, 1));
+      // needs met, and children: see "Needs and children" above
+      const nd = needsOf(h, s, ratio);
+      h.met = nd.met;
+      const born = Math.min(CMAX * nd.birthOk, nd.want / nd.surv);       // children per adult per generation
+      const nrr = Math.max(0.05, born * nd.surv);                         // of whom grow up, per adult
+      h.people *= Math.exp(STEP_YEARS * (Math.log(nrr) / GEN - 0.06 * Math.max(0, 1 - nd.food))) * (0.97 + 0.06 * rnd(hS, 1));
       // knowledge: discoveries, and learning from the settlement and from settlements in contact
       if (shared) h.know = s.know;
       const spare = h.mode >= CRAFTS ? 2 : 0.5 + Math.min(1, Math.max(0, ratio - 1) * 2);
@@ -659,32 +772,19 @@ export function runSim(w, o = {}, onProgress = null){
       h.ing = Math.min(1, h.ing + 0.02 * (Math.min(ratio, 1.5) - 1));
       // setbacks (fire, plague, raids) strike whole settlements; see below
       if (h.people < 4){ h.alive = false; abandon(h, step); continue; }
-      // splitting
-      if (h.people > SPLIT){
-        const p = 8 + 7 * rnd(hS, 7);
+      // leaving home: a grown branch of the family (when the family is too big for one home, or the farm has
+      // more hands than its land can use) weighs its offers and goes where it expects its needs best met
+      const idle = h.mode === FARMER && h.full ? h.people - h.food / farmK(h) : 0;
+      if (h.people > SPLIT || idle >= 10){
+        const p = Math.min(8 + 7 * rnd(hS, 7), h.people * 0.4);
         const nh = newHousehold(h.x, h.z, p, inherit(h.ing, h.id), h.know, FARMER, step, h.id, inheritTr(h.tr, h.id));
-        h.people -= p;
-        let sp = null;
-        if (s.inflow - s.town > p * 1.2 && s.hh >= 3){
-          // town people: traders once the settlement is a market (it draws food from others), else makers;
-          // where they build is decided by what the land is worth to them (see townSite)
-          // with steam power, factory work takes over from workshops
-          const steam = !!(nh.know & steamBit);
-          const use = s.traders < 0.3 * s.town && (s.inflow > s.cap * 1.1 || s.town > 60) ? TRADER : steam ? WORKER : CRAFTS;
-          if (use === WORKER){
-            if (industrial(nh, s, step)){ s.town += p; s.workers += p; continue; }
-          } else {
-            sp = townSite(nh.id * 7, s, use, nh.know, step);
-            if (sp){ nh.mode = use; s.town += p; if (use === TRADER) s.traders += p; build(nh, sp[0], sp[1], use, step, storeysFor(s, sp[0], sp[1], use, nh.know), 1); continue; }
-          }
-        }
-        // some branches move far away whatever the land nearby (more where people move on readily)
-        if (rnd(hS, 8) < 0.05 * inclination(h.tr, 'leave')) sp = site(nh.id * 19, h.x, h.z, 3000, 12000, 16, true);
-        if (!sp && freeLandNear(h.x, h.z, 1500) > p / (YIELD * yieldOf(h.know) * cellKm2) * 1.5) sp = site(nh.id * 11, h.x, h.z, 30, 160, 8, false);
-        if (!sp) sp = site(nh.id * 13, h.x, h.z, 700, Math.max(1200, R * 1.8), 14, true);       // a farmstead further out
-        if (!sp) sp = site(nh.id * 17, h.x, h.z, 3000, 9000, 16, true);                         // open land further away
-        if (sp){ build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * farmK(nh), step); streets.track(B.x[nh.b], B.z[nh.b], nh.tag, fr(step)); }
-        else { h.people += p; nh.alive = false; }
+        if (moveOut(nh, h, s, step, stayValue(h, s, ratio))) h.people -= p;
+        else nh.alive = false;
+      } else if (nd.met < 0.55 && rnd(hS, 9) < 0.25){
+        // the whole family moves when its needs are badly unmet here and somewhere looks clearly better
+        const nh = newHousehold(h.x, h.z, h.people, h.ing, h.know, FARMER, step, h.parent, h.tr);
+        if (moveOut(nh, h, s, step, nd.met + 0.1)){ h.alive = false; abandon(h, step); }
+        else nh.alive = false;
       }
     }
     lap('households');
@@ -693,6 +793,8 @@ export function runSim(w, o = {}, onProgress = null){
     for (const s of live) if (rnd(h2(s.id, step, S + 5), 1) < setback) hit.set(s.id, 0.15 + 0.25 * rnd(h2(s.id, step, S + 5), 2));
     for (const s of live) if (s.lost > 0) hit.set(s.id, Math.min(0.6, (hit.get(s.id) || 0) + s.lost));     // raid losses
     if (hit.size) for (const h of H) if (h.alive && h.mode !== FORAGER && hit.has(h.tag)) h.people *= 1 - hit.get(h.tag);
+    // (people remember danger for a while: it lowers how safe they feel)
+    for (const s of live) s.danger = 0.7 * (s.danger || 0) + (hit.get(s.id) || 0);
     // land changes hands: every 5 steps, to the tag the buildings around it mostly carry
     if (step % 5 === 0){
       const G = R / 2, inf = new Map();
@@ -735,6 +837,21 @@ export function runSim(w, o = {}, onProgress = null){
       }
     }
     lap('tags');
+    // road and street health, every 25 years (see src/gen/route.js and src/gen/streets.js)
+    if (step % 5 === 0){
+      const keeper = (id) => { let t = id >= 0 ? T[id] : null; while (t && !t.alive && t.mergedInto >= 0) t = T[t.mergedInto]; return t && t.alive && t.pop > 0 ? t : null; };
+      // (a settlement repairs while it has people and they are fed)
+      const canRepair = (t) => t.pop >= 20 && (t.ff + t.inflow) / t.pop > 0.8;
+      const rr = router.rres, rc = router.rcell;
+      router.tick(fr(step), (k) => { const c = landAt(-half + ((k % rr) + 0.5) * rc, -half + (((k / rr) | 0) + 0.5) * rc); return keeper(c >= 0 && ltag[c] >= 0 ? ltag[c] : router.owner[k]); },
+        canRepair, (t) => bestRoad(t));
+      // a street's use: the lived-in buildings within 60 m (of its middle; of its far end for a farm track)
+      const useAt = (x, z) => { let n = 0; const ci = Math.floor(x / FG), cj = Math.floor(z / FG);
+        for (let b = -2; b <= 2; b++) for (let a = -2; a <= 2; a++) for (const id of bkF.get(key(ci + a, cj + b)) || [])
+          if (B.occ[id] > 0 && !B.died[id] && Math.hypot(B.x[id] - x, B.z[id] - z) < 60) n++;
+        return n; };
+      streets.tick(fr(step), useAt, keeper, canRepair, bestStreet);
+    }
     // every 50 years central shops and housing are rebuilt taller where knowledge now allows it
     if (step % 10 === 0) for (const s of live){
       if (!s.alive || s.townB < 5 || !s.kn) continue;
@@ -807,7 +924,7 @@ export function runSim(w, o = {}, onProgress = null){
     for (let n = 0; n < Math.min(links, others.length); n++){
       const t = others[n][1], k = Math.min(s.id, t.id) * 1e6 + Math.max(s.id, t.id);
       if (tradeLinks.has(k)) continue;
-      const pi = router.link(s.core[0], s.core[1], t.core[0], t.core[1], frames);
+      const pi = router.link(s.core[0], s.core[1], t.core[0], t.core[1], frames, 'road', bestRoad(s), s.id);
       tradeLinks.set(k, { path: pi, ema: 0 });
       if (pi >= 0){ s.onRoad = t.onRoad = true; for (const v of [s, t]){ const nd = streets.core(v, frames); coreLinks.set(nd, (coreLinks.get(nd) || 0) + 1); } }
     }
@@ -879,7 +996,7 @@ export function runSim(w, o = {}, onProgress = null){
     born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty),
     st: Uint8Array.from(B.st, (v) => Math.min(63, v)), rebuilt: Int16Array.from(B.rebuilt) };
   for (const s of T) for (const k of Object.keys(s)) if (/^[wr]\d+$/.test(k)) delete s[k];     // raid bookkeeping
-  for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; }
+  for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; delete s.danger; }
   const aliveN = alive.length;
   return {
     version: 2, steps: frames, year, stepYears: rec * STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps: frames, years: rec * STEP_YEARS }],

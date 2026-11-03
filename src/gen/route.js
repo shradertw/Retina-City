@@ -1,7 +1,14 @@
 /* Road routing over the land: the cheapest route on a grid of at least 64 m (heights averaged; a cell is
    water if most of it is sea or lake, and a river cell if a river runs through it). Slopes cost more, rivers
    need a bridge (4x), lakes and sea cannot be crossed, and an existing road is much cheaper to follow, so
-   routes bundle into main roads. Used by the history simulation (src/gen/sim.js). */
+   routes bundle into main roads. Used by the history simulation (src/gen/sim.js).
+   Road health: every cell of road has a health (1 new or just repaired, 0 gone) and a surface (0 dirt, 1 gravel,
+   2 stone setts, 3 asphalt). It wears a little each year on its own (dirt fastest; setts slowest) and more under
+   traffic; when worn, the settlement it belongs to repairs it if it has people to do it, and lays the best
+   surface it knows; a road nobody uses or repairs keeps wearing until it is gone. See tick(). */
+// wear per tick (25 years): on its own, and the most traffic can add (by surface: dirt, gravel, setts, asphalt)
+export const WEAR_BASE = [0.12, 0.08, 0.02, 0.05], WEAR_USE = [0.35, 0.25, 0.06, 0.12];
+export const REPAIR_AT = 0.5;
 
 /** @param {import('./world.js').World} w */
 export function makeRouter(w){
@@ -23,6 +30,7 @@ export function makeRouter(w){
     return j * rres + i;
   };
   const road = new Uint16Array(RN), since = new Int16Array(RN);     // routes sharing each cell; step it was built
+  const health = new Float32Array(RN), surf = new Uint8Array(RN), owner = new Int32Array(RN).fill(-1), use = new Float32Array(RN);
   const paths = [];
   const gScore = new Float32Array(RN), from = new Int32Array(RN), stamp = new Int32Array(RN), heap = new Heap(RN * 2);
   let search = 0;
@@ -59,12 +67,35 @@ export function makeRouter(w){
     return null;
   }
   /** route between two world points and keep it as a road built at step @returns {number} its index or -1 */
-  function link(ax, az, bx, bz, step, kind = 'road'){
+  // (s0: the surface its builders lay; own: the settlement that keeps it)
+  function link(ax, az, bx, bz, step, kind = 'road', s0 = 0, own = -1){
     const p = route(at(ax, az), at(bx, bz));
     if (!p || p.length < 2) return -1;
-    for (const k of p){ if (!road[k]) since[k] = step; road[k] = Math.min(65535, road[k] + 1); }
-    paths.push({ cells: Int32Array.from(p), step, kind, traffic: 0 });
+    for (const k of p){ if (!road[k]){ since[k] = step; health[k] = 1; surf[k] = s0; owner[k] = own; } road[k] = Math.min(65535, road[k] + 1); }
+    paths.push({ cells: Int32Array.from(p), step, kind, traffic: 0, recent: 0, owner: own });
     return paths.length - 1;
+  }
+  /* One tick of road health (every 25 years). ownerOf(k, path): the settlement keeping cell k (by the land it
+     is on, else the path's builder) or null; canRepair(s): it has people to do it; best(s, k): the best surface
+     it knows for this road. A gone cell on a road still carrying traffic is laid again. */
+  function tick(step, ownerOf, canRepair, best){
+    use.fill(0);
+    for (const r of paths){ if (r.recent > 0) for (const k of r.cells) use[k] += r.recent; r.recent = 0; }
+    let gone = 0;
+    for (let k = 0; k < RN; k++){
+      if (!road[k] && !(use[k] > 2)) continue;
+      const o = ownerOf(k);
+      if (!road[k]){
+        // a road still used where it had worn away: laid again by those who use it
+        if (o && canRepair(o)){ road[k] = 1; since[k] = step; health[k] = 1; surf[k] = best(o, k); }
+        continue;
+      }
+      const u = use[k] / (use[k] + 20), sf = surf[k];
+      health[k] -= WEAR_BASE[sf] + WEAR_USE[sf] * u;
+      if (health[k] < REPAIR_AT && use[k] > 0.5 && o && canRepair(o)){ health[k] = 1; surf[k] = Math.max(sf, best(o, k)); continue; }
+      if (health[k] <= 0){ road[k] = 0; health[k] = 0; gone++; }
+    }
+    return gone;
   }
   /** the roads as world polylines (smoothed), each with its class: from the traffic each path carries (when
    *  given: summed over the paths sharing each cell; the busiest sixth are main roads), else from how many
@@ -84,6 +115,9 @@ export function makeRouter(w){
     // Each path is cut into runs: a stretch already laid by an earlier path is not laid again (routes that
     // follow existing roads would otherwise lie on top of them), and a run ends where the class changes.
     const clsOf = (r, k) => byTraffic ? (cellT[k] >= mainAt ? 2 : 1) : (r.kind === 'track' && road[k] < 3 ? 0 : road[k] >= 6 ? 2 : 1);
+    // health level: 3 good, 2 worn, 1 broken, 0 overgrown
+    const lvl = (k) => health[k] >= 0.75 ? 3 : health[k] >= 0.5 ? 2 : health[k] >= 0.25 ? 1 : 0;
+    const keyOf = (r, k, k2) => Math.min(clsOf(r, k), clsOf(r, k2)) + 4 * surf[k] + 16 * Math.min(lvl(k), lvl(k2));
     const laid = new Set(), out = [];
     const emit = (r, cells) => {
       const pts = new Float32Array(cells.length * 2);
@@ -96,17 +130,18 @@ export function makeRouter(w){
         }
         pts.set(q);
       }
-      out.push({ cells: Int32Array.from(cells), pts, step: r.step, kind: r.kind, cls: Math.max(...cells.slice(0, -1).map((k, n) => Math.min(clsOf(r, k), clsOf(r, cells[n + 1])))), traffic: r.traffic });
+      const kk = cells.run;
+      out.push({ cells: Int32Array.from(cells), pts, step: r.step, kind: r.kind, cls: kk & 3, surf: (kk >> 2) & 3, health: kk >> 4, traffic: r.traffic });
     };
     for (const r of paths){
       let run = [];
       for (let n = 0; n + 1 < r.cells.length; n++){
         const a = r.cells[n], b = r.cells[n + 1], pk = Math.min(a, b) * RN + Math.max(a, b);
-        const fresh = !laid.has(pk), cl = Math.min(clsOf(r, a), clsOf(r, b));
-        if (run.length && (!fresh || cl !== run.cl)){ if (run.length > 1) emit(r, run); run = []; }
+        const fresh = !laid.has(pk) && road[a] > 0 && road[b] > 0, cl = fresh ? keyOf(r, a, b) : -1;   // (worn-away cells: a gap)
+        if (run.length && (!fresh || cl !== run.run)){ if (run.length > 1) emit(r, run); run = []; }
         if (!fresh) continue;
         laid.add(pk);
-        if (!run.length){ run.push(a); run.cl = cl; }
+        if (!run.length){ run.push(a); run.run = cl; }
         run.push(b);
       }
       if (run.length > 1) emit(r, run);
@@ -114,7 +149,7 @@ export function makeRouter(w){
     paths.length = 0; paths.push(...out);
     return { roads: paths, roadGrid: { res: rres, cell: rcell, use: road, since } };
   }
-  return { at, route, link, finish, rres, rcell, road, paths };
+  return { at, route, link, tick, finish, rres, rcell, road, paths, health, surf, owner };
 }
 
 // a binary heap of cell indices by a float priority (smallest first)

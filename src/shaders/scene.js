@@ -437,10 +437,14 @@ vec2 map(vec3 p){
 
 /* The road pieces at P: signed distance to the nearest road edge (< 0 on a road), the direction from that
    road's centre line toward P (g), and the road frame there:
-   fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 x kind)
+   fr = (distance along the road, across it (signed), half width or -1 in a crossing, road length + 1000 x kind
+   below 256; its surface and health go to gRoadSH)
    (kinds as in src/gen/cells.js: 0 street, 1 main, 2 farm track, 3 road; + 8 for country roads).
    dC and gC: the same distance and direction for town roads only, the ones with curbs (country roads lie
    level with the fields). */
+// (the nearest road's surface + 4 x health, set by roadAt: kept out of fr.w, where it would cost the road
+// length its precision)
+float gRoadSH = 15.0;
 float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
   g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0); dC = 1e9; gC = g;
   int base; ivec4 cn; vec2 top; vec2 lo;
@@ -464,7 +468,8 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
     vec2 gd = dc > 1e-5 ? dv / dc : nrm;
     if (d < best){
       best = d; g = gd;
-      fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * b.w);
+      fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * mod(b.w, 256.0));
+      gRoadSH = floor(b.w / 256.0);
     }
     if (mod(b.w, 16.0) < 7.5 && d < dC){ dC = d; gC = gd; }
   }
@@ -1260,13 +1265,27 @@ Surf lot(vec2 uv, vec2 f){
 
 // The footprint (given along world x and z) measured along a unit direction d
 float fpAlong(vec2 f, vec2 d){ return length(f * d); }
+// Wear and neglect (decay 0 kept up, 1/3 worn, 2/3 broken, 1 overgrown): grass and weeds take over from the
+// edges and from patches in the middle, more the further gone; gaps (joints, cracks) green over first.
+// edge: 1 at the road's edge, 0 at its middle; gaps: 0-1, where the surface is open.
+void overgrow(inout Surf s, vec2 uv, vec2 f, float decay, float edge, float gaps){
+  if (decay <= 0.0) return;
+  float n = 0.55 * vnoise(uv / 2.2 + 7.3) + 0.45 * vnoise(uv / 0.6 + 1.9);
+  float t = 1.35 - pow(decay, 1.5);                       // (kept up a little worn: hardly any; overgrown: most)
+  float cover = smoothstep(t, t + 0.2, n + 0.45 * edge * edge);
+  cover = max(cover, gaps * smoothstep(0.1, 0.6, decay) * 0.8);
+  float gh;
+  vec3 g = grassCol(uv, f, 0.25, gh);
+  s.alb = mix(s.alb, g, cover); s.h = mix(s.h, gh, cover); s.refl = mix(s.refl, 0.02, cover);
+}
 // Roads before asphalt (surface code, see src/gen/roads.js): 2 stone setts, granite blocks in courses
 // 0.12 m deep across the road, 0.18-0.26 m long, each course shifted; 1 gravel, loose stones on packed
 // ground; 0 dirt, packed soil. Gravel and dirt show two worn wheel ruts per lane, with grass between them
 // on single-lane dirt roads and farm tracks.
-Surf oldRoad(vec2 uv, vec4 fr, vec2 dir, vec2 f, float surf, float type){
+Surf oldRoad(vec2 uv, vec4 fr, vec2 dir, vec2 f, float surf, float type, float decay){
   Surf s = blank();
   float fa = fpAlong(f, dir), fc = fpAlong(f, vec2(-dir.y, dir.x)), fe = sqrt(fa * fc), fn = max(f.x, f.y);
+  float edge = clamp(abs(fr.y) / max(fr.z, 1.0), 0.0, 1.0);
   if (surf > 1.5){
     float sA = fr.x, row = floor(sA / 0.12);
     float ro = hf(h2(ivec2(int(row), 3), uSeed + 221u)), sL = 0.18 + 0.08 * ro, x = fr.y + ro * 0.5;
@@ -1276,9 +1295,12 @@ Surf oldRoad(vec2 uv, vec4 fr, vec2 dir, vec2 f, float surf, float type){
     vec2 gran = gHOnly ? vec2(0.0) : grainLayer(uv, 0.003, 225u, fe);
     c *= 1.0 + 0.30*gran.x - 0.10*gran.y;
     c *= 1.0 + 0.12 * fbmG(uv, 1.5, 0.3, fn);                       // wear and grime
-    s.alb = mix(c, vec3(0.10, 0.09, 0.08), jc * 0.85);
-    s.h = -0.012 * jc - 0.001 * gran.y;
+    // neglected: setts missing here and there (soil showing), weeds in the joints
+    float miss = step(1.0 - 0.25 * decay, sv) * gate(0.12, fe);
+    s.alb = mix(mix(c, vec3(0.10, 0.09, 0.08), jc * 0.85), vec3(0.22, 0.17, 0.12), miss);
+    s.h = -0.012 * jc - 0.001 * gran.y - 0.03 * miss;
     s.refl = 0.05;
+    overgrow(s, uv, f, decay, edge, max(jc, miss));
     return s;
   }
   float hh, hw = max(fr.z, 1.0), aa = abs(fr.y);
@@ -1295,6 +1317,7 @@ Surf oldRoad(vec2 uv, vec4 fr, vec2 dir, vec2 f, float surf, float type){
     c = mix(c, gc, gw); hh = mix(hh, gh, gw);
   }
   s.alb = c; s.h = hh; s.refl = 0.02;
+  overgrow(s, uv, f, decay, edge, 1.0 - rut);
   return s;
 }
 // fr: the road frame at this point (see roadAt); dir: the road's direction
@@ -1304,8 +1327,9 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
   float kind = floor(fr.w / 1000.0), type = mod(kind, 8.0);
   bool country = mod(kind, 16.0) > 7.5;
   float jS = mod(floor(kind / 16.0), 4.0), jE = mod(floor(kind / 64.0), 4.0);   // junction controls at the start and end
-  float surf = floor(kind / 256.0);                       // 0 dirt, 1 gravel, 2 setts, 3 asphalt
-  if (surf < 2.5) return oldRoad(uv, fr, dir, f, surf, type);
+  float surf = mod(gRoadSH, 4.0);                         // 0 dirt, 1 gravel, 2 setts, 3 asphalt
+  float decay = 1.0 - floor(gRoadSH / 4.0) / 3.0;          // from its health: 0 kept up ... 1 overgrown
+  if (surf < 2.5) return oldRoad(uv, fr, dir, f, surf, type, decay);
   vec3 c = vec3(0.045, 0.045, 0.048);
   float fe = sqrt(f.x*f.y);
   vec2 stones = grainLayer(uv, 0.008, 101u, fe);          // stones in dark binder: ~8 mm
@@ -1345,7 +1369,17 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
       }
     }
   }
-  s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint);
+  // neglected asphalt: cracks, then potholes; the paint fades
+  float crack = 0.0, hole = 0.0;
+  if (decay > 0.0){
+    float cn = abs(vnoise(uv * 1.7 + 3.1) - 0.5) + 0.6 * abs(vnoise(uv * 4.3 + 8.7) - 0.5);
+    crack = (1.0 - smoothstep(0.0, 0.012 + 0.6 * fn, cn - 0.02 * decay)) * smoothstep(0.0, 0.5, decay) * gate(0.03, fn);
+    hole = smoothstep(0.86 - 0.18 * decay, 0.9 - 0.18 * decay, vnoise(uv / 0.9 + 17.0)) * smoothstep(0.3, 0.7, decay);
+    c = mix(c, c * 0.4, crack);
+    c = mix(c, vec3(0.13, 0.11, 0.09), hole);
+    paint *= 1.0 - 0.8 * decay;
+  }
+  s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint * (1.0 - hole));
   // junction control (placeholder): a line across the lane arriving at the junction, white for a stop sign,
   // yellow for signals, blue for a roundabout (traffic keeps right: arriving at the end is the right-hand half,
   // across < 0; arriving at the start, across > 0)
@@ -1357,8 +1391,9 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
       s.alb = mix(s.alb, jcol, boxF(e, z0 - 0.9, z0 - 0.3, fpAlong(f, dir)) * arriving);
     }
   }
-  s.h = -0.002*vd - 0.0008*stones.y;
+  s.h = -0.002*vd - 0.0008*stones.y - 0.01 * crack - 0.06 * hole;
   s.refl = 0.012;
+  if (decay > 0.0) overgrow(s, uv, f, decay, clamp(abs(fr.y) / max(fr.z, 1.0), 0.0, 1.0), max(crack, hole));
   return s;
 }
 
@@ -1420,7 +1455,7 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
   if (m < 0.5){                                                       // road: asphalt, setts, gravel or dirt
     vec2 g, gC; vec4 fr; float dC;
     roadAt(p.xz, g, fr, dC, gC);
-    float sf = floor(floor(fr.w / 1000.0) / 256.0);
+    float sf = mod(gRoadSH, 4.0);
     return sf > 2.5 ? vec3(0.05) : sf > 1.5 ? vec3(0.30, 0.29, 0.27) : sf > 0.5 ? vec3(0.42, 0.39, 0.34) : vec3(0.30, 0.23, 0.16);
   }
   if (m < 1.5) return vec3(0.34, 0.33, 0.31);                         // sidewalk

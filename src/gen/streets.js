@@ -15,13 +15,16 @@
      3 roundabout  five or more ways (counting the settlement's roads to other settlements at its core)
      2 signals     two or more main streets meet
      1 stop sign   a side street meets a main street
-     0 none        side streets only */
+     0 none        side streets only
+   Street health, as roads (src/gen/route.js): it wears on its own and with use (the lived-in buildings
+   along it), is repaired and upgraded by its settlement while it has people, and is gone once worn away. */
+import { WEAR_BASE, WEAR_USE, REPAIR_AT } from './route.js';
 const SNAP = 22, NB = 25, EB = 60;
 
 /** @param {{ landOk: (x: number, z: number) => boolean, rnd: (a: number, k: number) => number }} c */
 export function makeStreets(c){
   const nx = [], nz = [], ntag = [], nedges = [], nborn = [];
-  const ea = [], eb = [], ew = [], ecls = [], eborn = [], etag = [];
+  const ea = [], eb = [], ew = [], ecls = [], eborn = [], etag = [], eh = [], esf = [], edied = [];
   const nbk = new Map(), ebk = new Map();
   const key = (a, b) => a * 1000003 + b;
   const addTo = (m, k, v) => { let l = m.get(k); if (!l){ l = []; m.set(k, l); } l.push(v); };
@@ -31,9 +34,9 @@ export function makeStreets(c){
     addTo(nbk, key(Math.floor(x / NB), Math.floor(z / NB)), id);
     return id;
   }
-  function addEdge(a, b, w, cls, born, tag){
+  function addEdge(a, b, w, cls, born, tag, sf = 0){
     const id = ea.length;
-    ea.push(a); eb.push(b); ew.push(w); ecls.push(cls); eborn.push(born); etag.push(tag);
+    ea.push(a); eb.push(b); ew.push(w); ecls.push(cls); eborn.push(born); etag.push(tag); eh.push(1); esf.push(sf); edied.push(0);
     nedges[a].push(id); nedges[b].push(id);
     const x0 = Math.min(nx[a], nx[b]), x1 = Math.max(nx[a], nx[b]), z0 = Math.min(nz[a], nz[b]), z1 = Math.max(nz[a], nz[b]);
     for (let j = Math.floor(z0 / EB); j <= Math.floor(z1 / EB); j++) for (let i = Math.floor(x0 / EB); i <= Math.floor(x1 / EB); i++) addTo(ebk, key(i, j), id);
@@ -67,7 +70,7 @@ export function makeStreets(c){
     for (let j = Math.floor((Math.min(az, z) - 25) / EB); j <= Math.floor((Math.max(az, z) + 25) / EB); j++)
       for (let i = Math.floor((Math.min(ax, x) - 25) / EB); i <= Math.floor((Math.max(ax, x) + 25) / EB); i++)
         for (const e of ebk.get(key(i, j)) || []){
-          if (seen.has(e)) continue; seen.add(e);
+          if (seen.has(e) || edied[e]) continue; seen.add(e);
           const p = ea[e], q = eb[e];
           const shares = p === a || q === a || (b >= 0 && (p === b || q === b));
           if (!shares && cross(ax, az, x, z, nx[p], nz[p], nx[q], nz[q])) return false;
@@ -93,7 +96,7 @@ export function makeStreets(c){
     return s.coreNode;
   }
   /** grow settlement s's network by one street; wide: the wheel is known @returns {number} the new edge or -1 */
-  function grow(s, born, wide, a, outward = false){
+  function grow(s, born, wide, a, outward = false, sf = 0){
     core(s, born);
     const nodes = s.nodes;
     for (let t = 0; t < 10; t++){
@@ -125,7 +128,7 @@ export function makeStreets(c){
       if (b >= 0){ x = nx[b]; z = nz[b]; }
       if (!clear(n, x, z, b)) continue;
       if (b < 0){ b = addNode(x, z, s.id, born); nodes.push(b); }
-      return addEdge(n, b, wide ? 10 : 8, 1, born, s.id);
+      return addEdge(n, b, wide ? 10 : 8, 1, born, s.id, sf);
     }
     return -1;
   }
@@ -149,6 +152,25 @@ export function makeStreets(c){
     const m = addNode(x, z, tag, born);
     addEdge(n, m, 4, 0, born, tag);
   }
+  // (a street worn away no longer counts for frontage; finish also leaves gone streets out of junctions)
+  /** one tick of street health (every 25 years): useAt(x, z) how much the street is used (lived-in buildings
+   *  along it); ownerOf(tag) the settlement keeping it (or null); canRepair(s); best(s, cls) the best surface
+   *  it knows for a street of this class. @returns {number} streets gone */
+  function tick(born, useAt, ownerOf, canRepair, best){
+    let gone = 0;
+    for (let e = 0; e < ea.length; e++){
+      if (edied[e]) continue;
+      const p = ea[e], q = eb[e], u0 = ecls[e] === 0 ? useAt(nx[q], nz[q]) : useAt((nx[p] + nx[q]) / 2, (nz[p] + nz[q]) / 2), u = u0 / (u0 + 4), sf = esf[e];
+      eh[e] -= WEAR_BASE[sf] + WEAR_USE[sf] * u;
+      const o = ownerOf(etag[e]);
+      if (eh[e] < REPAIR_AT && u0 > 0 && o && canRepair(o)){ eh[e] = 1; esf[e] = Math.max(sf, best(o, ecls[e])); continue; }
+      if (eh[e] <= 0){
+        eh[e] = 0; edied[e] = born; gone++;
+        for (const n of [p, q]){ const l = nedges[n], i = l.indexOf(e); if (i >= 0){ l[i] = l[l.length - 1]; l.pop(); } }
+      }
+    }
+    return gone;
+  }
   /** the network as plain data, with main streets and junction controls; links: roads to other settlements
    *  meeting at each settlement's core node */
   function finish(T, links){
@@ -165,7 +187,7 @@ export function makeStreets(c){
     }
     const jtype = new Uint8Array(nx.length), jlist = [];
     for (let k = 0; k < nx.length; k++){
-      const legs = nedges[k].filter((e) => ecls[e] > 0), extra = links.get(k) || 0, deg = legs.length + extra;
+      const legs = nedges[k].filter((e) => ecls[e] > 0 && !edied[e]), extra = links.get(k) || 0, deg = legs.length + extra;
       if (deg < 3) continue;
       const mains = legs.filter((e) => ecls[e] === 2).length + extra;
       const t = deg >= 5 ? 3 : mains >= 2 ? 2 : mains >= 1 ? 1 : 0;
@@ -175,9 +197,12 @@ export function makeStreets(c){
     return {
       streets: { n, ax: f32((i) => nx[ea[i]]), az: f32((i) => nz[ea[i]]), bx: f32((i) => nx[eb[i]]), bz: f32((i) => nz[eb[i]]),
         w: f32((i) => ew[i]), cls: Uint8Array.from(ecls), born: Int16Array.from(eborn), tag: Int32Array.from(etag),
-        ja: Uint8Array.from({ length: n }, (_, i) => jtype[ea[i]]), jb: Uint8Array.from({ length: n }, (_, i) => jtype[eb[i]]) },
+        ja: Uint8Array.from({ length: n }, (_, i) => jtype[ea[i]]), jb: Uint8Array.from({ length: n }, (_, i) => jtype[eb[i]]),
+        // health level (3 good, 2 worn, 1 broken, 0 overgrown), surface, and the frame it wore away (0 standing)
+        health: Uint8Array.from({ length: n }, (_, i) => eh[i] >= 0.75 ? 3 : eh[i] >= 0.5 ? 2 : eh[i] >= 0.25 ? 1 : 0),
+        surf: Uint8Array.from(esf), died: Int16Array.from(edied) },
       junctions: Float32Array.from(jlist),
     };
   }
-  return { core, grow, frontage, track, finish, nearestNode, edgeCount: () => ea.length };
+  return { core, grow, frontage, track, tick, finish, nearestNode, edgeCount: () => ea.length };
 }

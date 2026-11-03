@@ -21,7 +21,8 @@
                kind: 0 street, 1 main street or main road, 2 farm track, 3 road; + 8 for a road level with the
                ground (no curb, no sidewalk: country roads, and town streets before sidewalks); + 16 x the junction
                control at the start, + 64 x at the end (0 none, 1 stop, 2 signals, 3 roundabout: see
-               src/gen/streets.js); + 256 x the surface (0 dirt, 1 gravel, 2 stone setts, 3 asphalt)
+               src/gen/streets.js); + 256 x the surface (0 dirt, 1 gravel, 2 stone setts, 3 asphalt); + 1024 x
+               its health (3 good, 2 worn, 1 broken, 0 overgrown)
      cell      (first texel of the list in the chunk's block, counts and rings (see below), chunk tag, tops)
                counts: buildings + 64 x lights + 4096 x roads + 262144 x empty rings
                tops: the cell's tallest top and its 128 m block's (4 x 4 cells), in quarter metres rounded
@@ -91,7 +92,7 @@ export function makeCells(roads, blocks){
       let s0 = 0;
       for (let k = 0; k < SAMPLES; k++){
         const ax = p[2 * k], az = p[2 * k + 1], bx = p[2 * k + 2], bz = p[2 * k + 3];
-        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town && e.walk !== false ? 0 : 8) + 16 * (e.jc || 0) + 256 * (e.surf === undefined ? 3 : e.surf)];
+        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town && e.walk !== false ? 0 : 8) + 16 * (e.jc || 0) + 256 * (e.surf === undefined ? 3 : e.surf) + 1024 * (e.health === undefined ? 3 : e.health)];
         s0 += Math.hypot(bx - ax, bz - az);
         visit(Math.min(ax, bx) - reach, Math.min(az, bz) - reach, Math.max(ax, bx) + reach, Math.max(az, bz) + reach, (i, j) => {
           const c = inner(i, j);

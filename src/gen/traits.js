@@ -24,7 +24,9 @@ export const TI = Object.fromEntries(TRAITS.map((t, i) => [t.key, i]));
      invent      making a discovery                                      novelty +
      leave       a branch moving far away                                roaming +, novelty +
      plan        laying streets out in a grid (vs growing them)          order +
-     join        joining a bigger settlement nearby                      trust +, order +, force - */
+     join        joining a bigger settlement nearby                      trust +, order +, force -
+     town        moving to town work                                     novelty +, roaming +
+   (moving to another settlement's town also weighs trade: trust) */
 export const BEARS_ON = {
   share: { sharing: 1, trust: 0.4 },
   trade: { trust: 0.8, sharing: 0.3 },
@@ -35,6 +37,7 @@ export const BEARS_ON = {
   leave: { roaming: 1, novelty: 0.3 },
   plan: { order: 1 },
   join: { trust: 0.6, order: 0.3, force: -0.4 },
+  town: { novelty: 0.6, roaming: 0.2 },
 };
 /** how much a household's traits tilt a choice: a multiplier, 1 for an average household; each trait moves
  *  it by up to 2^(weight) either way @param {Float32Array | number[]} tr @param {string} choice */

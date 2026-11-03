@@ -185,7 +185,7 @@ export function initMap(){
     if (show.streets && ST){
       const P = [new Path2D(), new Path2D(), new Path2D()];
       for (let i = 0; i < ST.n; i++){
-        if (ST.born[i] > step) continue;
+        if (ST.born[i] > step || (ST.died && ST.died[i] && ST.died[i] <= step)) continue;
         const p = P[ST.cls[i]]; p.moveTo(toX(ST.ax[i]), toY(ST.az[i])); p.lineTo(toX(ST.bx[i]), toY(ST.bz[i]));
       }
       ctx.lineCap = 'round';
