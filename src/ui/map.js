@@ -186,11 +186,13 @@ export function initMap(){
       // the road network by level (footpaths, tracks, streets and roads, main roads, freeways); older histories:
       // tracks, streets, main streets
       const net = !!ST.level, P = [new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D()];
+      const PR = [new Path2D(), new Path2D(), new Path2D(), new Path2D(), new Path2D()];   // raised: drawn over the rest, as bridges
       for (let i = 0; i < ST.n; i++){
         if (ST.born[i] > step || (ST.died && ST.died[i] && ST.died[i] <= step)) continue;
         const lv = net ? ST.level[i] : ST.cls[i] + 1;
         if (lv <= 1 ? !show.tracks : lv === 2 ? !show.streets : !(show.roads || show.streets)) continue;
-        const p = P[lv]; p.moveTo(toX(ST.ax[i]), toY(ST.az[i])); p.lineTo(toX(ST.bx[i]), toY(ST.bz[i]));
+        const raised = ST.ha && Math.max(ST.ha[i], ST.hb[i]) > 2.5;
+        const p = (raised ? PR : P)[lv]; p.moveTo(toX(ST.ax[i]), toY(ST.az[i])); p.lineTo(toX(ST.bx[i]), toY(ST.bz[i]));
       }
       ctx.lineCap = 'round';
       ctx.setLineDash([1.5 * d, 3 * d]); ctx.strokeStyle = 'rgba(150,120,80,0.8)'; ctx.lineWidth = Math.max(0.6 * d, 2 * scale * d); ctx.stroke(P[0]);
@@ -199,6 +201,15 @@ export function initMap(){
       ctx.strokeStyle = 'rgba(236,228,210,0.95)'; ctx.lineWidth = Math.max(1 * d, 10 * scale * d); ctx.stroke(P[2]);
       ctx.strokeStyle = 'rgba(255,214,140,1)'; ctx.lineWidth = Math.max(1.4 * d, 18 * scale * d); ctx.stroke(P[3]);
       ctx.strokeStyle = 'rgba(240,150,70,1)'; ctx.lineWidth = Math.max(2 * d, 28 * scale * d); ctx.stroke(P[4]);
+      // overpasses and raised freeways: a dark edge each side, then the road's colour
+      const cols = ['rgba(150,120,80,0.8)', 'rgba(120,84,48,0.9)', 'rgba(236,228,210,0.95)', 'rgba(255,214,140,1)', 'rgba(240,150,70,1)'];
+      const wid = [Math.max(0.6 * d, 2 * scale * d), Math.max(0.8 * d, 4 * scale * d), Math.max(1 * d, 10 * scale * d), Math.max(1.4 * d, 18 * scale * d), Math.max(2 * d, 28 * scale * d)];
+      ctx.lineCap = 'butt';
+      for (let lv = 2; lv <= 4; lv++){
+        ctx.strokeStyle = 'rgba(40,36,32,0.95)'; ctx.lineWidth = wid[lv] + 2.5 * d; ctx.stroke(PR[lv]);
+        ctx.strokeStyle = cols[lv]; ctx.lineWidth = wid[lv]; ctx.stroke(PR[lv]);
+      }
+      ctx.lineCap = 'round';
       const J = hist.junctions;
       if (J && scale > 0.05){
         const col = ['#9a9a9a', '#ffffff', '#f2c230', '#3b6fd8'], r = Math.max(2 * d, 5 * scale * d);

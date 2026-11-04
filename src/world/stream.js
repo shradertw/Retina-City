@@ -112,7 +112,7 @@ export function makeStream(gl){
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, s * SLOT_ROWS, WTEX_W, SLOT_ROWS, gl.RGBA, gl.FLOAT, p.data);
     gl.bindTexture(gl.TEXTURE_2D, cellsTex);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, mod(p.cx, NS) * CN, mod(p.cz, NS) * CN, CN, CN, gl.RGBA, gl.FLOAT, p.cells);
-    stats.built++; stats.buildMs += p.ms;
+    stats.built++; stats.buildMs += p.ms; stats.maxUsed = Math.max(stats.maxUsed || 0, p.used);   // (texels of the slot's SLOT_TEX)
   }
   function drop(s){
     const p = slots[s];

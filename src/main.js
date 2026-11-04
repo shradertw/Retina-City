@@ -799,7 +799,7 @@ function step(dt){
   if ((strafe && k.has("KeyA")) || k.has("KeyQ")){ mx -= fz; mz += fx; }
   const len = Math.hypot(mx, mz) || 1;
   state.pos[0] += mx / len * speed * dt; state.pos[2] += mz / len * speed * dt;
-  const g = groundAt(state.pos[0], state.pos[2]);
+  const g = groundAt(state.pos[0], state.pos[2], state.fly ? state.pos[1] - 0.4 : (state.walkY ?? state.pos[1]) - 1.7);
   if (state.fly){
     if (k.has("Space")) my += 1; if (k.has("KeyC")) my -= 1;
     state.pos[1] = Math.max(g + 0.4, state.pos[1] + my * speed * dt);

@@ -145,7 +145,10 @@ export function runSim(w, o = {}, onProgress = null){
   const router = makeRouter(w), tradeLinks = new Map();
   const streets = makeNetwork({ rnd: (a, k) => chance(a, k), router, half,
     landOk: (x, z) => { const c = landAt(x, z); return c >= 0 && lbuild[c] === 1 && !nearRiver(w, x, z, 20); },
-    tagAt: (x, z) => { const c = landAt(x, z); return c >= 0 ? ltag[c] : -1; } });
+    tagAt: (x, z) => { const c = landAt(x, z); return c >= 0 ? ltag[c] : -1; },
+    // (standing buildings within r of a point: how crowded the land is; a river within r)
+    crowd: (x, z, r) => { let n = 0; for (const id of buildingsNear(x, z, r)) if (!B.died[id]) n++; return n; },
+    nearRiver: (x, z, r) => nearRiver(w, x, z, r) });
   const LINK_FLOW = 12;                                         // food (people's worth per step) that calls for a road
   const log = [];
   // buildings in buckets: coarse (tag radius) and fine (for spacing)
@@ -861,7 +864,7 @@ export function runSim(w, o = {}, onProgress = null){
       for (const s of live) if (s.alive && s.coreNode !== undefined) towns.push([s, kOf(s) & carBit ? 5000 : 3000]);
       const flows = [];
       for (const L of tradeLinks.values()){ if (L.ok && L.flow > 0) flows.push([L.u, L.t, L.flow]); L.flow = 0; }
-      streets.tick(fr(step), { keeper, canRepair, best: bestStreet, maxLevel: (t) => kOf(t) & wheelBit ? 3 : 2, homes, towns, flows });
+      streets.tick(fr(step), { keeper, canRepair, best: bestStreet, maxLevel: (t) => kOf(t) & carBit ? 4 : kOf(t) & wheelBit ? 3 : 2, homes, towns, flows });
     }
     // every 50 years central shops and housing are rebuilt taller where knowledge now allows it
     if (step % 10 === 0) for (const s of live){

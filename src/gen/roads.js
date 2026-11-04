@@ -257,9 +257,15 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
     if (ST.level){
       // the road network (src/gen/network.js): level 0 footpath, 1 track, 2 street or road, 3 main road, 4 freeway;
       // in town (on or next to its blocks) with curbs and buildings, else a country road
-      const lv = cls, town = lv >= 2 && inTown((ax + bx) / 2, (az + bz) / 2);
+      // (heights along it: raised freeways, overpasses and ramps are not town streets; a junction's edge at
+      // each end: half the widest road meeting it, its sidewalk and a metre)
+      const H0 = ST.ha ? ST.ha[i] : 0, H1 = ST.hb ? ST.hb[i] : 0, h0 = H0 + (H1 - H0) * t0, h1 = H0 + (H1 - H0) * t1;
+      const ramp = ST.ramp ? ST.ramp[i] === 1 : false, raised = Math.max(h0, h1) > 0.3;
+      const lv = cls, town = lv >= 2 && lv < 4 && !ramp && !raised && inTown((ax + bx) / 2, (az + bz) / 2);
+      const mouth = (w2) => w2 > 0 ? w2 / 2 + (w2 > 18 ? SIDEWALK_MAIN : SIDEWALK) + 1 : 0;
+      const xa = first && (!ST.xa || ST.xa[i] === 1), xb = last && (!ST.xb || ST.xb[i] === 1);
       e = dress({ id: h2(i, 7 + Math.round(t0 * 64), sId), pts, w: ST.w[i], major: lv >= 3, type: lv >= 3 ? 1 : lv === 2 ? (town ? 0 : 3) : 2, town, jc: lv >= 2 ? (first ? ST.ja[i] : 0) + 4 * (last ? ST.jb[i] : 0) : 0, street: true, level: lv,
-        xa: first && (!ST.xa || ST.xa[i] === 1), xb: last && (!ST.xb || ST.xb[i] === 1),
+        xa, xb, h0, h1, ramp, mouthA: xa && ST.wa ? mouth(ST.wa[i]) : 0, mouthB: xb && ST.wb ? mouth(ST.wb[i]) : 0,
         surf: ST.surf[i], health: ST.health[i] });
     } else e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true,
       surf: ST.surf ? ST.surf[i] : undefined, health: ST.health ? ST.health[i] : undefined });

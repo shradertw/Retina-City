@@ -31,8 +31,9 @@ export function makeRouter(w){
   const gScore = new Float32Array(RN), from = new Int32Array(RN), stamp = new Int32Array(RN), heap = new Heap(RN * 2);
   let search = 0;
   const DI = [1, -1, 0, 0, 1, 1, -1, -1], DJ = [0, 0, 1, -1, 1, -1, 1, -1];
-  /** least-cost route from cell a to cell goal (A*, within a box around them) @returns {number[] | null} */
-  function route(a, goal){
+  /** least-cost route from cell a to cell goal (A*, within a box around them); extra(cell): a cost factor
+   *  per cell (or null); follow: existing roads are cheaper @returns {number[] | null} */
+  function route(a, goal, extra = null, follow = true){
     search++;
     const ai = a % rres, aj = (a / rres) | 0, gi = goal % rres, gj = (goal / rres) | 0;
     const m = Math.max(20, Math.round(0.3 * Math.hypot(gi - ai, gj - aj)));
@@ -51,18 +52,19 @@ export function makeRouter(w){
         if (wt === 1 && n !== goal) continue;
         const len = d < 4 ? rcell : rcell * 1.4142, s = Math.abs(relev[n] - relev[k]) / len;
         let c = len * (1 + 30 * s * s) * (wt === 3 ? 4 : 1);
-        if (road[n]) c *= 0.35;
+        if (follow && road[n]) c *= 0.35;
+        if (extra) c *= extra(n);
         const ng = g + c;
         if (stamp[n] === search && ng >= gScore[n]) continue;
         stamp[n] = search; gScore[n] = ng; from[n] = k;
         // (a heuristic above the cheapest cost per metre, 0.35 on roads: the search heads for the goal sooner,
         // at the price of routes that are sometimes a little longer than the best)
-        heap.push(n, ng + 0.6 * rcell * Math.hypot(ni - gi, nj - gj));
+        heap.push(n, ng + (follow ? 0.6 : 1) * rcell * Math.hypot(ni - gi, nj - gj));
       }
     }
     return null;
   }
-  return { at, route, rres, rcell, road };
+  return { at, route, rres, rcell, road, water: rwater };
 }
 
 // a binary heap of cell indices by a float priority (smallest first)

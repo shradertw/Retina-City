@@ -10,15 +10,15 @@ let packs = new Map(), world = null;
 export function setWorldData(p, w){ packs = p; world = w; }
 
 /* the cell at (x, z): its pack and list, or null where nothing is loaded */
-const C = { d: null, s: 0, nB: 0, nL: 0, nR: 0, e: 1, top: 0, stop: 0, x0: 0, z0: 0 };
+const C = { d: null, s: 0, nB: 0, nL: 0, nR: 0, nP: 0, e: 1, top: 0, stop: 0, x0: 0, z0: 0 };
 function cellJS(x, z){
   const gx = Math.floor(x / RC), gz = Math.floor(z / RC);
   const cx = Math.floor(gx / CN), cz = Math.floor(gz / CN);
   C.x0 = gx * RC; C.z0 = gz * RC;
   const p = packs.get(key2(cx, cz));
-  if (!p){ C.d = null; C.nB = C.nL = C.nR = 0; C.e = 1; C.top = C.stop = 0; return C; }
+  if (!p){ C.d = null; C.nB = C.nL = C.nR = C.nP = 0; C.e = 1; C.top = C.stop = 0; return C; }
   const k = ((gz - cz * CN) * CN + gx - cx * CN) * 4, v = p.cells[k + 1];
-  C.d = p.data; C.s = p.cells[k]; C.nB = v & 63; C.nL = (v >> 6) & 63; C.nR = (v >> 12) & 63; C.e = v >> 18;
+  C.d = p.data; C.s = p.cells[k]; C.nB = v & 63; C.nL = (v >> 6) & 63; C.nR = (v >> 12) & 63; C.e = (v >> 18) & 7; C.nP = v >> 21;
   const t = p.cells[k + 3]; C.top = (t % 1024) * 0.25; C.stop = Math.floor(t / 1024) * 0.25;
   return C;
 }
@@ -27,10 +27,21 @@ export function sdBox3(x, y, z, bx, by, bz){
   const qx = Math.abs(x) - bx, qy = Math.abs(y) - by, qz = Math.abs(z) - bz;
   return Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, Math.max(qy, qz)), 0);
 }
+// a deck (raised road; see src/gen/cells.js) at texel offset o: its local coordinates and the height of its top
+function deckAt(d, o, x, z){
+  const i = o * 4, qx = x - d[i], qz = z - d[i + 1], ux = d[i + 2], uz = d[i + 3];
+  const lx = qx * ux + qz * uz, lz = -qx * uz + qz * ux, hl = d[i + 4], t = Math.max(0, Math.min(1, (lx + hl) / (2 * hl)));
+  return { lx, lz, hl, hw: -d[i + 5], top: d[i + 6] + (d[i + 7] - d[i + 6]) * t, pier: Math.min(d[i + 6], d[i + 7]) >= 2.5, ux, uz };
+}
 // a building (texel offset o in list d): distance from (x, y, z)
 function bldDist(d, o, x, y, z){
   const i = o * 4, qx = x - d[i], qz = z - d[i + 1], ux = d[i + 2], uz = d[i + 3];
   const lx = qx * ux + qz * uz, lz = -qx * uz + qz * ux, hx = d[i + 4], hz = d[i + 5], top = d[i + 6], pod = d[i + 7];
+  if (hz < 0){
+    // a deck: its slab 1 m thick (on pillars), or an embankment down to the ground
+    const k = deckAt(d, o, x, z);
+    return k.pier ? sdBox3(lx, y - (k.top - 0.5), lz, hx, 0.5, -hz) : Math.max(sdBox3(lx, 0, lz, hx, 1, -hz + Math.max(k.top - y, 0)), y - k.top) * 0.7;
+  }
   if (pod > 0){
     const th = (top - pod) * 0.5;
     return Math.min(sdBox3(lx, y - pod * 0.5, lz, hx, pod * 0.5, hz), sdBox3(lx, y - pod - th, lz, hx - 2.5, th, hz - 2.5));
@@ -62,6 +73,11 @@ export function mapJS(x, y, z){
     const i = (c.s + c.nB * 3 + n) * 4, bx = c.d[i], bz = c.d[i + 1];
     best = Math.min(best, Math.max(Math.hypot(x - bx, z - bz) - 0.09, y - LAMP_H, 0.15 - y));   // the pole
   }
+  for (let n = 0; n < c.nP; n++){
+    const i = (c.s + c.nB * 3 + c.nL + c.nR * 3 + n) * 4, kd = c.d[i + 2];
+    if (kd > 2.5) continue;
+    best = Math.min(best, Math.max(Math.hypot(x - c.d[i], z - c.d[i + 1]) - (kd < 1.5 ? 0.07 : 0.035), y - (kd < 1.5 ? 3.7 : 2.5), -y));   // a traffic light's or stop sign's post
+  }
   return best;
 }
 // how far a ray from p along dir can go without being able to hit anything: through the rest of an empty
@@ -79,16 +95,28 @@ export function roadJS(x, z){
   const c = cellJS(x, z);
   let best = 1e9;
   for (let n = 0; n < c.nR; n++){
-    const i = (c.s + c.nB * 3 + c.nL + n * 2) * 4, d = c.d;
+    const i = (c.s + c.nB * 3 + c.nL + n * 3) * 4, d = c.d;
     if (d[i + 7] % 16 >= 8) continue;                 // country roads lie level with the fields
+    if (Math.max(d[i + 8], d[i + 9]) > 2) continue;   // raised: a deck, not the ground
     const ax = d[i], az = d[i + 1], ex = d[i + 2] - ax, ez = d[i + 3] - az;
     const t = Math.max(0, Math.min(1, ((x - ax) * ex + (z - az) * ez) / (ex * ex + ez * ez || 1)));
     best = Math.min(best, Math.hypot(x - ax - ex * t, z - az - ez * t) - d[i + 4]);
   }
   return best;
 }
-/** ground height: roads and water at 0, everything else (sidewalks, lots) 15 cm up */
-export function groundAt(x, z){ return !isLandJS(x, z) || roadJS(x, z) < 0 ? 0 : 0.15; }
+/** ground height: roads and water at 0, everything else (sidewalks, lots) 15 cm up; or the top of a deck or
+ *  embankment under (x, z) that feet at height y can step onto (up to 1 m up: walking up a ramp) */
+export function groundAt(x, z, y = 0){
+  let g = !isLandJS(x, z) || roadJS(x, z) < 0 ? 0 : 0.15;
+  const c = cellJS(x, z);
+  for (let n = 0; n < c.nB; n++){
+    const o = c.s + n * 3;
+    if (c.d[o * 4 + 5] >= 0) continue;
+    const k = deckAt(c.d, o, x, z);
+    if (Math.abs(k.lx) <= k.hl && Math.abs(k.lz) <= k.hw && k.top <= y + 1 && k.top > g) g = k.top;
+  }
+  return g;
+}
 
 // light from the street lights falling on a surface at p facing n (lux, without the brightness setting)
 export function lampLuxJS(p, n){
@@ -116,9 +144,30 @@ export function collide(p){
     const i = (c.s + c.nB * 3 + k) * 4, dx = p[0] - d[i], dz = p[2] - d[i + 1], dd = Math.hypot(dx, dz), m = 0.09 + r;
     if (dd < m && p[1] < LAMP_H + 0.5){ const s = (m - dd) / Math.max(dd, 1e-4); p[0] += dx * s; p[2] += dz * s; }
   }
+  // traffic lights' and stop signs' posts
+  for (let k = 0; k < c.nP; k++){
+    const i = (c.s + c.nB * 3 + c.nL + c.nR * 3 + k) * 4;
+    if (d[i + 2] > 2.5) continue;
+    const dx = p[0] - d[i], dz = p[2] - d[i + 1], dd = Math.hypot(dx, dz), m = 0.08 + r;
+    if (dd < m && p[1] < 4.2){ const s = (m - dd) / Math.max(dd, 1e-4); p[0] += dx * s; p[2] += dz * s; }
+  }
   // buildings: pushed out of the footprint (podium and tower), in the building's own directions
+  const feet = p[1] - 1.7;
   for (let n = 0; n < c.nB; n++){
     const i = (c.s + n * 3) * 4, ux = d[i + 2], uz = d[i + 3], top = d[i + 6], pod = d[i + 7];
+    if (d[i + 5] < 0){
+      // a deck: on it, kept inside its barriers; beside an embankment (or the slab's edge), pushed off sideways
+      if (state.fly) continue;
+      const k = deckAt(d, c.s + n * 3, p[0], p[2]);
+      if (Math.abs(k.lx) > k.hl) continue;
+      const on = feet > k.top - 0.5, inside = k.hw - 0.35 - r;
+      if (on && Math.abs(k.lz) > inside && Math.abs(k.lz) < k.hw + 0.3){
+        const m = (Math.abs(k.lz) - inside) * Math.sign(k.lz); p[0] += uz * m; p[2] -= ux * m;
+      } else if (!on && (!k.pier || feet > k.top - 1.6) && Math.abs(k.lz) < k.hw + r){
+        const m = (k.hw + r - Math.abs(k.lz)) * Math.sign(k.lz || 1); p[0] -= uz * m; p[2] += ux * m;
+      }
+      continue;
+    }
     const boxes = pod > 0 ? [[d[i + 4], d[i + 5], pod], [d[i + 4] - 2.5, d[i + 5] - 2.5, top]] : [[d[i + 4], d[i + 5], top]];
     for (const [hx, hz, tp] of boxes){
       const qx = p[0] - d[i], qz = p[2] - d[i + 1], lx = qx * ux + qz * uz, lz = -qx * uz + qz * ux;

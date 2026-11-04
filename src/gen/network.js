@@ -39,8 +39,9 @@ const NB = 25, EB = 60;                         // bucket sizes (m): nodes, edge
 /** @param {{ landOk: (x: number, z: number) => boolean, rnd: (a: number, k: number) => number,
  *            router: any, tagAt: (x: number, z: number) => number, half: number }} c */
 export function makeNetwork(c){
-  const nx = [], nz = [], ntag = [], nborn = [], nedges = [];
+  const nx = [], nz = [], ntag = [], nborn = [], nedges = [], nh = [];   // nh: height of the road there (m)
   const ea = [], eb = [], elev = [], ew = [], esf = [], eh = [], eborn = [], edied = [], etag = [], euse = [], eload = [], equiet = [];
+  const eramp = [], ejam = [];                    // a freeway ramp; ticks a main road has stayed crowded
   const nbk = new Map(), ebk = new Map(), nodesOf = new Map();
   const key = (a, b) => a * 1000003 + b;
   const addTo = (m, k, v) => { let l = m.get(k); if (!l){ l = []; m.set(k, l); } l.push(v); };
@@ -54,7 +55,7 @@ export function makeNetwork(c){
   const connected = (a, b) => find(a) === find(b);
   function addNode(x, z, tag, born){
     const id = nx.length;
-    nx.push(x); nz.push(z); ntag.push(tag); nedges.push([]); nborn.push(born); dsu.push(id);
+    nx.push(x); nz.push(z); ntag.push(tag); nedges.push([]); nborn.push(born); dsu.push(id); nh.push(0);
     addTo(nbk, key(Math.floor(x / NB), Math.floor(z / NB)), id);
     if (tag >= 0) addTo(nodesOf, tag, id);
     return id;
@@ -77,7 +78,7 @@ export function makeNetwork(c){
     if (ex >= 0) return ex;
     const id = ea.length;
     ea.push(a); eb.push(b); elev.push(lev); ew.push(LEVEL_W[lev]); esf.push(sf); eh.push(1); eborn.push(born); edied.push(0);
-    etag.push(tag); euse.push(0); eload.push(0); equiet.push(0);
+    etag.push(tag); euse.push(0); eload.push(0); equiet.push(0); eramp.push(0); ejam.push(0);
     nedges[a].push(id); nedges[b].push(id);
     bucketEdge(id); mark(id, 1);
     dsu[find(a)] = find(b);
@@ -100,13 +101,14 @@ export function makeNetwork(c){
     if (Math.hypot(nx[a] - x, nz[a] - z) < 6) return a;
     if (Math.hypot(nx[b] - x, nz[b] - z) < 6) return b;
     const m = addNode(x, z, ntag[a] >= 0 ? ntag[a] : ntag[b], born);
+    { const L = Math.hypot(nx[b] - nx[a], nz[b] - nz[a]) || 1, t = Math.hypot(x - nx[a], z - nz[a]) / L; nh[m] = nh[a] + (nh[b] - nh[a]) * t; }
     // e keeps its first half; its second half is a new edge with the same level, surface, health, use
     mark(e, -1);
     { const l = nedges[b], i = l.indexOf(e); l[i] = l[l.length - 1]; l.pop(); }
     eb[e] = m; nedges[m].push(e); bucketEdge(e); mark(e, 1);
     const f = ea.length;
     ea.push(m); eb.push(b); elev.push(elev[e]); ew.push(ew[e]); esf.push(esf[e]); eh.push(eh[e]); eborn.push(eborn[e]); edied.push(0);
-    etag.push(etag[e]); euse.push(euse[e]); eload.push(eload[e]); equiet.push(equiet[e]);
+    etag.push(etag[e]); euse.push(euse[e]); eload.push(eload[e]); equiet.push(equiet[e]); eramp.push(eramp[e]); ejam.push(ejam[e]);
     nedges[m].push(f); nedges[b].push(f); bucketEdge(f); mark(f, 1);
     return m;
   }
@@ -118,6 +120,7 @@ export function makeNetwork(c){
     edgesNear(Math.min(ax, bx), Math.min(az, bz), Math.max(ax, bx), Math.max(az, bz), (e) => {
       const p = ea[e], q = eb[e];
       if (p === a || q === a || p === b || q === b) return;
+      if ((lev === 4) !== (elev[e] === 4)) return;          // (a freeway and another road pass over or under: see grade())
       const ex = nx[q] - nx[p], ez = nz[q] - nz[p], den = dx * ez - dz * ex;
       if (Math.abs(den) < 1e-9) return;
       const t = ((nx[p] - ax) * ez - (nz[p] - az) * ex) / den, u = ((nx[p] - ax) * dz - (nz[p] - az) * dx) / den;
@@ -277,7 +280,7 @@ export function makeNetwork(c){
       const den = (x - ax) * ez - (z - az) * ex;
       if (Math.abs(den) > 1e-9){
         const t = ((nx[p] - ax) * ez - (nz[p] - az) * ex) / den, u = ((nx[p] - ax) * (z - az) - (nz[p] - az) * (x - ax)) / den;
-        if (t > 0 && t < 1 && u > 0 && u < 1 && (cs > 0.5 || junctionNear(ax + (x - ax) * t, az + (z - az) * t, KNOT, p, q))) ok = false;
+        if (t > 0 && t < 1 && u > 0 && u < 1 && (cs > 0.5 || elev[e] === 4 || eramp[e] || junctionNear(ax + (x - ax) * t, az + (z - az) * t, KNOT, p, q))) ok = false;
       }
     });
     // its ends: a junction made where another is within KNOT (a node on a street becomes one by this street)
@@ -319,7 +322,7 @@ export function makeNetwork(c){
         let n = -1;
         for (let k = 0; k < 6; k++){
           const m = nodes[Math.floor(c.rnd(a, 10 + t * 6 + k) * nodes.length)];
-          if (m === undefined || nedges[m].length !== 1 || elev[nedges[m][0]] < 2) continue;
+          if (m === undefined || nedges[m].length !== 1 || elev[nedges[m][0]] < 2 || elev[nedges[m][0]] === 4 || eramp[nedges[m][0]] || nh[m] > 0.5) continue;
           if (n < 0 || better(mid(nx[m], nz[m]), mid(nx[n], nz[n]))) n = m;
         }
         if (n >= 0){
@@ -345,7 +348,8 @@ export function makeNetwork(c){
         let n = -1;
         for (let k = 0; k < 6; k++){
           const m = nodes[Math.floor(c.rnd(a, 110 + t * 6 + k) * nodes.length)];
-          if (m === undefined || nedges[m].length !== 2 || elev[nedges[m][0]] < 2 || elev[nedges[m][1]] < 2) continue;
+          if (m === undefined || nedges[m].length !== 2 || elev[nedges[m][0]] < 2 || elev[nedges[m][1]] < 2 || nh[m] > 0.5) continue;
+          if (elev[nedges[m][0]] === 4 || elev[nedges[m][1]] === 4 || eramp[nedges[m][0]] || eramp[nedges[m][1]]) continue;
           const o1 = other(nedges[m][0], m), o2 = other(nedges[m][1], m);
           const ax1 = nx[o1] - nx[m], az1 = nz[o1] - nz[m], ax2 = nx[o2] - nx[m], az2 = nz[o2] - nz[m];
           if ((ax1 * ax2 + az1 * az2) / ((Math.hypot(ax1, az1) * Math.hypot(ax2, az2)) || 1) > -0.94) continue;   // (it bends there)
@@ -363,7 +367,7 @@ export function makeNetwork(c){
       }
       // B: a side street off a street or road of the town, square to it
       const es = [];
-      for (const m of nodes) for (const e of nedges[m]) if (elev[e] >= 2 && elen(e) >= 1.2 * G) es.push(e);
+      for (const m of nodes) for (const e of nedges[m]) if (elev[e] >= 2 && elev[e] < 4 && !eramp[e] && elen(e) >= 1.2 * G) es.push(e);
       if (!es.length){
         // no street yet: the first one, from the middle along the town's axis
         if (nedges[s.coreNode].length) continue;
@@ -395,7 +399,7 @@ export function makeNetwork(c){
   function frontage(s, n, a, r = 0){
     const out = [], es = [], wt = [];
     let sum = 0;
-    for (const nd of s.nodes || []) for (const e of nedges[nd]) if (elev[e] >= 2){
+    for (const nd of s.nodes || []) for (const e of nedges[nd]) if (elev[e] >= 2 && elev[e] < 4 && !eramp[e] && nh[ea[e]] < 0.5 && nh[eb[e]] < 0.5){
       const w2 = r > 0 ? Math.exp(-Math.hypot((nx[ea[e]] + nx[eb[e]]) / 2 - s.core[0], (nz[ea[e]] + nz[eb[e]]) / 2 - s.core[1]) / r) : 1;
       es.push(e); wt.push(w2); sum += w2;
     }
@@ -489,6 +493,234 @@ export function makeNetwork(c){
      knows for that level; maxLevel(s) the highest level it can build; homes: Map tag -> [x, z, people, town home (1) or farm (0), ...];
      towns: settlements (with core nodes) and the reach of their trips (m); flows: [settlementA, B, amount] } */
   let lastRoutes = new Map();
+
+  // ---- freeways (level 4) ----
+  /* A main road that stays crowded for two ticks (50 years), where cars are known, may become a freeway: the
+     settlement keeping it weighs converting the corridor it is part of (the run of main roads straight on
+     through it, up to 12 km) against a new route beside it (a bypass, around crowded land), and builds the
+     cheaper. Cost: a metre of freeway on open land 1, raised over crowded land (CROWD+ buildings within 100 m)
+     3; a bypass also pays for the longer way (its extra length, weighed by the traffic).
+     A freeway crosses other roads without junctions. Along a converted corridor, each road that met it:
+       - an interchange (a diamond: four ramps between the freeway, 150 m either side, and the crossing road,
+         60 m either side) at a main road crossing at least 1.5 km from the last interchange (or the first)
+       - else an overpass or underpass, where the road is busy or a main road and runs on across
+       - else cut: it ends 25 m short of the freeway
+     Height: a freeway runs raised (7 m; 11 m within 80 m of a river) over crowded land, else on the ground,
+     climbing or falling at most 5% (ramps). Roads crossing a freeway on the ground go over it at 7.5 m above
+     it (their approaches at 5%); roads under a raised freeway stay on the ground. See grade(). */
+  const CROWD = 8, SLOPE = 0.05;
+  // a road's straight continuation through node n, coming by edge e (a road of the same level, within 30
+  // degrees), or -1
+  function straightOn(n, e, lev){
+    const o = other(e, n), dx = nx[n] - nx[o], dz = nz[n] - nz[o], L = Math.hypot(dx, dz) || 1;
+    let best = -1, bc = 0.85;
+    for (const f of nedges[n]){
+      if (f === e || (lev >= 0 && elev[f] !== lev) || eramp[f]) continue;
+      const m = other(f, n), fx = nx[m] - nx[n], fz = nz[m] - nz[n], cs = (dx * fx + dz * fz) / (L * (Math.hypot(fx, fz) || 1));
+      if (cs > bc){ bc = cs; best = f; }
+    }
+    return best;
+  }
+  /** the corridor of main roads through edge e: nodes in order and the edges between */
+  function corridor(e){
+    const nodes = [ea[e], eb[e]], edges = [e], seen = new Set([e]);
+    let len = elen(e);
+    for (const end of [1, 0]){
+      for (;;){
+        const n = end ? nodes[nodes.length - 1] : nodes[0], ein = end ? edges[edges.length - 1] : edges[0];
+        const f = straightOn(n, ein, 3);
+        if (f < 0 || seen.has(f) || len > 12000) break;
+        seen.add(f); len += elen(f);
+        if (end){ edges.push(f); nodes.push(other(f, n)); } else { edges.unshift(f); nodes.unshift(other(f, n)); }
+      }
+    }
+    return { nodes, edges, len };
+  }
+  // move edge f's end at node n to node n2
+  function detach(f, n, n2){
+    mark(f, -1);
+    if (ea[f] === n) ea[f] = n2; else eb[f] = n2;
+    { const l = nedges[n], i = l.indexOf(f); if (i >= 0){ l[i] = l[l.length - 1]; l.pop(); } }
+    nedges[n2].push(f); bucketEdge(f); mark(f, 1);
+  }
+  // raise a road to height H at node m, sloping down to the ground along it both ways (an overpass); where
+  // the slope reaches the ground within an edge, a node there
+  function rise(m, H){
+    nh[m] = Math.max(nh[m], H);
+    const D = H / SLOPE;
+    for (const e0 of nedges[m].slice()){
+      let n = m, e = e0, d = 0;
+      for (let k = 0; k < 40 && e >= 0; k++){
+        const o = other(e, n), L = elen(e);
+        if (d + L > D){
+          const t = (D - d) / L;
+          if (t > 0.05){ const q = splitAt(e, nx[n] + (nx[o] - nx[n]) * t, nz[n] + (nz[o] - nz[n]) * t, nborn[n]); nh[q] = 0; }
+          break;
+        }
+        d += L;
+        nh[o] = Math.max(nh[o], H - SLOPE * d);
+        const next = straightOn(o, e, -1);
+        n = o; e = next;
+      }
+    }
+  }
+  /** heights along a freeway's nodes: raised over crowded land and near rivers, then slopes limited */
+  function heightsAlong(nodes){
+    const H = nodes.map((n) => c.nearRiver(nx[n], nz[n], 80) ? 11 : c.crowd(nx[n], nz[n], 100) >= CROWD ? 7 : 0);
+    // (a short stretch of ground between raised stretches stays raised)
+    for (let k = 1; k < nodes.length - 1; k++) if (!H[k] && H[k - 1] && H[k + 1]) H[k] = Math.min(H[k - 1], H[k + 1]);
+    const d = (i, j) => Math.hypot(nx[nodes[i]] - nx[nodes[j]], nz[nodes[i]] - nz[nodes[j]]);
+    for (let k = 1; k < nodes.length; k++) H[k] = Math.max(H[k], H[k - 1] - SLOPE * d(k, k - 1));
+    for (let k = nodes.length - 2; k >= 0; k--) H[k] = Math.max(H[k], H[k + 1] - SLOPE * d(k, k + 1));
+    nodes.forEach((n, k) => { nh[n] = Math.max(nh[n], H[k]); });
+  }
+  // a node on the freeway about dist m along it from node k of the corridor (forward dir +1 or back -1),
+  // splitting an edge if needed (the corridor keeps track) @returns {number} or -1
+  function alongCorridor(cor, k, dist, dir, born){
+    let d = 0, i = k;
+    for (;;){
+      const j = i + dir;
+      if (j < 0 || j >= cor.nodes.length) return -1;
+      const idx = Math.min(i, j), e = cor.edges[idx], L = elen(e);
+      if (d + L >= dist){
+        const a = cor.nodes[i], b = cor.nodes[j], t = (dist - d) / L;
+        if (t < 0.15) return a;
+        if (t > 0.85) return b;
+        const m = splitAt(e, nx[a] + (nx[b] - nx[a]) * t, nz[a] + (nz[b] - nz[a]) * t, born);
+        const lo = cor.nodes[idx], hi = cor.nodes[idx + 1];
+        cor.nodes.splice(idx + 1, 0, m);
+        cor.edges.splice(idx, 1, edgeBetween(lo, m), edgeBetween(m, hi));
+        return m;
+      }
+      d += L; i = j;
+    }
+  }
+  /** make the corridor a freeway (converted in place) */
+  function convert(cor, born, sf){
+    for (const e of cor.edges){ elev[e] = 4; ew[e] = LEVEL_W[4]; esf[e] = Math.max(esf[e], sf); eh[e] = 1; ejam[e] = 0; }
+    heightsAlong(cor.nodes);
+    const inCor = new Set(cor.edges);
+    let sinceIx = 1e9, acc = 0;
+    const plan = [];
+    for (let k = 0; k < cor.nodes.length; k++){
+      const n = cor.nodes[k];
+      if (k > 0) acc += elen(cor.edges[k - 1]);
+      const others = nedges[n].filter((f) => !inCor.has(f) && elev[f] !== 4);
+      if (!others.length) continue;
+      const main = others.some((f) => elev[f] >= 3);
+      const end = k === 0 || k === cor.nodes.length - 1;
+      if (end) continue;                                    // (the freeway's ends meet the roads at grade)
+      if (main && (acc - sinceIx >= 1500 || sinceIx === 1e9)){ plan.push([n, 'ix']); sinceIx = acc; }
+      else plan.push([n, 'cross']);
+    }
+    for (const [n, what] of plan){
+      const others = nedges[n].filter((f) => !inCor.has(f) && elev[f] !== 4 && !eramp[f]);
+      if (!others.length) continue;
+      // the roads that meet it move to a node of their own at the same spot (over, under or cut)
+      const n2 = addNode(nx[n], nz[n], ntag[n], born);
+      const busy = (f) => elev[f] >= 3 || eload[f] >= 0.1;
+      const keep = what === 'ix' ? others : others.filter((f) => busy(f) && straightOn(n, f, -1) >= 0 && others.includes(straightOn(n, f, -1)));
+      for (const f of others){
+        if (keep.includes(f)){ detach(f, n, n2); continue; }
+        // cut: it ends 25 m short
+        const o = other(f, n), L = elen(f);
+        if (L > 40){ const q = splitAt(f, nx[n] + (nx[o] - nx[n]) * 25 / L, nz[n] + (nz[o] - nz[n]) * 25 / L, born); const g = edgeBetween(n, q); if (g >= 0) removeEdge(g, born); }
+        else removeEdge(f, born);
+      }
+      if (!nedges[n2].length) continue;
+      if (nh[n] >= 5) nh[n2] = 0; else rise(n2, nh[n] + 7.5);
+      if (what !== 'ix') continue;
+      // a diamond: ramps from the freeway 150 m either side to the crossing road 60 m either side
+      const legs = nedges[n2].slice(0, 2);
+      const fwd = alongCorridor(cor, cor.nodes.indexOf(n), 150, 1, born), back = alongCorridor(cor, cor.nodes.indexOf(n), 150, -1, born);
+      const ends = legs.map((f) => { const o = other(f, n2), L = elen(f); return L > 80 ? splitAt(f, nx[n2] + (nx[o] - nx[n2]) * 60 / L, nz[n2] + (nz[o] - nz[n2]) * 60 / L, born) : o; });
+      for (const fn of [fwd, back]) for (const cn of ends){
+        if (fn < 0 || cn < 0) continue;
+        const r = rawEdge(fn, cn, 2, born, etag[cor.edges[0]], sf);
+        eramp[r] = 1; ew[r] = 7;
+      }
+    }
+  }
+  /** a bypass: a new freeway from the corridor's first node to its last, around crowded land @returns {boolean} */
+  function bypass(cor, born, sf){
+    const A = cor.nodes[0], Bn = cor.nodes[cor.nodes.length - 1];
+    const crowdCell = (k) => { const x = -c.half + ((k % R.rres) + 0.5) * R.rcell, z = -c.half + (((k / R.rres) | 0) + 0.5) * R.rcell; return 1 + 0.5 * c.crowd(x, z, 80); };
+    const cells = R.route(R.at(nx[A], nz[A]), R.at(nx[Bn], nz[Bn]), crowdCell, false);
+    if (!cells) return false;
+    cells.reverse();
+    const pts = [];
+    for (let k = 2; k < cells.length - 2; k += 2){ const q = cells[k]; pts.push([-c.half + ((q % R.rres) + 0.5) * R.rcell, -c.half + (((q / R.rres) | 0) + 0.5) * R.rcell]); }
+    for (let pass = 0; pass < 3; pass++) for (let k = 1; k < pts.length - 1; k++) pts[k] = [(pts[k - 1][0] + 2 * pts[k][0] + pts[k + 1][0]) / 4, (pts[k - 1][1] + 2 * pts[k][1] + pts[k + 1][1]) / 4];
+    const nodes = [A];
+    for (const [x, z] of pts) nodes.push(addNode(x, z, c.tagAt(x, z), born));
+    nodes.push(Bn);
+    for (let k = 0; k + 1 < nodes.length; k++) addEdge(nodes[k], nodes[k + 1], 4, born, etag[cor.edges[0]], sf);
+    heightsAlong(nodes);
+    return true;
+  }
+  // the cost of a corridor as a freeway in place, and of a bypass of it
+  function costs(cor){
+    let conv = 0;
+    for (let k = 0; k + 1 < cor.nodes.length; k++){
+      const a = cor.nodes[k], b = cor.nodes[k + 1], L = elen(cor.edges[k]);
+      conv += L * (c.crowd((nx[a] + nx[b]) / 2, (nz[a] + nz[b]) / 2, 100) >= CROWD ? 3 : 1);
+    }
+    // (a bypass: about 1.3 times as long, on open land, and its extra length paid by the traffic again)
+    const by = cor.len * 1.3 + cor.len * 0.3 * 2;
+    return { conv, by };
+  }
+  /** freeways where main roads stay crowded @returns {number} built */
+  function freeways(born, o){
+    let built = 0;
+    const done = new Set();
+    for (let e = 0; e < ea.length && built < 3; e++){
+      if (edied[e] || elev[e] !== 3 || ejam[e] < 2 || done.has(e)) continue;
+      const own = o.keeper(c.tagAt((nx[ea[e]] + nx[eb[e]]) / 2, (nz[ea[e]] + nz[eb[e]]) / 2)) || o.keeper(etag[e]);
+      if (!own || o.maxLevel(own) < 4 || !o.canRepair(own)) continue;
+      const cor = corridor(e);
+      for (const f of cor.edges) done.add(f);
+      if (cor.len < 1200) continue;
+      const k = costs(cor), sf = o.best(own, 4);
+      if (k.by < k.conv && bypass(cor, born, sf)){ for (const f of cor.edges) ejam[f] = 0; built++; continue; }
+      convert(cor, born, sf); built++;
+    }
+    return built;
+  }
+  /** where a freeway and another road cross (with no junction) but at nearly the same height: the road goes
+   *  over the freeway (busy roads), or is cut short of it */
+  function grade(born){
+    for (let f = 0; f < ea.length; f++){
+      if (edied[f] || elev[f] !== 4) continue;
+      const p = ea[f], q = eb[f], ax = nx[p], az = nz[p], dx = nx[q] - ax, dz = nz[q] - az;
+      const hits = [];
+      edgesNear(Math.min(ax, nx[q]), Math.min(az, nz[q]), Math.max(ax, nx[q]), Math.max(az, nz[q]), (g) => {
+        if (elev[g] === 4) return;
+        const a = ea[g], b = eb[g];
+        if (a === p || a === q || b === p || b === q) return;
+        const ex = nx[b] - nx[a], ez = nz[b] - nz[a], den = dx * ez - dz * ex;
+        if (Math.abs(den) < 1e-9) return;
+        const t = ((nx[a] - ax) * ez - (nz[a] - az) * ex) / den, u = ((nx[a] - ax) * dz - (nz[a] - az) * dx) / den;
+        if (t > 0 && t < 1 && u > 0 && u < 1) hits.push([g, t, u]);
+      });
+      for (const [g, t, u] of hits){
+        if (edied[g]) continue;
+        const hf = nh[p] + (nh[q] - nh[p]) * t, hg = nh[ea[g]] + (nh[eb[g]] - nh[ea[g]]) * u;
+        if (Math.abs(hf - hg) >= 5.5) continue;
+        const x = ax + dx * t, z = az + dz * t;
+        if (hf >= 5){ if (hg > 0.5) continue; continue; }      // (under a raised freeway: fine on the ground)
+        if (elev[g] >= 3 || eload[g] >= 0.1 || eramp[g]){ const m = splitAt(g, x, z, born); rise(m, hf + 7.5); }
+        else {
+          const m = splitAt(g, x, z, born);
+          for (const h of nedges[m].slice()){
+            const o = other(h, m), L = elen(h);
+            if (L > 40){ const r2 = splitAt(h, nx[m] + (nx[o] - nx[m]) * 25 / L, nz[m] + (nz[o] - nz[m]) * 25 / L, born); const g2 = edgeBetween(m, r2); if (g2 >= 0) removeEdge(g2, born); }
+            else removeEdge(h, born);
+          }
+        }
+      }
+    }
+  }
+
   // junctions joined by a road shorter than MERGE: one junction (the shorter road goes, the roads of the
   // other end move onto this one)
   function mergeClose(born){
@@ -496,7 +728,8 @@ export function makeNetwork(c){
     for (let e = 0; e < ea.length; e++){
       if (edied[e] || elen(e) >= MERGE) continue;
       const a = ea[e], b = eb[e];
-      if (!isJunction(a) || !isJunction(b)) continue;
+      if (!isJunction(a) || !isJunction(b) || elev[e] === 4 || eramp[e] || nh[a] > 0.5 || nh[b] > 0.5) continue;
+      if (nedges[a].some((f) => elev[f] === 4) || nedges[b].some((f) => elev[f] === 4)) continue;
       removeEdge(e, born);
       for (const f of nedges[b].slice()){
         const o = other(f, b);
@@ -592,8 +825,9 @@ export function makeNetwork(c){
       eload[e] = 0.5 * eload[e] + 0.5 * ld;
       // (kept by the settlement whose land it is on now, else the one that built it)
       const own = o.keeper(c.tagAt((nx[ea[e]] + nx[eb[e]]) / 2, (nz[ea[e]] + nz[eb[e]]) / 2)) || o.keeper(etag[e]);
-      if (eload[e] > 1 && own && lev < o.maxLevel(own) && o.canRepair(own)){ raise(e, born, fronted); up++; }
-      else if (eload[e] < 0.02 && lev > 0 && !fronted.has(e) && !(townWay.has(e) && lev <= 2)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
+      if (lev === 3){ ejam[e] = eload[e] > 1 ? ejam[e] + 1 : 0; }
+      if (eload[e] > 1 && own && lev < 3 && lev < o.maxLevel(own) && o.canRepair(own)){ raise(e, born, fronted); up++; }
+      else if (eload[e] < 0.02 && lev > 0 && lev < 4 && !eramp[e] && !fronted.has(e) && !(townWay.has(e) && lev <= 2)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
       else equiet[e] = 0;
       // wear, repair, worn away
       const sf = esf[e], u = eload[e] / (eload[e] + 1);
@@ -602,7 +836,9 @@ export function makeNetwork(c){
       else if (eh[e] <= 0){ removeEdge(e, born); gone++; }
       euse[e] = 0;
     }
-    return { gone, up, down };
+    const fw = freeways(born, o);
+    grade(born);
+    return { gone, up, down, fw };
   }
   // raise edge e a level; lower roads crowding it alongside are removed to make room; a main road too close
   // beside another main road: the quieter one falls back
@@ -626,6 +862,7 @@ export function makeNetwork(c){
     });
   }
 
+  const wideAt = (n, e) => { let w = 0; for (const f of nedges[n]) if (f !== e && !edied[f] && elev[f] >= 2) w = Math.max(w, ew[f]); return w; };
   /** the network as plain data, with junction controls (by the streets that meet: 3 roundabout five or more
    *  ways, 2 signals two or more main roads, 1 stop sign a street meets a main road, 0 none) */
   function finish(){
@@ -644,10 +881,15 @@ export function makeNetwork(c){
     return {
       streets: { n, ax: f32((i) => nx[ea[i]]), az: f32((i) => nz[ea[i]]), bx: f32((i) => nx[eb[i]]), bz: f32((i) => nz[eb[i]]),
         w: f32((i) => ew[i]), cls: Uint8Array.from(elev), level: Uint8Array.from(elev), born: Int16Array.from(eborn), tag: Int32Array.from(etag),
-        ja: Uint8Array.from({ length: n }, (_, i) => jtype[ea[i]]), jb: Uint8Array.from({ length: n }, (_, i) => jtype[eb[i]]),
+        // (junction control at each end: a stop sign stands only on the streets meeting a main road)
+        ja: Uint8Array.from({ length: n }, (_, i) => jtype[ea[i]] === 1 && elev[i] >= 3 ? 0 : jtype[ea[i]]), jb: Uint8Array.from({ length: n }, (_, i) => jtype[eb[i]] === 1 && elev[i] >= 3 ? 0 : jtype[eb[i]]),
         health: Uint8Array.from(eh, hl), surf: Uint8Array.from(esf), died: Int16Array.from(edied),
         // (1: streets meet at that end, a junction; 0: a bend or an end)
-        xa: Uint8Array.from({ length: n }, (_, i) => isJ[ea[i]]), xb: Uint8Array.from({ length: n }, (_, i) => isJ[eb[i]]) },
+        xa: Uint8Array.from({ length: n }, (_, i) => isJ[ea[i]]), xb: Uint8Array.from({ length: n }, (_, i) => isJ[eb[i]]),
+        // heights of the road at its ends (m: raised freeways, overpasses and ramps), and freeway ramps
+        ha: f32((i) => nh[ea[i]]), hb: f32((i) => nh[eb[i]]), ramp: Uint8Array.from(eramp),
+        // the widest other street or road meeting it at each end (m; 0 none): where the junction's edge is
+        wa: f32((i) => wideAt(ea[i], i)), wb: f32((i) => wideAt(eb[i], i)) },
       junctions: Float32Array.from(jlist),
     };
   }

@@ -229,6 +229,7 @@ vec4 wTpp(int i){ return wT(i) - uOrigin.xyxy; }                       // ... wh
 vec2 absXZ(vec2 xz){ return xz + uOrigin; }                            // back to world coordinates
 // The cell at xz: list start (global texel), counts, empty rings around it, tallest top in the cell and in its
 // 128 m block. False if not loaded.
+int gNP = 0;     // props listed in the cell cellAt last found (see src/gen/cells.js)
 bool cellAt(vec2 xz, out int base, out ivec4 n, out vec2 top, out vec2 lo){
   vec2 cf = floor(xz / RC) + uOrigin / RC;          // (uOrigin is a whole number of cells)
   lo = floor(xz / RC) * RC;
@@ -238,18 +239,20 @@ bool cellAt(vec2 xz, out int base, out ivec4 n, out vec2 top, out vec2 lo){
   if (v.z != (ch.x + 512.0) * 1024.0 + ch.y + 513.0) return false;
   int k = int(v.y);
   base = int(sl.y * 9.0 + sl.x) * SLOT_TEX + int(v.x);
-  n = ivec4(k & 63, (k >> 6) & 63, (k >> 12) & 63, k >> 18);
+  n = ivec4(k & 63, (k >> 6) & 63, (k >> 12) & 63, (k >> 18) & 7);
+  gNP = k >> 21;
   top = vec2(mod(v.w, 1024.0), floor(v.w / 1024.0)) * 0.25;
   return true;
 }
 bool isLand(vec2 xz){ return texture(uLand, (xz + uWorldHalf) / (2.0 * uWorldHalf)).r > 0.0; }
 
 // Materials (the second number map() returns): 0 road, 1 sidewalk (and curbs), 2 building, 5 podium,
-// 6 open ground (plaza, grass, dirt), 7 lamp pole, 8 lamp head, 9 water. For buildings and podiums, + 16 x the building's first
-// texel, so the material pass can read the building's data.
+// 6 open ground (plaza, grass, dirt), 7 lamp pole, 8 lamp head, 9 water, 10 traffic light, 11 stop sign. For
+// buildings, podiums, decks and the junction things, + 16 x their first texel, so the material pass can read
+// their data.
 float matId(float m){ return m - 16.0 * floor(m / 16.0); }
 int bldOf(float m){ return int(m / 16.0); }
-bool isBldMat(float m){ float k = matId(m); return (k > 1.5 && k < 5.5) || (k > 6.5 && k < 8.5); }
+bool isBldMat(float m){ float k = matId(m); return (k > 1.5 && k < 5.5) || (k > 6.5 && k < 8.5) || (k > 9.5 && k < 11.5); }
 // kind: 0 brick, 1 concrete, 2 glass tower on a podium, 3 timber frame, 4 rough stone; light: 0 no one lives
 // there, 1 candles and oil lamps, 2 electric (see src/gen/cells.js)
 struct Bld { vec2 c; vec2 u; vec2 hs; float top; float podH; float kind; float var; float doorOff; int door; float light; };
@@ -374,6 +377,52 @@ float lampIrradiance(vec3 p, vec3 n){
 #endif
 }
 
+/* ---- raised roads: decks on pillars, and embankments (see src/gen/cells.js) ----
+   a, b: the deck's first two texels. Returns the distance; top: the height of its road there. */
+float deckSDF(vec3 p, vec4 a, vec4 b, out float top){
+  vec2 q = p.xz - a.xy;
+  vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));
+  float hl = b.x, hw = -b.y;
+  top = mix(b.z, b.w, clamp((l.x + hl) / (2.0 * hl), 0.0, 1.0));
+  float ax = abs(l.x) - hl;
+  if (min(b.z, b.w) >= 2.5){
+    // a slab 1.2 m deep, a concrete barrier 0.9 m tall at each side, and a pier under its middle
+    float slab = max(max(ax, abs(l.y) - hw), abs(p.y - (top - 0.6)) - 0.6);
+    float bar = max(max(ax, abs(abs(l.y) - (hw - 0.2)) - 0.2), abs(p.y - (top + 0.45)) - 0.45);
+    float pier = max(max(abs(l.x) - 0.8, abs(l.y) - min(hw * 0.6, 5.0)), max(p.y - top + 1.0, -p.y - 0.5));
+    return min(min(slab, bar), pier);
+  }
+  // an embankment: sides sloping down at about 1 in 1, a low barrier along the top
+  float side = abs(l.y) - (hw + max(top - p.y, 0.0));
+  float emb = max(max(ax, side * 0.7), p.y - top);
+  float bar = max(max(ax, abs(abs(l.y) - (hw - 0.2)) - 0.2), abs(p.y - (top + 0.4)) - 0.4);
+  return min(emb, top > 1.0 ? bar : 1e9);
+}
+// a regular octagon of inner radius r in the plane (iq's)
+float sdOct(vec2 p, float r){
+  const vec3 k = vec3(-0.9238795325, 0.3826834323, 0.4142135623);
+  p = abs(p);
+  p -= 2.0 * min(dot(k.xy, p), 0.0) * k.xy;
+  p -= 2.0 * min(dot(vec2(-k.x, k.y), p), 0.0) * vec2(-k.x, k.y);
+  p -= vec2(clamp(p.x, -k.z * r, k.z * r), r);
+  return length(p) * sign(p.y);
+}
+/* ---- junction things: a traffic light (a 3.6 m pole, its head of three lamps facing the traffic it serves)
+   and a stop sign (an octagon 0.76 m across on a 2.4 m post). pr: (x, z, kind, angle) */
+vec2 propLocal(vec3 p, vec4 pr){ vec2 u = vec2(sin(pr.w), cos(pr.w)), q = p.xz - pr.xy; return vec2(dot(q, u), dot(q, vec2(-u.y, u.x))); }
+float propSDF(vec3 p, vec4 pr){
+  vec2 l = propLocal(p, pr);
+  float r = length(l);
+  if (pr.z < 1.5){
+    float pole = max(r - 0.07, max(p.y - 3.7, -p.y));
+    float head = sdBox(vec3(l.x - 0.18, p.y - 3.05, l.y), vec3(0.12, 0.5, 0.17));
+    return min(pole, head);
+  }
+  float post = max(r - 0.035, max(p.y - 2.4, -p.y));
+  float plate = max(sdOct(vec2(l.y, p.y - 2.1), 0.38), abs(l.x - 0.05) - 0.012);
+  return min(post, plate);
+}
+
 vec2 map(vec3 p){
   // Buildings and street lights listed for the cell p is in. The ground is found exactly by groundHit().
   int base; ivec4 cn; vec2 top; vec2 lo;
@@ -400,6 +449,13 @@ vec2 map(vec3 p){
     vec4 a = wTp(k), b = wT(k + 1);
     vec2 q = p.xz - a.xy;
     vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));   // along the frontage; away from the road
+    if (b.y < 0.0){
+      // a deck (a raised road)
+      if (length(max(abs(l) - vec2(b.x, -b.y + max(b.z, b.w)), 0.0)) >= res.x) continue;
+      float tp, dd = deckSDF(p, a, b, tp);
+      if (dd < res.x) res = vec2(dd, float(k) * 16.0 + 12.0);
+      continue;
+    }
     if (length(max(abs(l) - b.xy, 0.0)) >= res.x) continue;  // its footprint is farther than what we have
     float d, dp = 1e9;
     if (b.w > 0.0){
@@ -432,6 +488,14 @@ vec2 map(vec3 p){
     vec2 ld = lampSDF(p, L, lb);
     if (lb < res.x && ld.x < res.x) res = ld;
   }
+  for (int i = ZERO; i < 7; i++){
+    if (i >= gNP) break;
+    int k = base + cn.x * 3 + cn.y + cn.z * 3 + i;
+    vec4 pr = wTp(k);
+    if (pr.z > 2.5 || length(p.xz - pr.xy) - 0.6 >= res.x) continue;   // (a roundabout's island is ground)
+    float dd = propSDF(p, pr);
+    if (dd < res.x) res = vec2(dd, float(k * 16 + 9 + int(pr.z)));
+  }
   return res;
 }
 
@@ -442,23 +506,29 @@ vec2 map(vec3 p){
    (kinds as in src/gen/cells.js: 0 street, 1 main, 2 farm track, 3 road; + 8 for country roads).
    dC and gC: the same distance and direction for town roads only, the ones with curbs (country roads lie
    level with the fields). */
-// (the nearest road's surface + 4 x health, set by roadAt: kept out of fr.w, where it would cost the road
-// length its precision)
-float gRoadSH = 15.0;
+// Set by roadAt for the nearest road: its surface + 4 x health (kept out of fr.w, where it would cost the road
+// length its precision), and how far its piece's ends' junction edges are (0: no junction). gRoadY: the height
+// roads are looked for at (the ground, 0, unless a deck's top is being shaded): a raised road is not part of
+// the ground. gIsland: inside a roundabout's island.
+float gRoadSH = 15.0, gRoadY = 0.0, gIsland = 0.0;
+vec2 gMouth = vec2(0.0);
+// a smooth minimum: where two roads meet, the union is rounded over about k metres (curb corners)
+float smin2(float a, float b, float k){ float h = max(k - abs(a - b), 0.0) / k; return min(a, b) - h * h * k * 0.25; }
 float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
-  g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0); dC = 1e9; gC = g;
+  g = vec2(1.0, 0.0); fr = vec4(0.0, 0.0, -1.0, 0.0); dC = 1e9; gC = g; gIsland = 0.0;
   int base; ivec4 cn; vec2 top; vec2 lo;
   if (!cellAt(P, base, cn, top, lo)) return 1e9;
-  float best = 1e9;
+  float best = 1e9, raw = 1e9, rawC = 1e9;
   vec2 d1 = vec2(0.0); bool crossing = false;
-  for (int i = ZERO; i < 47; i++){
+  for (int i = ZERO; i < 63; i++){
     if (i >= cn.z) break;
-    int k = base + cn.x * 3 + cn.y + i * 2;
-    vec4 a = wTpp(k), b = wT(k + 1);
+    int k = base + cn.x * 3 + cn.y + i * 3;
+    vec4 a = wTpp(k), b = wT(k + 1), c = wT(k + 2);
     vec2 ab = a.zw - a.xy;
     float L = max(length(ab), 1e-4);
     vec2 dir = ab / L, nrm = vec2(-dir.y, dir.x);
     float s = clamp(dot(P - a.xy, dir), 0.0, L);
+    if (abs(mix(c.x, c.y, s / L) - gRoadY) > 2.0) continue;      // (at another height: over or under here)
     vec2 dv = P - a.xy - dir * s;
     float dc = length(dv), d = dc - b.x;
     if (d < 0.0){
@@ -466,12 +536,22 @@ float roadAt(vec2 P, out vec2 g, out vec4 fr, out float dC, out vec2 gC){
       else if (abs(dot(dir, d1)) < 0.7) crossing = true;   // inside two roads that cross
     }
     vec2 gd = dc > 1e-5 ? dv / dc : nrm;
-    if (d < best){
-      best = d; g = gd;
+    if (d < raw){
+      raw = d; g = gd;
       fr = vec4(b.y + dot(P - a.xy, dir), dot(P - a.xy, nrm), b.x, b.z + 1000.0 * mod(b.w, 256.0));
-      gRoadSH = floor(b.w / 256.0);
+      gRoadSH = floor(b.w / 256.0); gMouth = c.zw;
     }
-    if (mod(b.w, 16.0) < 7.5 && d < dC){ dC = d; gC = gd; }
+    best = smin2(best, d, 5.0);
+    if (mod(b.w, 16.0) < 7.5){ if (d < rawC){ rawC = d; gC = gd; } dC = smin2(dC, d, 5.0); }
+  }
+  // roundabouts: a ring of road 8 m wide around an island with a curb
+  for (int i = ZERO; i < 7; i++){
+    if (i >= gNP) break;
+    vec4 pr = wTp(base + cn.x * 3 + cn.y + cn.z * 3 + i);
+    if (pr.z < 2.5) continue;
+    float q = length(P - pr.xy);
+    best = min(best, q - pr.w - 8.0); dC = min(dC, q - pr.w - 8.0);
+    if (q < pr.w + 0.5){ best = max(best, pr.w - q); dC = max(dC, pr.w - q); gC = q > 1e-4 ? (pr.xy - P) / q : gC; if (q < pr.w) gIsland = 1.0; }
   }
   if (crossing) fr.z = -1.0;
   return best;
@@ -749,6 +829,39 @@ Surf lampSurf(float mat, vec3 n, vec2 uv, vec2 f, float y){
     s.alb = vec3(0.08);
     if (y < 5.0){ if (abs(n.y) < 0.7){ s.alb = vec3(0.75, 0.70, 0.55); s.emit = 2.0 + GAS_LENS; } }
     else if (n.y < -0.7){ s.alb = vec3(0.55, 0.55, 0.5); s.emit = 1.0; }
+  }
+  return s;
+}
+// A traffic light or stop sign. The signals: the roads one way have green, the roads across them red (fixed
+// for now). A lit lamp: Surf.emit 10 + its luminance in thousands of cd/m2, in the colour of its albedo.
+Surf propSurf(float m, int k, vec3 p, vec3 n, vec2 f){
+  Surf s = blank();
+  vec4 pr = wTp(k);
+  vec2 l = propLocal(p, pr), u = vec2(sin(pr.w), cos(pr.w));
+  float front = dot(n.xz, u);
+  s.alb = vec3(0.16, 0.17, 0.17); s.refl = 0.1;
+  if (m < 10.5){
+    if (p.y > 2.5 && l.x > 0.0){
+      s.alb = vec3(0.035);
+      if (front > 0.7){
+        // three lamps 0.3 m apart: red at the top, amber, green
+        float y = p.y - 3.05, row = floor(y / 0.32 + 0.5);
+        float lens = 1.0 - smoothstep(0.10, 0.12, length(vec2(l.y, y - row * 0.32)));
+        bool goes = mod(pr.w + 0.7854, 3.14159) < 1.5708;           // this way's turn
+        if (lens > 0.0 && abs(row) < 1.5){
+          vec3 col = row > 0.5 ? vec3(0.9, 0.06, 0.03) : row > -0.5 ? vec3(0.9, 0.5, 0.02) : vec3(0.05, 0.85, 0.45);
+          bool lit = goes ? row < -0.5 : row > 0.5;
+          s.alb = mix(s.alb, col * (lit ? 1.0 : 0.12), lens);
+          if (lit) s.emit = 10.0 + 6.0 * lens;
+          s.refl = 0.06;
+        }
+      }
+    }
+  } else if (p.y > 1.7 && abs(l.x - 0.05) < 0.02){
+    // the sign's face: red with a white rim (a grey back)
+    float o = sdOct(vec2(l.y, p.y - 2.1), 0.38);
+    s.alb = front > 0.5 ? (o > -0.035 ? vec3(0.75, 0.75, 0.72) : vec3(0.55, 0.04, 0.04)) : vec3(0.4);
+    s.refl = 0.08;
   }
   return s;
 }
@@ -1352,12 +1465,13 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
     // Markings by width (lanes 3.5-4 m): up to 10 m wide, a dashed centre line; up to 16 m, also a solid line
     // at each side marking off a parking lane (towns, 2.5 m) or shoulder (country, 0.5 m); wider, a double
     // centre line, two lanes each way with a dashed line between, then parking or a shoulder (1.5 m).
-    // Zebra crossings just outside the crossing at each end (in towns).
-    float e = country ? 1e9 : min(sA, L - sA);            // distance from the nearer end (a crossing, in towns)
-    float z0 = hw + 4.5;                                  // the crossing's edge, for a crossing road like this one
+    // At a junction (gMouth: how far its edge is from the piece's end), a zebra crossing just outside it in
+    // towns, then the stop line; the lane markings start after that.
+    bool atS = sA < L - sA;
+    float mo = atS ? gMouth.x : gMouth.y, e = mo > 0.0 ? (atS ? sA : L - sA) - mo : 1e9;
     float aa = abs(ac);
-    if (e > z0 && e < z0 + 3.0) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);                // zebra crossing
-    else if (e >= z0 + 3.0){
+    if (!country && e > 0.5 && e < 3.5) paint = pulseF(ac + 0.25, 1.0, 0.5, fc);         // zebra crossing
+    else if (e >= 5.0){
       float edge = hw - (country ? (hw > 8.0 ? 1.5 : 0.5) : (hw > 8.0 ? 2.5 : 2.5));      // where the lanes end
       if (hw > 8.0){
         paint = max(boxF(ac, 0.08, 0.20, fc), boxF(ac, -0.20, -0.08, fc));            // double centre line
@@ -1380,15 +1494,17 @@ Surf road(vec2 uv, vec4 fr, vec2 dir, vec2 f){
     paint *= 1.0 - 0.8 * decay;
   }
   s.alb = mix(c, vec3(0.62, 0.60, 0.52), paint * (1.0 - hole));
-  // junction control (placeholder): a line across the lane arriving at the junction, white for a stop sign,
-  // yellow for signals, blue for a roundabout (traffic keeps right: arriving at the end is the right-hand half,
-  // across < 0; arriving at the start, across > 0)
-  if (fr.z > 0.0 && !country){
-    float sA = fr.x, L = mod(fr.w, 1000.0), hw = fr.z, e = min(sA, L - sA), z0 = hw + 4.5;
-    float jc = sA < L - sA ? jS : jE, arriving = sA < L - sA ? step(0.0, fr.y) : step(fr.y, 0.0);
-    if (jc > 0.5){
-      vec3 jcol = jc > 2.5 ? vec3(0.15, 0.35, 0.85) : jc > 1.5 ? vec3(0.85, 0.7, 0.1) : vec3(0.70, 0.69, 0.64);
-      s.alb = mix(s.alb, jcol, boxF(e, z0 - 0.9, z0 - 0.3, fpAlong(f, dir)) * arriving);
+  // the stop line across the lanes arriving at a controlled junction (traffic keeps right: arriving at the
+  // end is the right-hand half, across < 0; arriving at the start, across > 0); dashed where it only gives way
+  // (a roundabout)
+  if (fr.z > 0.0){
+    float sA = fr.x, L = mod(fr.w, 1000.0);
+    bool atS = sA < L - sA;
+    float jc = atS ? jS : jE, mo = atS ? gMouth.x : gMouth.y, arriving = atS ? step(0.0, fr.y) : step(fr.y, 0.0);
+    if (jc > 0.5 && mo > 0.0){
+      float e = (atS ? sA : L - sA) - mo, fc = fpAlong(f, vec2(-dir.y, dir.x));
+      float line = boxF(e, 3.9, 4.4, fpAlong(f, dir)) * arriving * (jc > 2.5 ? pulseF(fr.y, 1.0, 0.5, fc) : 1.0);
+      s.alb = mix(s.alb, vec3(0.62, 0.60, 0.52), line * (1.0 - hole) * (1.0 - 0.8 * decay));
     }
   }
   s.h = -0.002*vd - 0.0008*stones.y - 0.01 * crack - 0.06 * hole;
@@ -1423,12 +1539,28 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
     if (top) return sidewalk(vec2(fr.x, fr.y), vec2(fpAlong(f, dir), fpAlong(f, g)));
     return roof(uv * vec2(1.0, 3.0), f);                 // a curb face
   }
+  if (m > 11.5){
+    // a deck or embankment: its top is road (looked up at its own height), the rest concrete, an
+    // embankment's sides grass
+    int dk = bldOf(mat);
+    vec4 a = wTp(dk), b = wT(dk + 1);
+    float tp; deckSDF(p, a, b, tp);
+    float ly = dot(p.xz - a.xy, vec2(-a.w, a.z)), hw = -b.y - 0.6;
+    if (top && abs(ly) < hw && p.y < tp + 0.2){
+      vec2 g, gC; vec4 fr; float dC;
+      gRoadY = tp; roadAt(p.xz, g, fr, dC, gC); gRoadY = 0.0;
+      return road(uv, fr, vec2(-g.y, g.x), f);
+    }
+    if (min(b.z, b.w) < 2.5 && abs(ly) > hw + 0.5){ Surf s = blank(); float hh; s.alb = grassCol(uv, f, 0.4, hh); s.h = hh; s.refl = 0.02; return s; }
+    return roof(uv * vec2(1.0, 3.0), f);
+  }
   if (m > 8.5) return water(uv, f);
   if (m > 5.5 && m < 6.5){ if (top) return lot(uv, f); return roof(uv * vec2(1.0, 3.0), f); }
 #endif
 #ifdef MAT_GROUND
   return blank();
 #else
+  if (m > 9.5) return propSurf(m, bldOf(mat), p, n, f);
   if (m > 6.5) return lampSurf(m, n, uv, f, p.y);
   Bld b = getBld(bldOf(mat));
   if (!top) uv = wallUV(b.c, b.u, p, n);
@@ -1459,6 +1591,8 @@ vec3 reflAlbedo(float mat, vec3 p, vec3 n, vec2 uv, vec2 f, out float glassy){
     return sf > 2.5 ? vec3(0.05) : sf > 1.5 ? vec3(0.30, 0.29, 0.27) : sf > 0.5 ? vec3(0.42, 0.39, 0.34) : vec3(0.30, 0.23, 0.16);
   }
   if (m < 1.5) return vec3(0.34, 0.33, 0.31);                         // sidewalk
+  if (m > 11.5) return vec3(0.35, 0.34, 0.32);                        // deck or embankment
+  if (m > 9.5) return vec3(0.15);                                     // traffic light, stop sign
   if (m > 8.5){ glassy = 0.9; return vec3(0.02, 0.04, 0.05); }        // water
   if (m > 7.5) return vec3(0.08);                                     // lamp head
   if (m > 6.5) return vec3(0.13);                                     // pole
@@ -1810,7 +1944,8 @@ void main(){
     vec3 lit = s.alb * (dif * vec3(2.6, 2.4, 2.1) * uKeyCol + amb * 0.9 * uAmbK);
     if (uLampK > 0.0) lit += s.alb * vec3(1.0, 0.62, 0.24) * lampE * uLampK * cavity;
     float near = 1.0 - smoothstep(0.5, 2.0, ang * t / 0.2);           // far: drawn as a glow instead
-    if (s.emit > 1.5) lit += (s.emit - 2.0) * vec3(1.0, 0.72, 0.42) * uLampEmit * near;            // gas lantern
+    if (s.emit > 9.5){}
+    else if (s.emit > 1.5) lit += (s.emit - 2.0) * vec3(1.0, 0.72, 0.42) * uLampEmit * near;       // gas lantern
     else lit += max(s.emit, 0.0) * vec3(1.0, 0.66, 0.3) * uLampEmit * lensView(rd.y) * near;     // electric lens
     float cv = max(dot(N, -rd), 0.0);
     float F = s.refl + (1.0 - s.refl) * pow(1.0 - cv, 5.0);
@@ -1827,6 +1962,8 @@ void main(){
       vec3 wc = mix(vec3(1.0, 0.55, 0.24), vec3(1.0, 0.80, 0.58), smoothstep(2.5, 10.0, lum));
       col += wc * -s.emit * uWinK * (1.0 - clamp(F, 0.0, 1.0));
     }
+    // a signal lamp, in its own colour
+    if (s.emit > 9.5) col += s.alb / max(max(s.alb.r, max(s.alb.g, s.alb.b)), 0.01) * (s.emit - 10.0) * 1000.0 * uWinK;
 
     float fog = 1.0 - exp(-t * 0.0007);
     col = mix(col, uFogCol, fog);
