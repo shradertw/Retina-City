@@ -31,6 +31,8 @@ const SURF_K = [0.6, 0.8, 0.9, 1];              // dirt, gravel, setts, asphalt
 // what a level carries before it crowds: people's trips (or food's worth of trade) per 25 years
 export const CAP = [20, 100, 1500, 15000, 150000];
 const MAIN_GAP = 300;
+const KNOT = 35;                                // m: no new junction this close to another
+const MERGE = 30;                               // m: junctions joined by a road shorter than this become one
 const TRADE_K = 0.25;                           // traffic per unit of food traded (a guess: carts carry many people's food)                           // m: main roads side by side closer than this: one falls back
 const NB = 25, EB = 60;                         // bucket sizes (m): nodes, edges
 
@@ -155,7 +157,35 @@ export function makeNetwork(c){
 
   // ---- speed and the fastest ways ----
   const speedOf = (e) => SPEED[elev[e]] * SURF_K[esf[e]] * (0.6 + 0.4 * eh[e]) / (1 + 0.5 * Math.min(4, eload[e]) ** 2);
-  const timeOf = (e) => elen(e) / speedOf(e);
+  // travel time along an edge, in seconds
+  const timeOf = (e) => elen(e) * 3.6 / speedOf(e);
+  /* Passing through a junction costs time: traffic slows or stops there, more where more roads meet and for
+     sharp turns, and much more where junctions crowd each other (queues spill from one into the next):
+       3 roads 4 s, 4 roads 7 s, 5 or more 12 s; a turn sharper than 60 degrees 3 s; each other junction
+       within JAM_R of it 8 s (counted each tick: jam)
+     So traffic keeps to through roads with few junctions, and a tangle of junctions loses its traffic and,
+     by the rules below, falls back and wears away. */
+  const JAM_R = 40;
+  let jam = new Uint8Array(0);
+  function delayAt(n, ein, eout){
+    if (ein < 0) return 0;
+    const d = nedges[n].length;
+    let t = d >= 5 ? 12 : d === 4 ? 7 : d === 3 ? 4 : 0;
+    const a = other(ein, n), b = other(eout, n);
+    const ax = nx[n] - nx[a], az = nz[n] - nz[a], bx = nx[b] - nx[n], bz = nz[b] - nz[n];
+    if ((ax * bx + az * bz) / ((Math.hypot(ax, az) * Math.hypot(bx, bz)) || 1) < 0.5) t += 3;
+    if (n < jam.length) t += 8 * jam[n];
+    return t;
+  }
+  /** junction nodes (three or more roads) */
+  const isJunction = (n) => nedges[n].length >= 3;
+  /** another junction within r of node n (or of point (x, z)), other than not1 and not2 */
+  function junctionNear(x, z, r, not1 = -1, not2 = -1){
+    const k = Math.ceil(r / NB), ci = Math.floor(x / NB), cj = Math.floor(z / NB);
+    for (let b = -k; b <= k; b++) for (let a = -k; a <= k; a++) for (const id of nbk.get(key(ci + a, cj + b)) || [])
+      if (id !== not1 && id !== not2 && isJunction(id) && Math.hypot(nx[id] - x, nz[id] - z) < r) return true;
+    return false;
+  }
   let gS = new Float64Array(0), stamp = new Int32Array(0), via = new Int32Array(0), search = 0;
   const grow2 = () => { if (gS.length < nx.length){ const n = Math.max(1024, nx.length * 2); gS = new Float64Array(n); stamp = new Int32Array(n); via = new Int32Array(n); } };
   // a small binary heap of [priority, node]
@@ -165,7 +195,7 @@ export function makeNetwork(c){
   /** the fastest way from node s to node t (A* by travel time) @returns {number[] | null} its edges */
   function fastest(s, t, maxLen = 60000){
     grow2(); search++;
-    const tx = nx[t], tz = nz[t], vmax = SPEED[4], q = new Q();
+    const tx = nx[t], tz = nz[t], vmax = SPEED[4] / 3.6, q = new Q();
     gS[s] = 0; stamp[s] = search; via[s] = -1; q.push(Math.hypot(nx[s] - tx, nz[s] - tz) / vmax, s);
     let pops = 0;
     while (q.size && pops++ < 200000){
@@ -173,7 +203,7 @@ export function makeNetwork(c){
       if (n === t){ const out = []; for (let k = t; via[k] >= 0; k = other(via[k], k)) out.push(via[k]); return out; }
       const g = gS[n];
       for (const e of nedges[n]){
-        const m = other(e, n), ng = g + timeOf(e);
+        const m = other(e, n), ng = g + timeOf(e) + delayAt(n, via[n], e);
         if (stamp[m] === search && ng >= gS[m]) continue;
         if (Math.hypot(nx[m] - nx[s], nz[m] - nz[s]) > maxLen) continue;
         stamp[m] = search; gS[m] = ng; via[m] = e;
@@ -193,7 +223,7 @@ export function makeNetwork(c){
       if (done.has(n)) continue;
       done.add(n); order.push(n);
       for (const e of nedges[n]){
-        const m = other(e, n), ng = gS[n] + timeOf(e);
+        const m = other(e, n), ng = gS[n] + timeOf(e) + delayAt(n, via[n], e);
         if (done.has(m) || (stamp[m] === search && ng >= gS[m])) continue;
         if (Math.hypot(nx[m] - nx[s], nz[m] - nz[s]) > reach) continue;
         stamp[m] = search; gS[m] = ng; via[m] = e; q.push(ng, m);
@@ -243,12 +273,17 @@ export function makeNetwork(c){
       if (cs > 0.7 && segDist(mx, mz, nx[p], nz[p], nx[q], nz[q]) < G * 0.5) ok = false;
       // a new end close to a street (it would not quite reach it)
       if (b < 0 && segDist(x, z, nx[p], nz[p], nx[q], nz[q]) < G * 0.3) ok = false;
-      // crossing at a sharp angle
-      if (cs > 0.5){
-        const den = (x - ax) * ez - (z - az) * ex;
-        if (Math.abs(den) > 1e-9){ const t = ((nx[p] - ax) * ez - (nz[p] - az) * ex) / den, u = ((nx[p] - ax) * (z - az) - (nz[p] - az) * (x - ax)) / den; if (t > 0 && t < 1 && u > 0 && u < 1) ok = false; }
+      // crossing: at a sharp angle never; elsewhere not near another junction (a knot)
+      const den = (x - ax) * ez - (z - az) * ex;
+      if (Math.abs(den) > 1e-9){
+        const t = ((nx[p] - ax) * ez - (nz[p] - az) * ex) / den, u = ((nx[p] - ax) * (z - az) - (nz[p] - az) * (x - ax)) / den;
+        if (t > 0 && t < 1 && u > 0 && u < 1 && (cs > 0.5 || junctionNear(ax + (x - ax) * t, az + (z - az) * t, KNOT, p, q))) ok = false;
       }
     });
+    // its ends: a junction made where another is within KNOT (a node on a street becomes one by this street)
+    if (ok && n >= 0 && nedges[n].length >= 2 && junctionNear(ax, az, KNOT, n)) ok = false;
+    if (ok && n < 0 && junctionNear(ax, az, KNOT)) ok = false;
+    if (ok && b >= 0 && nedges[b].length >= 2 && junctionNear(x, z, KNOT, b)) ok = false;
     return ok;
   }
   // a node from point (x, z) toward angle ang, between rMin and rMax away, within tol (radians) of that way;
@@ -384,6 +419,22 @@ export function makeNetwork(c){
   }
 
   // ---- roads between towns ----
+  // the node to join the network at, near (x, z) coming from node `from`: near, meeting the roads there at a
+  // good angle, and not making a knot of junctions
+  function joinNode(x, z, r, from){
+    let best = -1, bv = 1e9;
+    const k = Math.ceil(r / NB), ci = Math.floor(x / NB), cj = Math.floor(z / NB);
+    for (let b = -k; b <= k; b++) for (let a = -k; a <= k; a++) for (const id of nbk.get(key(ci + a, cj + b)) || []){
+      if (id === from || !nedges[id].length) continue;
+      const d = Math.hypot(nx[id] - x, nz[id] - z);
+      if (d > r) continue;
+      let v = d;
+      if (maxCos(id, nx[from] - nx[id], nz[from] - nz[id]) > 0.7) v += 150;       // a sharp merge
+      if (nedges[id].length >= 2 && junctionNear(nx[id], nz[id], KNOT, id)) v += 100;   // a knot
+      if (v < bv){ bv = v; best = id; }
+    }
+    return best;
+  }
   /** a road from settlement u's middle to t's: the route found on the land grid, laid where it runs off the
    *  network (a node every ~2 grid cells, smoothed), following the network where it meets it
    *  @returns {boolean} whether the two are now connected */
@@ -425,7 +476,7 @@ export function makeNetwork(c){
       if (!followed){
         lay(i, j);
         // into the next stretch of network: its nearest node
-        if (j + 1 < N){ const [x, z] = cxy(cells[j + 1]); const m = nearestNode(x, z, rc * 1.2, -1, cur); if (m >= 0 && Math.hypot(nx[m] - nx[cur], nz[m] - nz[cur]) < rc * 2.5){ addEdge(cur, m, lev, born, tagOf(x, z), sf); cur = m; } }
+        if (j + 1 < N){ const [x, z] = cxy(cells[j + 1]); const m = joinNode(x, z, rc * 1.2, cur); if (m >= 0 && Math.hypot(nx[m] - nx[cur], nz[m] - nz[cur]) < rc * 2.5){ addEdge(cur, m, lev, born, tagOf(x, z), sf); cur = m; } }
       }
       i = j + 1;
     }
@@ -438,7 +489,43 @@ export function makeNetwork(c){
      knows for that level; maxLevel(s) the highest level it can build; homes: Map tag -> [x, z, people, town home (1) or farm (0), ...];
      towns: settlements (with core nodes) and the reach of their trips (m); flows: [settlementA, B, amount] } */
   let lastRoutes = new Map();
+  // junctions joined by a road shorter than MERGE: one junction (the shorter road goes, the roads of the
+  // other end move onto this one)
+  function mergeClose(born){
+    let merged = 0;
+    for (let e = 0; e < ea.length; e++){
+      if (edied[e] || elen(e) >= MERGE) continue;
+      const a = ea[e], b = eb[e];
+      if (!isJunction(a) || !isJunction(b)) continue;
+      removeEdge(e, born);
+      for (const f of nedges[b].slice()){
+        const o = other(f, b);
+        if (o === a || edgeBetween(a, o) >= 0){ removeEdge(f, born); continue; }
+        mark(f, -1);
+        if (ea[f] === b) ea[f] = a; else eb[f] = a;
+        { const l = nedges[b], i = l.indexOf(f); if (i >= 0){ l[i] = l[l.length - 1]; l.pop(); } }
+        nedges[a].push(f); bucketEdge(f); mark(f, 1);
+      }
+      // (the junction sits between the two)
+      nx[a] = (nx[a] + nx[b]) / 2; nz[a] = (nz[a] + nz[b]) / 2;
+      addTo(nbk, key(Math.floor(nx[a] / NB), Math.floor(nz[a] / NB)), a);
+      for (const f of nedges[a]) bucketEdge(f);
+      merged++;
+    }
+    return merged;
+  }
   function tick(born, o){
+    mergeClose(born);
+    // how many other junctions crowd each junction (for the delay there)
+    jam = new Uint8Array(nx.length);
+    for (let n = 0; n < nx.length; n++){
+      if (!isJunction(n)) continue;
+      let k2 = 0;
+      const k = Math.ceil(JAM_R / NB), ci = Math.floor(nx[n] / NB), cj = Math.floor(nz[n] / NB);
+      for (let b = -k; b <= k; b++) for (let a = -k; a <= k; a++) for (const id of nbk.get(key(ci + a, cj + b)) || [])
+        if (id !== n && isJunction(id) && Math.hypot(nx[id] - nx[n], nz[id] - nz[n]) < JAM_R) k2++;
+      jam[n] = Math.min(4, k2);
+    }
     // town trips: from each home to the town's middle, along the fastest ways (a tree from the middle); the
     // ways town homes' people take (shops, flats, workshops) stay streets at least
     const townWay = new Set();

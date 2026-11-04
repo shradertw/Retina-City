@@ -12,6 +12,10 @@ export const TRAITS = [
   { key: 'order', low: 'acts as things come', high: 'plans and keeps rules' },
   { key: 'roaming', low: 'stays put', high: 'moves on' },
   { key: 'trust', low: 'wary of outsiders', high: 'trusting of outsiders' },
+  // how much people like doing the same things again (how fast doing something again stops being fun): apart
+  // from novelty, since people who like new things can still keep routines (used by the people near the
+  // player, stage 5; recorded from now)
+  { key: 'routine', low: 'tires of the same things', high: 'keeps to routines' },
 ];
 export const NT = TRAITS.length;
 export const TI = Object.fromEntries(TRAITS.map((t, i) => [t.key, i]));
