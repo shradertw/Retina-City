@@ -474,11 +474,11 @@ export function runSim(w, o = {}, onProgress = null){
     // spots facing the settlement's streets; when few are free, the streets grow (see src/gen/network.js)
     // (near the middle first: when the frontage near the middle is used up, the town grows side streets there
     // instead of stretching out along its roads)
-    const nearMid = (cs) => cs.filter(([x, z]) => Math.hypot(x - s.core[0], z - s.core[1]) < r * 1.8).length;
-    let cands = streets.frontage(s, 14, a, r * 1.5).filter(([x, z]) => buildable(x, z));
-    for (let g = 0; g < 3 && (cands.length < 3 || nearMid(cands) < 2); g++){
+    const nearMid = (cs) => cs.filter(([x, z]) => Math.hypot(x - s.core[0], z - s.core[1]) < r * 1.2).length;
+    let cands = streets.frontage(s, 14, a, r).filter(([x, z]) => buildable(x, z));
+    for (let g = 0; g < 3 && (cands.length < 3 || nearMid(cands) < 3); g++){
       streets.grow(s, fr(step), a * 3 + g, false, bestStreet(s, 2), planOf(s), wide);
-      cands = cands.concat(streets.frontage(s, 10, a * 5 + g, r * 1.5).filter(([x, z]) => buildable(x, z)));
+      cands = cands.concat(streets.frontage(s, 10, a * 5 + g, r).filter(([x, z]) => buildable(x, z)));
     }
     let best = null, bs = -1e9;
     for (const [px, pz] of cands){
@@ -799,7 +799,11 @@ export function runSim(w, o = {}, onProgress = null){
     lap('households');
     // setbacks: now and then a settlement loses part of its people
     const hit = new Map();
-    for (const s of live) if (rnd(h2(s.id, step, S + 5), 1) < setback) hit.set(s.id, 0.15 + 0.25 * rnd(h2(s.id, step, S + 5), 2));
+    for (const s of live) if (rnd(h2(s.id, step, S + 5), 1) < setback){
+      const k = 0.15 + 0.25 * rnd(h2(s.id, step, S + 5), 2);
+      hit.set(s.id, k);
+      if (s.pop > 300) log.push({ step: fr(step), tag: s.id, tech: -3, text: `${s.name} loses about ${Math.round(k * 100)}% of its people (fire, plague or famine)` });
+    }
     for (const s of live) if (s.lost > 0) hit.set(s.id, Math.min(0.6, (hit.get(s.id) || 0) + s.lost));     // raid losses
     if (hit.size) for (const h of H) if (h.alive && h.mode !== FORAGER && hit.has(h.tag)) h.people *= 1 - hit.get(h.tag);
     // (people remember danger for a while: it lowers how safe they feel)

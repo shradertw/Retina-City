@@ -259,6 +259,7 @@ export function makeRoads(world, net = { towns: [], paths: [] }){
       // in town (on or next to its blocks) with curbs and buildings, else a country road
       const lv = cls, town = lv >= 2 && inTown((ax + bx) / 2, (az + bz) / 2);
       e = dress({ id: h2(i, 7 + Math.round(t0 * 64), sId), pts, w: ST.w[i], major: lv >= 3, type: lv >= 3 ? 1 : lv === 2 ? (town ? 0 : 3) : 2, town, jc: lv >= 2 ? (first ? ST.ja[i] : 0) + 4 * (last ? ST.jb[i] : 0) : 0, street: true, level: lv,
+        xa: first && (!ST.xa || ST.xa[i] === 1), xb: last && (!ST.xb || ST.xb[i] === 1),
         surf: ST.surf[i], health: ST.health[i] });
     } else e = dress({ id: h2(i, 7, sId), pts, w: ST.w[i], major: cls === 2, type: cls === 2 ? 1 : cls === 1 ? 0 : 2, town: cls > 0, jc: cls > 0 ? ST.ja[i] + 4 * ST.jb[i] : 0, street: true,
       surf: ST.surf ? ST.surf[i] : undefined, health: ST.health ? ST.health[i] : undefined });

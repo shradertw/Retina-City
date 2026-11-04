@@ -92,7 +92,10 @@ export function makeCells(roads, blocks){
       let s0 = 0;
       for (let k = 0; k < SAMPLES; k++){
         const ax = p[2 * k], az = p[2 * k + 1], bx = p[2 * k + 2], bz = p[2 * k + 3];
-        const rec = [ax, az, bx, bz, hw, s0, L, e.type + (e.town && e.walk !== false ? 0 : 8) + 16 * (e.jc || 0) + 256 * (e.surf === undefined ? 3 : e.surf) + 1024 * (e.health === undefined ? 3 : e.health)];
+        // (an end that is no junction, a bend or a piece's cut: its distance pushed 300 m out, so the shader
+        // draws no crossing there)
+        const oA = e.xa === false ? 300 : 0, oB = e.xb === false ? 300 : 0;
+        const rec = [ax, az, bx, bz, hw, s0 + oA, L + oA + oB, e.type + (e.town && e.walk !== false ? 0 : 8) + 16 * (e.jc || 0) + 256 * (e.surf === undefined ? 3 : e.surf) + 1024 * (e.health === undefined ? 3 : e.health)];
         s0 += Math.hypot(bx - ax, bz - az);
         visit(Math.min(ax, bx) - reach, Math.min(az, bz) - reach, Math.max(ax, bx) + reach, Math.max(az, bz) + reach, (i, j) => {
           const c = inner(i, j);

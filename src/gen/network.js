@@ -16,10 +16,10 @@
    its level: they need it). Main roads keep apart:
    of two running side by side within MAIN_GAP, the quieter one falls back to a street.
 
-   Town streets grow as towns need frontage (grow): along the roads into town first; then side streets
-   branch off at about right angles, a block apart, and continue or turn to meet each other, closing blocks.
-   Towns whose people plan (planning 0-1) pull every new street onto a grid along the town's axis; others
-   follow the lie of their roads. Streets meet at 60 degrees or more.
+   Town streets grow as towns need frontage (grow): along the roads into town first; then side streets leave
+   them square, a block apart, and run on or turn square to meet each other, closing blocks into a grid that
+   follows the roads it grew from. Towns whose people plan keep it square and even; others bend a little
+   and vary their blocks. Streets meet at 60 degrees or more.
 
    Roads between towns (link) are found on the land grid (src/gen/route.js: slopes, rivers, existing roads
    much cheaper) and laid only where no road runs yet: where the route meets the network it follows it. */
@@ -32,7 +32,6 @@ const SURF_K = [0.6, 0.8, 0.9, 1];              // dirt, gravel, setts, asphalt
 export const CAP = [20, 100, 1500, 15000, 150000];
 const MAIN_GAP = 300;
 const TRADE_K = 0.25;                           // traffic per unit of food traded (a guess: carts carry many people's food)                           // m: main roads side by side closer than this: one falls back
-const SNAP = 0.3;                               // a new street ends on a node within this share of a block
 const NB = 25, EB = 60;                         // bucket sizes (m): nodes, edges
 
 /** @param {{ landOk: (x: number, z: number) => boolean, rnd: (a: number, k: number) => number,
@@ -221,8 +220,8 @@ export function makeNetwork(c){
       const n = s.coreNode, e = nedges[n].find((q) => elev[q] >= 1);
       s.axis = e !== undefined ? Math.atan2(nz[other(e, n)] - nz[n], nx[other(e, n)] - nx[n]) : c.rnd(a, 1) * Math.PI;
     }
-    if (s.block === undefined) s.block = 70 + 30 * c.rnd(a, 2);
-    return { ax: s.axis, G: wide ? s.block * 1.15 : s.block * 0.8 };
+    if (s.block === undefined) s.block = 60 + 25 * c.rnd(a, 2);
+    return { ax: s.axis, G: wide ? s.block : s.block * 0.8 };
   }
   // can a street run from node n to (x, z) (ending on node b, or -1 for a new node)? It keeps to buildable
   // land, keeps half a block from streets beside it (other than those it meets), crosses others only at
@@ -252,69 +251,107 @@ export function makeNetwork(c){
     });
     return ok;
   }
+  // a node from point (x, z) toward angle ang, between rMin and rMax away, within tol (radians) of that way;
+  // the one nearest the ideal distance rIdeal @returns {number} or -1
+  function nodeToward(x, z, ang, rMin, rMax, tol, rIdeal, not = -1){
+    let best = -1, bv = 1e9;
+    const n = Math.ceil(rMax / NB), ci = Math.floor(x / NB), cj = Math.floor(z / NB), ca = Math.cos(ang), sa = Math.sin(ang), ct = Math.cos(tol);
+    for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) for (const id of nbk.get(key(ci + a, cj + b)) || []){
+      if (id === not || !nedges[id].length || nedges[id].length >= 4) continue;
+      const dx = nx[id] - x, dz = nz[id] - z, d = Math.hypot(dx, dz);
+      if (d < rMin || d > rMax || (dx * ca + dz * sa) / d < ct) continue;
+      const v = Math.abs(d - rIdeal); if (v < bv){ bv = v; best = id; }
+    }
+    return best;
+  }
   /** grow settlement s's streets by one; wide: the wheel is known; outward: suburbs (cars); sf: the surface
-   *  laid; plan: how much its people plan (0-1) @returns {number} the new edge or -1 */
+   *  laid; plan: how much its people plan (0-1) @returns {number} the new edge or -1
+   *  Side streets leave a street square to it, a block (G) from the junctions along it (the end nearer the
+   *  middle first), or cross it where it runs straight through a node; a dead end runs on straight, or turns square to meet a node about a block away (closing a
+   *  block); a street ends on a node only within 15 degrees of the way it was heading. Organic towns (plan 0)
+   *  bend a little and vary their blocks; planned towns keep them square and even. */
   function grow(s, born, a, outward = false, sf = 0, plan = 0, wide = true){
     core(s, born);
-    const { ax: axis, G } = frame(s, a, wide);
+    const { G: G0 } = frame(s, a, wide);
     const nodes = s.nodes, cx = s.core[0], cz = s.core[1];
-    // a point pulled toward the town's grid (lattice of block size G along its axis), by how much it plans
-    const ca = Math.cos(axis), sa = Math.sin(axis);
-    const toGrid = (x, z) => {
-      if (plan <= 0) return [x, z];
-      const u = (x - cx) * ca + (z - cz) * sa, v = -(x - cx) * sa + (z - cz) * ca, gu = Math.round(u / G) * G, gv = Math.round(v / G) * G;
-      const qx = cx + gu * ca - gv * sa, qz = cz + gu * sa + gv * ca;
-      return [x + (qx - x) * plan, z + (qz - z) * plan];
-    };
-    const dirOf = (ang) => { if (plan > 0){ const k = Math.round((ang - axis) / (Math.PI / 2)); ang += (axis + k * Math.PI / 2 - ang) * plan; } return ang; };
-    for (let t = 0; t < 14; t++){
-      // a node to grow from (nearer the middle more likely; further out for suburbs), with room for a street
-      let n = -1;
-      for (let k = 0; k < 4; k++){
-        const m = nodes[Math.floor(c.rnd(a, 10 + t * 4 + k) * nodes.length)];
-        if (m === undefined || nedges[m].length >= 4) continue;
-        const dm = Math.hypot(nx[m] - cx, nz[m] - cz), dn = n < 0 ? 0 : Math.hypot(nx[n] - cx, nz[n] - cz);
-        if (n < 0 || (outward ? dm > dn : dm < dn)) n = m;
-      }
-      let from = n, ang, len = G * (0.85 + 0.3 * c.rnd(a, 20 + t));
-      const deg = n >= 0 ? nedges[n].length : -1;
-      const rr = c.rnd(a, 30 + t);
-      if (n < 0 || rr < 0.45){
-        // a side street off the middle of a street or road of the town (ribbon: roads into town first)
-        const es = [];
-        for (const m of nodes) for (const e of nedges[m]) if (elev[e] >= 2 && elen(e) > G * 1.1) es.push(e);
-        if (!es.length && n < 0) continue;
-        if (es.length){
-          const e = es[Math.floor(c.rnd(a, 40 + t) * es.length)], p = ea[e], q = eb[e], L = elen(e);
-          const u = Math.min(0.5, (G * (0.5 + c.rnd(a, 45 + t))) / L), px = nx[p] + (nx[q] - nx[p]) * u, pz = nz[p] + (nz[q] - nz[p]) * u;
-          const side = c.rnd(a, 50 + t) < 0.5 ? 1 : -1, base = Math.atan2(nz[q] - nz[p], nx[q] - nx[p]);
-          ang = dirOf(base + side * (Math.PI / 2 + (1 - plan) * (c.rnd(a, 55 + t) - 0.5) * 0.35));
-          const ex = px + Math.cos(ang) * len, ez = pz + Math.sin(ang) * len;
-          // (the branch must be clear before the street is split for it)
-          const [gx, gz] = toGrid(ex, ez);
-          if (!clear(-1, gx, gz, -1, G, px, pz, e)) continue;
-          from = splitAt(e, px, pz, born);
-          if (ntag[from] !== s.id){ ntag[from] = s.id; nodes.push(from); }
-          return addEdge(from, addNode(gx, gz, s.id, born), 2, born, s.id, sf)[0];
+    const jit = (1 - plan) * 0.12, vary = (1 - plan) * 0.3, TOL = 0.26;
+    const mid = (x, z) => Math.hypot(x - cx, z - cz);
+    const better = (dm, dn) => outward ? dm > dn : dm < dn;
+    for (let t = 0; t < 16; t++){
+      const G = G0 * (1 - vary / 2 + vary * c.rnd(a, 20 + t));
+      // A: a dead end of the town's streets (nearer the middle likelier)
+      if (c.rnd(a, 30 + t) < 0.5){
+        let n = -1;
+        for (let k = 0; k < 6; k++){
+          const m = nodes[Math.floor(c.rnd(a, 10 + t * 6 + k) * nodes.length)];
+          if (m === undefined || nedges[m].length !== 1 || elev[nedges[m][0]] < 2) continue;
+          if (n < 0 || better(mid(nx[m], nz[m]), mid(nx[n], nz[n]))) n = m;
+        }
+        if (n >= 0){
+          const e = nedges[n][0], o = other(e, n), base = Math.atan2(nz[n] - nz[o], nx[n] - nx[o]);
+          // close a block: turn square to meet a node about a block away, to either side
+          const first = c.rnd(a, 40 + t) < 0.5 ? 1 : -1;
+          for (const side of [first, -first]){
+            const ang = base + side * Math.PI / 2, b = nodeToward(nx[n], nz[n], ang, 0.6 * G, 1.5 * G, TOL, G, n);
+            if (b >= 0 && edgeBetween(n, b) < 0 && clear(n, nx[b], nz[b], b, G)) return addEdge(n, b, 2, born, s.id, sf)[0];
+          }
+          // or run on straight, a block
+          const ang = base + jit * (c.rnd(a, 50 + t) - 0.5);
+          let b = nodeToward(nx[n], nz[n], ang, 0.7 * G, 1.3 * G, TOL, G, n);
+          if (b >= 0 && (edgeBetween(n, b) >= 0 || !clear(n, nx[b], nz[b], b, G))) b = -1;
+          if (b >= 0) return addEdge(n, b, 2, born, s.id, sf)[0];
+          const x = nx[n] + Math.cos(ang) * G, z = nz[n] + Math.sin(ang) * G;
+          if (clear(n, x, z, -1, G)) return addEdge(n, addNode(x, z, s.id, born), 2, born, s.id, sf)[0];
+          continue;
         }
       }
-      if (deg === 0) ang = dirOf(axis + (c.rnd(a, 60 + t) < 0.5 ? Math.PI : 0));
-      else {
-        const e = nedges[n][Math.floor(c.rnd(a, 61 + t) * deg)], o = other(e, n);
-        const base = Math.atan2(nz[n] - nz[o], nx[n] - nx[o]);            // along the street, away from its other end
-        // a dead end continues (60%) or turns to close a block; a node on a street branches off at a right angle
-        ang = deg === 1 && c.rnd(a, 70 + t) < 0.6 ? base + (1 - plan) * (c.rnd(a, 80 + t) - 0.5) * 0.3
-          : base + (c.rnd(a, 90 + t) < 0.5 ? 1 : -1) * (Math.PI / 2 + (1 - plan) * (c.rnd(a, 100 + t) - 0.5) * 0.35);
-        ang = dirOf(ang);
+      // C: a cross street from a bend-free point on a street (a node where it runs straight on), square to it
+      if (c.rnd(a, 35 + t) < 0.45){
+        let n = -1;
+        for (let k = 0; k < 6; k++){
+          const m = nodes[Math.floor(c.rnd(a, 110 + t * 6 + k) * nodes.length)];
+          if (m === undefined || nedges[m].length !== 2 || elev[nedges[m][0]] < 2 || elev[nedges[m][1]] < 2) continue;
+          const o1 = other(nedges[m][0], m), o2 = other(nedges[m][1], m);
+          const ax1 = nx[o1] - nx[m], az1 = nz[o1] - nz[m], ax2 = nx[o2] - nx[m], az2 = nz[o2] - nz[m];
+          if ((ax1 * ax2 + az1 * az2) / ((Math.hypot(ax1, az1) * Math.hypot(ax2, az2)) || 1) > -0.94) continue;   // (it bends there)
+          if (n < 0 || better(mid(nx[m], nz[m]), mid(nx[n], nz[n]))) n = m;
+        }
+        if (n >= 0){
+          const o = other(nedges[n][0], n), base = Math.atan2(nz[n] - nz[o], nx[n] - nx[o]);
+          const ang = base + (c.rnd(a, 120 + t) < 0.5 ? 1 : -1) * (Math.PI / 2 + jit * (c.rnd(a, 125 + t) - 0.5));
+          let b = nodeToward(nx[n], nz[n], ang, 0.6 * G, 1.4 * G, TOL, G, n);
+          if (b >= 0 && (edgeBetween(n, b) >= 0 || !clear(n, nx[b], nz[b], b, G))) b = -1;
+          if (b >= 0) return addEdge(n, b, 2, born, s.id, sf)[0];
+          const x = nx[n] + Math.cos(ang) * G, z = nz[n] + Math.sin(ang) * G;
+          if (clear(n, x, z, -1, G)) return addEdge(n, addNode(x, z, s.id, born), 2, born, s.id, sf)[0];
+        }
       }
-      let [x, z] = toGrid(nx[from] + Math.cos(ang) * len, nz[from] + Math.sin(ang) * len);
-      // end on a node near there (closing a block) when the angles allow
-      let b = nearestNode(x, z, G * SNAP, -1, from);
-      if (b >= 0 && (edgeBetween(from, b) >= 0 || Math.hypot(nx[b] - nx[from], nz[b] - nz[from]) < G * 0.5)) b = -1;
-      if (b >= 0){ x = nx[b]; z = nz[b]; }
-      if (!clear(from, x, z, b, G)) { if (b >= 0){ b = -1; [x, z] = toGrid(nx[from] + Math.cos(ang) * len, nz[from] + Math.sin(ang) * len); if (!clear(from, x, z, -1, G)) continue; } else continue; }
-      if (b < 0) b = addNode(x, z, s.id, born);
-      return addEdge(from, b, 2, born, s.id, sf)[0];
+      // B: a side street off a street or road of the town, square to it
+      const es = [];
+      for (const m of nodes) for (const e of nedges[m]) if (elev[e] >= 2 && elen(e) >= 1.2 * G) es.push(e);
+      if (!es.length){
+        // no street yet: the first one, from the middle along the town's axis
+        if (nedges[s.coreNode].length) continue;
+        const ang = s.axis + (c.rnd(a, 60 + t) < 0.5 ? Math.PI : 0), x = cx + Math.cos(ang) * G, z = cz + Math.sin(ang) * G;
+        if (clear(s.coreNode, x, z, -1, G)) return addEdge(s.coreNode, addNode(x, z, s.id, born), 2, born, s.id, sf)[0];
+        continue;
+      }
+      let e = -1;
+      for (let k = 0; k < 4; k++){
+        const f = es[Math.floor(c.rnd(a, 70 + t * 4 + k) * es.length)];
+        if (e < 0 || better(mid((nx[ea[f]] + nx[eb[f]]) / 2, (nz[ea[f]] + nz[eb[f]]) / 2), mid((nx[ea[e]] + nx[eb[e]]) / 2, (nz[ea[e]] + nz[eb[e]]) / 2))) e = f;
+      }
+      const L = elen(e), near0 = mid(nx[ea[e]], nz[ea[e]]) <= mid(nx[eb[e]], nz[eb[e]]);
+      const p0 = near0 ? ea[e] : eb[e], p1 = other(e, p0), ux = (nx[p1] - nx[p0]) / L, uz = (nz[p1] - nz[p0]) / L;
+      const d = L >= 2 * G ? G : L / 2, px = nx[p0] + ux * d, pz = nz[p0] + uz * d;
+      const side = c.rnd(a, 80 + t) < 0.5 ? 1 : -1, base = Math.atan2(uz, ux);
+      const ang = base + side * (Math.PI / 2 + jit * (c.rnd(a, 90 + t) - 0.5)), len = G * 0.9;
+      let b = nodeToward(px, pz, ang, 0.7 * len, 1.3 * len, TOL, len);
+      const x = b >= 0 ? nx[b] : px + Math.cos(ang) * len, z = b >= 0 ? nz[b] : pz + Math.sin(ang) * len;
+      if (!clear(-1, x, z, b, G, px, pz, e)){ if (b < 0) continue; b = -1; const x2 = px + Math.cos(ang) * len, z2 = pz + Math.sin(ang) * len; if (!clear(-1, x2, z2, -1, G, px, pz, e)) continue; const from = splitAt(e, px, pz, born); if (ntag[from] !== s.id){ ntag[from] = s.id; nodes.push(from); } return addEdge(from, addNode(x2, z2, s.id, born), 2, born, s.id, sf)[0]; }
+      const from = splitAt(e, px, pz, born);
+      if (ntag[from] !== s.id){ ntag[from] = s.id; nodes.push(from); }
+      return addEdge(from, b >= 0 ? b : addNode(x, z, s.id, born), 2, born, s.id, sf)[0];
     }
     return -1;
   }
@@ -356,7 +393,8 @@ export function makeNetwork(c){
     if (!cells) return false;
     cells.reverse();                                     // (route gives them from the goal back)
     const rc = R.rcell, cxy = (k) => [-c.half + ((k % R.rres) + 0.5) * rc, -c.half + (((k / R.rres) | 0) + 0.5) * rc];
-    const onNet = (k) => R.road[k] > 0;
+    // (on the network: a road node within a cell of the route: a route a cell beside a road follows it)
+    const onNet = (k) => { const [x, z] = cxy(k); return R.road[k] > 0 || nearestNode(x, z, rc * 0.9) >= 0; };
     let cur = A, i = 0;
     const N = cells.length;
     const tagOf = (x, z) => { const g = c.tagAt(x, z); return g >= 0 ? g : u.id; };
@@ -505,10 +543,11 @@ export function makeNetwork(c){
    *  ways, 2 signals two or more main roads, 1 stop sign a street meets a main road, 0 none) */
   function finish(){
     const n = ea.length;
-    const jtype = new Uint8Array(nx.length), jlist = [];
+    const jtype = new Uint8Array(nx.length), jlist = [], isJ = new Uint8Array(nx.length);
     for (let k = 0; k < nx.length; k++){
       const legs = nedges[k].filter((e) => elev[e] >= 2 && !edied[e]), deg = legs.length;
       if (deg < 3) continue;
+      isJ[k] = 1;
       const mains = legs.filter((e) => elev[e] >= 3).length;
       const t = deg >= 5 ? 3 : mains >= 2 ? 2 : mains >= 1 ? 1 : 0;
       jtype[k] = t; jlist.push(nx[k], nz[k], t, deg, nborn[k]);
@@ -519,7 +558,9 @@ export function makeNetwork(c){
       streets: { n, ax: f32((i) => nx[ea[i]]), az: f32((i) => nz[ea[i]]), bx: f32((i) => nx[eb[i]]), bz: f32((i) => nz[eb[i]]),
         w: f32((i) => ew[i]), cls: Uint8Array.from(elev), level: Uint8Array.from(elev), born: Int16Array.from(eborn), tag: Int32Array.from(etag),
         ja: Uint8Array.from({ length: n }, (_, i) => jtype[ea[i]]), jb: Uint8Array.from({ length: n }, (_, i) => jtype[eb[i]]),
-        health: Uint8Array.from(eh, hl), surf: Uint8Array.from(esf), died: Int16Array.from(edied) },
+        health: Uint8Array.from(eh, hl), surf: Uint8Array.from(esf), died: Int16Array.from(edied),
+        // (1: streets meet at that end, a junction; 0: a bend or an end)
+        xa: Uint8Array.from({ length: n }, (_, i) => isJ[ea[i]]), xb: Uint8Array.from({ length: n }, (_, i) => isJ[eb[i]]) },
       junctions: Float32Array.from(jlist),
     };
   }
