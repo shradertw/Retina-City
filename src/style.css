@@ -138,7 +138,10 @@ kbd { font-family: var(--mono); font-size: 10px; color: var(--fg); background: r
 .maptime { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 41; display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; color: var(--fg); background: var(--panel-solid); border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; }
 .maptime input { width: min(420px, 50vw); }
 .maptime button { font: inherit; color: var(--fg); background: rgba(255,255,255,0.06); border: 1px solid var(--line); border-radius: 3px; padding: 2px 10px; cursor: pointer; }
-.maptime output { min-width: 9ch; }
+.maptime output { min-width: 10ch; font-variant-numeric: tabular-nums; }
+/* the technology of the year shown, above the bar, out of its layout: changing text must not resize the bar */
+.maptech { position: absolute; left: 0; bottom: calc(100% + 6px); white-space: nowrap; pointer-events: none; padding: 3px 8px; background: var(--panel-solid); border: 1px solid var(--line); border-radius: 4px; }
+.maptech:empty { display: none; }
 .maptime .mapfilter { position: relative; }
 .maptime .mapfilter summary { cursor: pointer; list-style: none; padding: 2px 10px; border: 1px solid var(--line); border-radius: 3px; background: rgba(255,255,255,0.06); white-space: nowrap; }
 .maptime .mapfilter summary::-webkit-details-marker { display: none; }

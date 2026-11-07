@@ -378,19 +378,21 @@ float lampIrradiance(vec3 p, vec3 n){
 }
 
 /* ---- raised roads: decks on pillars, and embankments (see src/gen/cells.js) ----
-   a, b: the deck's first two texels. Returns the distance; top: the height of its road there. */
-float deckSDF(vec3 p, vec4 a, vec4 b, out float top){
+   a, b: the deck's first two texels; pier: its pier's offset along it, and 1 if it has one. Returns the
+   distance; top: the height of its road there. */
+float deckSDF(vec3 p, vec4 a, vec4 b, vec2 pier, out float top){
   vec2 q = p.xz - a.xy;
   vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));
   float hl = b.x, hw = -b.y;
   top = mix(b.z, b.w, clamp((l.x + hl) / (2.0 * hl), 0.0, 1.0));
   float ax = abs(l.x) - hl;
   if (min(b.z, b.w) >= 2.5){
-    // a slab 1.2 m deep, a concrete barrier 0.9 m tall at each side, and a pier under its middle
+    // a slab 1.2 m deep, a concrete barrier 0.9 m tall at each side, and a pier under it (where no road runs
+    // below: see src/gen/cells.js)
     float slab = max(max(ax, abs(l.y) - hw), abs(p.y - (top - 0.6)) - 0.6);
     float bar = max(max(ax, abs(abs(l.y) - (hw - 0.2)) - 0.2), abs(p.y - (top + 0.45)) - 0.45);
-    float pier = max(max(abs(l.x) - 0.8, abs(l.y) - min(hw * 0.6, 5.0)), max(p.y - top + 1.0, -p.y - 0.5));
-    return min(min(slab, bar), pier);
+    float pr = pier.y > 0.5 ? max(max(abs(l.x - pier.x) - 0.8, abs(l.y) - min(hw * 0.6, 5.0)), max(p.y - top + 1.0, -p.y - 0.5)) : 1e9;
+    return min(min(slab, bar), pr);
   }
   // an embankment: sides sloping down at about 1 in 1, a low barrier along the top
   float side = abs(l.y) - (hw + max(top - p.y, 0.0));
@@ -452,7 +454,7 @@ vec2 map(vec3 p){
     if (b.y < 0.0){
       // a deck (a raised road)
       if (length(max(abs(l) - vec2(b.x, -b.y + max(b.z, b.w)), 0.0)) >= res.x) continue;
-      float tp, dd = deckSDF(p, a, b, tp);
+      float tp, dd = deckSDF(p, a, b, wT(k + 2).yz, tp);
       if (dd < res.x) res = vec2(dd, float(k) * 16.0 + 12.0);
       continue;
     }
@@ -1544,7 +1546,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
     // embankment's sides grass
     int dk = bldOf(mat);
     vec4 a = wTp(dk), b = wT(dk + 1);
-    float tp; deckSDF(p, a, b, tp);
+    float tp; deckSDF(p, a, b, vec2(0.0), tp);
     float ly = dot(p.xz - a.xy, vec2(-a.w, a.z)), hw = -b.y - 0.6;
     if (top && abs(ly) < hw && p.y < tp + 0.2){
       vec2 g, gC; vec4 fr; float dC;

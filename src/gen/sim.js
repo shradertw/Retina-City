@@ -148,7 +148,17 @@ export function runSim(w, o = {}, onProgress = null){
     tagAt: (x, z) => { const c = landAt(x, z); return c >= 0 ? ltag[c] : -1; },
     // (standing buildings within r of a point: how crowded the land is; a river within r)
     crowd: (x, z, r) => { let n = 0; for (const id of buildingsNear(x, z, r)) if (!B.died[id]) n++; return n; },
-    nearRiver: (x, z, r) => nearRiver(w, x, z, r) });
+    nearRiver: (x, z, r) => nearRiver(w, x, z, r),
+    // a freeway clears its way: the buildings within r of (x, z) come down (over a raised stretch, half the
+    // single-storey ones stay: it passes over them); their households move once the roads are done (razed)
+    demolish: (x, z, r, over) => {
+      for (const id of buildingsNear(x, z, r)){
+        if (B.died[id] || (over && B.st[id] <= 1 && chance(id, 91) < 0.5)) continue;
+        collapse(id, nowStep); razed.add(id);
+      }
+    } });
+  let nowStep = 0, razedTotal = 0, displaced = 0;
+  const razed = new Set();
   const LINK_FLOW = 12;                                         // food (people's worth per step) that calls for a road
   const log = [];
   // buildings in buckets: coarse (tag radius) and fine (for spacing)
@@ -616,6 +626,7 @@ export function runSim(w, o = {}, onProgress = null){
 
   const farmingBit = bit('farming');
   for (let step = 1; step <= steps; step++){
+    nowStep = step;
     // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement --
     for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.workers = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5); }
     focc.fill(0);
@@ -865,6 +876,17 @@ export function runSim(w, o = {}, onProgress = null){
       const flows = [];
       for (const L of tradeLinks.values()){ if (L.ok && L.flow > 0) flows.push([L.u, L.t, L.flow]); L.flow = 0; }
       streets.tick(fr(step), { keeper, canRepair, best: bestStreet, maxLevel: (t) => kOf(t) & carBit ? 4 : kOf(t) & wheelBit ? 3 : 2, homes, towns, flows });
+      // households whose home or work a freeway took: the family moves (as a family whose needs are unmet does),
+      // or leaves the land
+      if (razed.size){
+        for (const h of H){
+          if (!h.alive || !(razed.has(h.b) || razed.has(h.job))) continue;
+          const s = T[h.tag], nh = newHousehold(h.x, h.z, h.people, h.ing, h.know, FARMER, step, h.parent, h.tr);
+          if (!moveOut(nh, h, s, step, -1e9)) nh.alive = false;
+          h.alive = false; abandon(h, step); displaced++;
+        }
+        razedTotal += razed.size; razed.clear();
+      }
     }
     // every 50 years central shops and housing are rebuilt taller where knowledge now allows it
     if (step % 10 === 0) for (const s of live){
@@ -1019,6 +1041,6 @@ export function runSim(w, o = {}, onProgress = null){
     knowMap: { res: lres, cell: LC, half, know: kmap },
     log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
-    centres: [], roads: [], network: streets.stats(), blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
+    centres: [], roads: [], network: { ...streets.stats(), razed: razedTotal, displaced }, blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
     ms: performance.now() - t0, times };
 }

@@ -34,7 +34,7 @@ export function initMap(){
   const info = document.getElementById('mapInfo');
   const ctx = cv.getContext('2d');
   const timeBox = document.getElementById('mapTime'), yearIn = /** @type {HTMLInputElement} */ (document.getElementById('mapYear'));
-  const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay');
+  const yearOut = document.getElementById('mapYearOut'), playBtn = document.getElementById('mapPlay'), techOut = document.getElementById('mapTech');
   // what the map shows (the Show menu); the choices are remembered
   const SHOW = [['land', 'Settlement land (tags)'], ['blocks', 'Town blocks (at the end)'], ['streets', 'Streets and junctions (grey none, white stop, yellow signals, blue roundabout)'], ['buildings', 'Buildings (as in 3D)'], ['towns', 'Buildings: farm homes (cream), workshops (brown), shops (blue), factories (purple), housing (green), empty (grey)'], ['names', 'Names'], ['farms', 'Farmland'],
     ['roads', 'Main roads and freeways'], ['raids', 'Raids (recent: red won, grey driven off)'], ['tracks', 'Tracks and footpaths'], ['centres', 'Distribution centres'], ['metals', 'Metal deposits (Metals layer)'], ['you', 'You']];
@@ -53,8 +53,9 @@ export function initMap(){
     const h = current.history; if (!h) return;
     if (h.version === 2){
       let m = 0; for (const s of h.settlements) m |= s.knowAt[step];
-      yearOut.textContent = 'Year ' + h.year[step] + ' · ' + (m ? 'most advanced: ' + eraOf(m).toLowerCase() : 'foragers only');
-    } else yearOut.textContent = 'Year ' + h.year[step] + ' · ' + ageOf(h, step).name.toLowerCase();
+      yearOut.textContent = 'Year ' + h.year[step];
+      techOut.textContent = m ? 'Most advanced: ' + eraOf(m).toLowerCase() : 'Foragers only';
+    } else { yearOut.textContent = 'Year ' + h.year[step]; techOut.textContent = ageOf(h, step).name; }
   };
   let blockKey = null, blockFor = null;      // block grid -> block, for the hover readout (built when needed)
   yearIn.addEventListener('input', () => { step = Number(yearIn.value); playing = false; playBtn.textContent = 'Play'; showYear(); });

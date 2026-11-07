@@ -17,8 +17,9 @@
                light (the whole part): 0 no one lives there (dark at night), 1 candles and oil lamps, 2 electric.
      deck      a raised stretch of road, in the building list: (centre x, z, direction x, z)
                (half length, minus half width (negative: a deck), height at the -direction end, at the + end)
-               (5, 0, 0, -1). Both ends 2.5 m up or more: a deck on pillars with barriers; else an embankment,
-               solid down to the ground (ramps and the approaches of overpasses).
+               (5, pier offset along it from the centre, 1 if it has a pier (0: it spans this stretch without
+               one), -1). Both ends 2.5 m up or more: a deck on a pier (where no road runs below) with barriers;
+               else an embankment, solid down to the ground (ramps and the approaches of overpasses).
      light     (pole x, z, arm direction x, z): the arm direction is a unit vector for an electric light on an
                8 m pole, half that for a gas lamp on a 3.6 m post (no arm: the lantern is on the post)
      road      (start x, z, end x, z)
@@ -55,6 +56,62 @@ const warn = (m) => { if (!warned){ console.warn('render cells: ' + m); warned =
 
 /** @param {ReturnType<import('./roads.js').makeRoads>} roads @param {ReturnType<import('./blocks.js').makeBlocks>} blocks */
 export function makeCells(roads, blocks){
+  // ---- where a deck's pier may stand: never on a road below ----
+  // the ground-level road segments of a road chunk (x0, z0, x1, z1, half width), kept per chunk
+  const groundSegs = new Map();
+  const groundOf = (i, j) => {
+    const k = i * 100003 + j;
+    let g = groundSegs.get(k);
+    if (g) return g;
+    g = [];
+    for (const e of roads.chunk(i, j)){
+      if (Math.max(e.h0 || 0, e.h1 || 0) > 2) continue;
+      const p = e.pts;
+      for (let s = 0; s < SAMPLES; s++) g.push(p[2 * s], p[2 * s + 1], p[2 * s + 2], p[2 * s + 3], e.w / 2);
+    }
+    if (groundSegs.size > 400) groundSegs.clear();
+    groundSegs.set(k, g);
+    return g;
+  };
+  // a pier across a deck at (x, z), wp either side along (px, pz): does it stand on a ground road, or on a
+  // building under the deck? (decided from the chunks around the point alone, so every render chunk listing
+  // the deck agrees)
+  const onRoad = (x, z, px, pz, wp, ux, uz) => {
+    const ci = Math.floor(x / ROAD_CHUNK), cj = Math.floor(z / ROAD_CHUNK);
+    for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++){
+      for (const bd of blocks.chunk(ci + a, cj + b).buildings){
+        if (Math.abs(bd.x - x) > 60 + wp || Math.abs(bd.z - z) > 60 + wp) continue;
+        const bu = bd.ux * bd.side, bv = bd.uz * bd.side;
+        for (const s of [-1, 0, 1]){
+          const qx = x + px * wp * s - bd.x, qz = z + pz * wp * s - bd.z;
+          if (Math.abs(qx * bu + qz * bv) < bd.hx + 1.2 && Math.abs(-qx * bv + qz * bu) < bd.hz + 1.2) return true;
+        }
+      }
+      const g = groundOf(ci + a, cj + b);
+      for (let k = 0; k < g.length; k += 5){
+        const ax = g[k], az = g[k + 1], bx = g[k + 2], bz = g[k + 3], hw = g[k + 4], ex = bx - ax, ez = bz - az, el = Math.hypot(ex, ez) || 1;
+        // (the raised road's own line, running on at the ground, is not under it)
+        if (Math.abs((ex * ux + ez * uz) / el) > 0.97 && Math.abs((x - ax) * ez - (z - az) * ex) / el < 2) continue;
+        if (Math.max(ax, bx) + hw + wp + 2 < x || Math.min(ax, bx) - hw - wp - 2 > x || Math.max(az, bz) + hw + wp + 2 < z || Math.min(az, bz) - hw - wp - 2 > z) continue;
+        for (const s of [-1, -0.5, 0, 0.5, 1]){
+          const qx = x + px * wp * s, qz = z + pz * wp * s;
+          const t = Math.max(0, Math.min(1, ((qx - ax) * ex + (qz - az) * ez) / (el * el)));
+          if (Math.hypot(qx - ax - ex * t, qz - az - ez * t) < hw + 1.5) return true;
+        }
+      }
+    }
+    return false;
+  };
+  /** the pier of a deck segment (centre mx, mz, direction u, half length hl, half width hw): its offset along
+   *  the segment from the centre, or null where no spot along it is clear of the roads below */
+  const pierOf = (mx, mz, ux, uz, hl, hw) => {
+    const wp = Math.min(hw * 0.6, 5);
+    for (const f of [0, 0.25, -0.25, 0.5, -0.5, 0.75, -0.75]){
+      const o = f * Math.max(0, hl - 1.5);
+      if (!onRoad(mx + ux * o, mz + uz * o, -uz, ux, wp, ux, uz)) return o;
+    }
+    return null;
+  };
   /** the render cells of chunk (cx, cz) */
   function pack(cx, cz){
     const t0 = performance.now();
@@ -130,7 +187,8 @@ export function makeCells(roads, blocks){
         // a raised stretch: a deck (or embankment) in the building lists
         if (Math.max(ha, hb) > 0.3 && sl > 0.5){
           const ux = (bx - ax) / sl, uz = (bz - az) / sl, mx = (ax + bx) / 2, mz = (az + bz) / 2, dw = hw + 0.6;
-          const drec = [mx, mz, ux, uz, sl / 2 + 0.3, -dw, ha, hb, 5, 0, 0, -1], tp = Math.max(ha, hb) + 1.2;
+          const pier = Math.min(ha, hb) >= 2.5 ? pierOf(mx, mz, ux, uz, sl / 2, dw) : 0;
+          const drec = [mx, mz, ux, uz, sl / 2 + 0.3, -dw, ha, hb, 5, pier ?? 0, pier === null ? 0 : 1, -1], tp = Math.max(ha, hb) + 1.2;
           const ex = Math.abs(ux) * (sl / 2) + Math.abs(uz) * dw, ez = Math.abs(uz) * (sl / 2) + Math.abs(ux) * dw;
           visit(mx - ex - PAD, mz - ez - PAD, mx + ex + PAD, mz + ez + PAD, (i, j) => {
             occ[j * G + i] = 1;

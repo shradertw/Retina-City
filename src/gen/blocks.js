@@ -120,7 +120,10 @@ export function makeBlocks(world, roads){
             for (const o of near.near(qx, qz)) roadsHere.add(o);
             if ((Math.abs(a) === nu || Math.abs(c) === nv) && (!world.isLand(qx, qz) || nearRiver(world, qx, qz, 25))){ ok = false; break; }
           }
-          if (ok) for (const o of roadsHere) if (roadToBox(o, b.x, b.z, tx, tz, b.hx, b.hz) < o.w / 2 + sidewalkOf(o) - 0.05){ ok = false; break; }
+          // (a single-storey building may stand under a raised road at least 7 m up, half the time: it was there
+          // first and the freeway was built over it, see src/gen/network.js)
+          const under = (o) => Math.min(o.h0 || 0, o.h1 || 0) >= 7 && b.h + b.podH <= Math.min(o.h0, o.h1) - 2.5 && rnd(h, 11) < 0.5;
+          if (ok) for (const o of roadsHere) if (!under(o) && roadToBox(o, b.x, b.z, tx, tz, b.hx, b.hz) < o.w / 2 + sidewalkOf(o) - 0.05){ ok = false; break; }
           if (ok) out.push(b);
         }
       }
