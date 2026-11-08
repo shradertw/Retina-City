@@ -380,7 +380,7 @@ float lampIrradiance(vec3 p, vec3 n){
 /* ---- raised roads: decks on pillars, and embankments (see src/gen/cells.js) ----
    a, b: the deck's first two texels; pier: its pier's offset along it, and 1 if it has one. Returns the
    distance; top: the height of its road there. */
-float deckSDF(vec3 p, vec4 a, vec4 b, vec2 pier, out float top){
+float deckSDF(vec3 p, vec4 a, vec4 b, vec3 pier, out float top){
   vec2 q = p.xz - a.xy;
   vec2 l = vec2(dot(q, a.zw), dot(q, vec2(-a.w, a.z)));
   float hl = b.x, hw = -b.y;
@@ -390,7 +390,10 @@ float deckSDF(vec3 p, vec4 a, vec4 b, vec2 pier, out float top){
     // a slab 1.2 m deep, a concrete barrier 0.9 m tall at each side, and a pier under it (where no road runs
     // below: see src/gen/cells.js)
     float slab = max(max(ax, abs(l.y) - hw), abs(p.y - (top - 0.6)) - 0.6);
-    float bar = max(max(ax, abs(abs(l.y) - (hw - 0.2)) - 0.2), abs(p.y - (top + 0.45)) - 0.45);
+    // (no barrier on a side that runs inside another deck, where two meet: pier.z, see src/gen/cells.js)
+    float cw = -pier.z - 1.0;
+    bool cut = l.y > 0.0 ? mod(cw, 2.0) > 0.5 : cw > 1.5;
+    float bar = cut ? 1e9 : max(max(ax, abs(abs(l.y) - (hw - 0.2)) - 0.2), abs(p.y - (top + 0.45)) - 0.45);
     float pr = pier.y > 0.5 ? max(max(abs(l.x - pier.x) - 0.8, abs(l.y) - min(hw * 0.6, 5.0)), max(p.y - top + 1.0, -p.y - 0.5)) : 1e9;
     return min(min(slab, bar), pr);
   }
@@ -454,7 +457,7 @@ vec2 map(vec3 p){
     if (b.y < 0.0){
       // a deck (a raised road)
       if (length(max(abs(l) - vec2(b.x, -b.y + max(b.z, b.w)), 0.0)) >= res.x) continue;
-      float tp, dd = deckSDF(p, a, b, wT(k + 2).yz, tp);
+      float tp, dd = deckSDF(p, a, b, wT(k + 2).yzw, tp);
       if (dd < res.x) res = vec2(dd, float(k) * 16.0 + 12.0);
       continue;
     }
@@ -1546,7 +1549,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
     // embankment's sides grass
     int dk = bldOf(mat);
     vec4 a = wTp(dk), b = wT(dk + 1);
-    float tp; deckSDF(p, a, b, vec2(0.0), tp);
+    float tp; deckSDF(p, a, b, vec3(0.0, 0.0, -1.0), tp);
     float ly = dot(p.xz - a.xy, vec2(-a.w, a.z)), hw = -b.y - 0.6;
     if (top && abs(ly) < hw && p.y < tp + 0.2){
       vec2 g, gC; vec4 fr; float dC;

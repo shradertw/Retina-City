@@ -156,7 +156,7 @@ export function makeCells(roads, blocks){
       }
     }
     // junction things (props), once each: by position
-    const props = new Map();
+    const props = new Map(), decks = [];
     const addProp = (x, z, kind, a) => { const k = Math.round(x * 2) * 1e7 + Math.round(z * 2); if (!props.has(k)) props.set(k, [x, z, kind, a]); };
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) for (const e of roads.chunk(cx + dx, cz + dz)){
       const p = e.pts, hw = e.w / 2, reach = hw + SIDEWALK_REACH;
@@ -189,6 +189,7 @@ export function makeCells(roads, blocks){
           const ux = (bx - ax) / sl, uz = (bz - az) / sl, mx = (ax + bx) / 2, mz = (az + bz) / 2, dw = hw + 0.6;
           const pier = Math.min(ha, hb) >= 2.5 ? pierOf(mx, mz, ux, uz, sl / 2, dw) : 0;
           const drec = [mx, mz, ux, uz, sl / 2 + 0.3, -dw, ha, hb, 5, pier ?? 0, pier === null ? 0 : 1, -1], tp = Math.max(ha, hb) + 1.2;
+          decks.push(drec);
           const ex = Math.abs(ux) * (sl / 2) + Math.abs(uz) * dw, ez = Math.abs(uz) * (sl / 2) + Math.abs(ux) * dw;
           visit(mx - ex - PAD, mz - ez - PAD, mx + ex + PAD, mz + ez + PAD, (i, j) => {
             occ[j * G + i] = 1;
@@ -205,6 +206,27 @@ export function makeCells(roads, blocks){
           if (Math.hypot(qx - ax - ex * t, qz - az - ez * t) <= reach + RC * 0.7072) lr[c].push(rec);
         });
       }
+    }
+    // where decks meet (a freeway branching, a ramp joining): a barrier inside another deck at about the same
+    // height is left out, so the two read as one widening deck. A side's barrier goes if any of three points
+    // along it is inside another deck: -1 - (1: the +across side cut) - (2: the -across side cut) in its
+    // fourth texel's last value
+    for (const D of decks){
+      const hl = D[4] - 0.3, hw = -D[5], vx = -D[3], vz = D[2];
+      let cut = 0;
+      for (const sd of [1, -1]) for (const f of [-0.8, 0, 0.8]){
+        if (cut & (sd > 0 ? 1 : 2)) break;
+        const px = D[0] + D[2] * hl * f + vx * sd * (hw - 0.2), pz = D[1] + D[3] * hl * f + vz * sd * (hw - 0.2);
+        const hD = D[6] + (D[7] - D[6]) * (f + 1) / 2;
+        for (const E of decks){
+          if (E === D || Math.abs(E[0] - px) > E[4] + 40 || Math.abs(E[1] - pz) > E[4] + 40) continue;
+          const qx = px - E[0], qz = pz - E[1], lx = qx * E[2] + qz * E[3], ly = -qx * E[3] + qz * E[2], ehl = E[4] - 0.3;
+          if (Math.abs(lx) > ehl || Math.abs(ly) > -E[5] - 0.4) continue;
+          const hE = E[6] + (E[7] - E[6]) * Math.max(0, Math.min(1, (lx + ehl) / (2 * ehl)));
+          if (Math.abs(hE - hD) < 1.5){ cut |= sd > 0 ? 1 : 2; break; }
+        }
+      }
+      D[11] = -1 - cut;
     }
     for (const pr of props.values()){
       const r = pr[2] === 3 ? pr[3] + 10 : 4;

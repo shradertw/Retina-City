@@ -703,15 +703,16 @@ export function makeNetwork(c){
   }
   // ---- freeways planned: between cities, and in big cities ----
   /* Two more ways a freeway is built, both by a settlement that knows cars and has fed people:
-       between cities   two big towns (BIG people or more) at least 4 km apart that trade with each other: a
-                        freeway from near the middle of one to near the middle of the other, planned for
+       between cities   two big towns (BIG people or more) 4 to 30 km apart, for the people travelling between
+                        them (more the bigger and nearer they are) and their trade: a freeway
+                        from near the middle of one to near the middle of the other, planned for
                         directness and gentle slopes, around crowded land where it can. As more towns grow big
                         and trade more, the freeways join up into a web (a pair already joined by freeways
                         saves little from another).
        in a city        a town of CITY people or more: a freeway across it (along the way most of its homes
-                        lie, passing beside its middle), later a second across the first; or, once the town
-                        is RING_R or more across its radius, a ring around its edge (for traffic passing through
-                        and between its outer parts). The candidates are weighed against each other, one built
+                        lie, passing beside its middle), later a second across the first; or, in a city of
+                        RING_POP people or more, a ring around the edge of its built-up part (for traffic passing
+                        through and between its outer parts). The candidates are weighed against each other, one built
                         at a time (a town looks again every CITY_EVERY ticks).
      Each must pay: the travel time it saves over the trips that would use it, against its length (more over
      crowded land). Times are estimates from the streets' speeds as they are now (cityOf, lineCost).
@@ -720,14 +721,34 @@ export function makeNetwork(c){
      crossings are left to grade(). A freeway clears its way: it demolishes the buildings in it, though where
      it runs raised it sometimes passes over a small one (a single storey: see demolish in src/gen/sim.js).
      Freeway meets freeway: a junction for now (interchanges between freeways are left for later). */
-  const BIG = 2000, CITY = 3000, RING_R = 1500, PAY_PAIR = 0.025, PAY_CITY = 0.05, CITY_EVERY = 4;
+  const BIG = 5000, CITY = 5000, RING_POP = 10000, PAY_PAIR = 0.025, PAY_CITY = 0.05, CITY_EVERY = 4;
+  // people travelling between two cities each tick: GRAVITY x one's people x the other's / their distance (m)
+  // (the usual gravity rule: bigger and nearer cities exchange more), on top of their trade
+  const GRAVITY = 0.05, PAIR_MAX = 30000, PAIR_LOOK = 12;
   const fwLog = [], tried = new Map();
+  // routing cells within about 400 m of a freeway (a new one pays 4x to run there: no two side by side)
+  const fwNear = new Uint8Array(R.rres * R.rres);
+  function markFreeways(){
+    fwNear.fill(0);
+    const rr = Math.ceil(400 / R.rcell);
+    for (let e = 0; e < ea.length; e++){
+      if (edied[e] || elev[e] !== 4) continue;
+      const a = ea[e], b = eb[e], n = Math.max(1, Math.ceil(elen(e) / R.rcell));
+      for (let i = 0; i <= n; i++){
+        const k = R.at(nx[a] + (nx[b] - nx[a]) * i / n, nz[a] + (nz[b] - nz[a]) * i / n), ci = k % R.rres, cj = (k / R.rres) | 0;
+        for (let dj = -rr; dj <= rr; dj++) for (let di = -rr; di <= rr; di++){
+          const ii = ci + di, jj = cj + dj;
+          if (ii >= 0 && jj >= 0 && ii < R.rres && jj < R.rres && di * di + dj * dj <= rr * rr) fwNear[jj * R.rres + ii] = 1;
+        }
+      }
+    }
+  }
   let ticks = 0;
   const cellXZ = (k) => [-c.half + ((k % R.rres) + 0.5) * R.rcell, -c.half + (((k / R.rres) | 0) + 0.5) * R.rcell];
   /** a route for a freeway over the land, from (x0, z0) to (x1, z1): crowded land costs more (crowdK per
    *  building within 60 m) @returns {number[][] | null} points */
   function routePts(x0, z0, x1, z1, crowdK){
-    const cells = R.route(R.at(x0, z0), R.at(x1, z1), (k) => { const [x, z] = cellXZ(k); return 1 + crowdK * c.crowd(x, z, 60); }, false);
+    const cells = R.route(R.at(x0, z0), R.at(x1, z1), (k) => { const [x, z] = cellXZ(k); return (1 + crowdK * c.crowd(x, z, 60)) * (fwNear[k] ? 4 : 1); }, false);
     if (!cells) return null;
     cells.reverse();
     const pts = [[x0, z0]];
@@ -807,8 +828,8 @@ export function makeNetwork(c){
     if (pts.length < 20) return null;
     pts.sort((p, q) => p[3] - q[3]);
     let all = 0; for (const p of pts) all += p[2];
-    let acc = 0, r90 = pts[pts.length - 1][3];
-    for (const p of pts){ acc += p[2]; if (acc >= 0.9 * all){ r90 = p[3]; break; } }
+    let acc = 0, r90 = pts[pts.length - 1][3], r75 = 0;
+    for (const p of pts){ acc += p[2]; if (!r75 && acc >= 0.75 * all) r75 = p[3]; if (acc >= 0.9 * all){ r90 = p[3]; break; } }
     const T0 = tree(s.coreNode, 2.5 * r90 + 1000), homes = [], rat = [];
     for (const p of pts){
       const n = nearestNode(p[0], p[1], 250);
@@ -817,7 +838,7 @@ export function makeNetwork(c){
     }
     if (!homes.length) return null;
     rat.sort((p, q) => p - q);
-    return { r: Math.max(300, r90), slow: rat[rat.length >> 1], homes, people: all };
+    return { r: Math.max(300, r90), edge: Math.max(400, 1.1 * r75), slow: rat[rat.length >> 1], homes, people: all };
   }
   // a freeway's estimated cost: its length (m), more over crowded land (sampled every 200 m along the line)
   function lineCost(x0, z0, x1, z1){
@@ -893,6 +914,7 @@ export function makeNetwork(c){
   function planned(born, o, through){
     ticks++;
     let built = 0;
+    markFreeways();
     const big = [], info = new Map();
     for (const [s] of o.towns){
       if (s.pop < BIG || o.maxLevel(s) < 4 || !o.canRepair(s) || !nedges[s.coreNode].length) continue;
@@ -900,26 +922,31 @@ export function makeNetwork(c){
       if (!ci) continue;
       s.fwR = ci.r; big.push(s); info.set(s, ci);
     }
-    // between cities: the busiest trade first (a pair is looked at again after 3 ticks)
-    const isBig = new Set(big);
-    for (const [A, Bt, amt] of o.flows.slice().sort((p, q) => q[2] - p[2])){
-      if (built >= 2) break;
-      if (!isBig.has(A) || !isBig.has(Bt) || !connected(A.coreNode, Bt.coreNode)) continue;
-      const d = Math.hypot(A.core[0] - Bt.core[0], A.core[1] - Bt.core[1]);
-      if (d < 4000) continue;
+    // between cities: the pairs with the most travel between them first (each looked at again after 3 ticks)
+    const trade = new Map();
+    for (const [A, Bt, amt] of o.flows) trade.set(Math.min(A.id, Bt.id) * 1e6 + Math.max(A.id, Bt.id), amt);
+    const pairs = [];
+    for (let i = 0; i < big.length; i++) for (let j = i + 1; j < big.length; j++){
+      const A = big[i], Bt = big[j], d = Math.hypot(A.core[0] - Bt.core[0], A.core[1] - Bt.core[1]);
+      if (d < 4000 || d > PAIR_MAX) continue;
       const pk = Math.min(A.id, Bt.id) * 1e6 + Math.max(A.id, Bt.id);
       if ((tried.get(pk) || 0) > ticks) continue;
+      pairs.push([A, Bt, d, pk, GRAVITY * A.pop * Bt.pop / d + (trade.get(pk) || 0) * TRADE_K]);
+    }
+    pairs.sort((p, q) => q[4] - p[4]);
+    for (const [A, Bt, d, pk, trips] of pairs.slice(0, PAIR_LOOK)){
+      if (built >= 2) break;
       tried.set(pk, ticks + 3);
-      if (!fastest(A.coreNode, Bt.coreNode, d * 2 + 20000)) continue;
+      if (!connected(A.coreNode, Bt.coreNode) || !fastest(A.coreNode, Bt.coreNode, d * 2 + 20000)) continue;
       const t0 = gS[Bt.coreNode], ia = info.get(A), ib = info.get(Bt);
       const t1 = (d * 1.15 - 0.6 * (ia.r + ib.r)) / 25 + 0.6 * (ia.r * ia.slow + ib.r * ib.slow) + 60;
-      const save = Math.max(0, t0 - t1) * amt * TRADE_K, cost = lineCost(A.core[0], A.core[1], Bt.core[0], Bt.core[1]);
-      const rec = { born, kind: 'pair', a: A.id, b: Bt.id, pops: [Math.round(A.pop), Math.round(Bt.pop)], d: Math.round(d), t0: Math.round(t0), t1: Math.round(t1), trips: Math.round(amt * TRADE_K), ratio: +(save * PAY_PAIR / cost).toFixed(2), built: false };
+      const save = Math.max(0, t0 - t1) * trips, cost = lineCost(A.core[0], A.core[1], Bt.core[0], Bt.core[1]);
+      const rec = { born, kind: 'pair', a: A.id, b: Bt.id, pops: [Math.round(A.pop), Math.round(Bt.pop)], d: Math.round(d), t0: Math.round(t0), t1: Math.round(t1), trips: Math.round(trips), ratio: +(save * PAY_PAIR / cost).toFixed(2), built: false };
       fwLog.push(rec);
       if (save * PAY_PAIR < cost) continue;
       const ux = (Bt.core[0] - A.core[0]) / d, uz = (Bt.core[1] - A.core[1]) / d;
       const cor = buildLine(A.core[0] + ux * 0.6 * ia.r, A.core[1] + uz * 0.6 * ia.r, Bt.core[0] - ux * 0.6 * ib.r, Bt.core[1] - uz * 0.6 * ib.r, 0.3, born, A, o.best(A, 4), true);
-      if (cor){ rec.built = true; rec.km = +(cor.len / 1000).toFixed(1); rec.ix = cor.ix; built++; tried.set(pk, 1e9); }
+      if (cor){ rec.built = true; rec.km = +(cor.len / 1000).toFixed(1); rec.ix = cor.ix; built++; tried.set(pk, 1e9); markFreeways(); }
     }
     // in cities: the biggest first, one freeway each at a time
     for (const s of big.sort((p, q) => q.pop - p.pop)){
@@ -947,11 +974,11 @@ export function makeNetwork(c){
         cands.push({ kind: 'cross', save, cost: lineCost(x0, z0, x1, z1), x0, z0, x1, z1, th });
       }
       // around it: for traffic passing through, and a little for trips between its outer parts
-      if (!s.fwRing && r >= RING_R){
-        const thr = (through.get(s) || 0) * TRADE_K, across = 2 * r * ci.slow, around = Math.PI * r / 25 + 60;
+      if (!s.fwRing && s.pop >= RING_POP){
+        const re = ci.edge, thr = (through.get(s) || 0) * TRADE_K, across = 2 * re * ci.slow, around = Math.PI * re / 25 + 60;
         let outer = 0;
-        for (const [x, z, p] of ci.homes) if (Math.hypot(x - cx, z - cz) > 0.6 * r) outer += p;
-        cands.push({ kind: 'ring', save: (thr + 0.1 * outer) * Math.max(0, across - around), cost: 2 * Math.PI * r * 1.3 });
+        for (const [x, z, p] of ci.homes) if (Math.hypot(x - cx, z - cz) > 0.6 * re) outer += p;
+        cands.push({ kind: 'ring', save: (thr + 0.1 * outer) * Math.max(0, across - around), cost: 2 * Math.PI * re * 1.3 });
       }
       let best = null;
       for (const k of cands){ k.ratio = k.save * PAY_CITY / k.cost; if (!best || k.ratio > best.ratio) best = k; }
@@ -960,9 +987,9 @@ export function makeNetwork(c){
       fwLog.push(rec);
       if (best.ratio < 1) continue;
       const sf = o.best(s, 4);
-      const cor = best.kind === 'ring' ? buildRing(s, r, born, sf) : buildLine(best.x0, best.z0, best.x1, best.z1, 0.08, born, s, sf, false, true);
+      const cor = best.kind === 'ring' ? buildRing(s, ci.edge, born, sf) : buildLine(best.x0, best.z0, best.x1, best.z1, 0.08, born, s, sf, true, true);
       if (!cor) continue;
-      rec.built = true; rec.km = +(cor.len / 1000).toFixed(1); rec.ix = cor.ix; built++;
+      rec.built = true; rec.km = +(cor.len / 1000).toFixed(1); rec.ix = cor.ix; built++; markFreeways();
       if (best.kind === 'ring') s.fwRing = 1; else { s.fwCross = (s.fwCross || 0) + 1; if (s.fwCross === 1) s.fwAxis = best.th; }
     }
     return built;
