@@ -89,6 +89,47 @@ export function makeNetwork(c){
     edied[e] = Math.max(1, born); mark(e, -1);
     for (const n of [ea[e], eb[e]]){ const l = nedges[n], i = l.indexOf(e); if (i >= 0){ l[i] = l[l.length - 1]; l.pop(); } }
   }
+  // ---- keeping the network in one piece (see "Roads keep their level" in tick) ----
+  /** can node from reach any of targets without passing through node avoid or edge skip, or along a freeway?
+   *  (a search of up to
+   *  limit nodes; a search that runs out is taken as yes: it has reached a big part of the network) */
+  function reaches(from, targets, avoid = -1, skip = -1, limit = 5000, viaFreeway = false){
+    if (targets.has(from)) return true;
+    const seen = new Set([from]), q = [from];
+    for (let h = 0; h < q.length; h++){
+      if (seen.size > limit) return true;
+      for (const f of nedges[q[h]]){
+        if (f === skip || edied[f] || (elev[f] === 4 && !viaFreeway)) continue;   // (not along a freeway unless asked: walkers cannot)
+        const o = other(f, q[h]);
+        if (o === avoid || seen.has(o)) continue;
+        if (targets.has(o)) return true;
+        seen.add(o); q.push(o);
+      }
+    }
+    return false;
+  }
+  /** edge e can go without cutting anything off: one of its ends is a dead end, or its ends stay joined
+   *  another way */
+  const safeToRemove = (e) => nedges[ea[e]].length <= 1 || nedges[eb[e]].length <= 1 || reaches(ea[e], new Set([eb[e]]), -1, e);
+  /** the lowest level edge e may be let down to: a track if it is paved (stone setts or asphalt), and no more
+   *  than one level below the weaker of its two ends (each end: the best road meeting it there, a freeway
+   *  counting as a main road; an open end: none) */
+  function floorOf(e){
+    let weak = 9;
+    for (const n of [ea[e], eb[e]]){
+      let best = -1;
+      for (const f of nedges[n]) if (f !== e && !edied[f]) best = Math.max(best, Math.min(3, elev[f]));
+      weak = Math.min(weak, best);
+    }
+    return Math.max(esf[e] >= 2 ? 1 : 0, weak - 1, 0);
+  }
+  /** a worn-out footpath that may vanish: no home faces it, every road at its ends is a footpath too, and it
+   *  cuts nothing off */
+  function mayVanish(e, fronted){
+    if (elev[e] !== 0 || fronted.has(e)) return false;
+    for (const n of [ea[e], eb[e]]) for (const f of nedges[n]) if (f !== e && !edied[f] && elev[f] > 0) return false;
+    return safeToRemove(e);
+  }
   /** live edges near a box (each once) */
   function edgesNear(x0, z0, x1, z1, fn){
     const seen = new Set();
@@ -631,6 +672,13 @@ export function makeNetwork(c){
       const n2 = addNode(nx[n], nz[n], ntag[n], born);
       const busy = (f) => elev[f] >= 3 || eload[f] >= 0.1;
       const keep = what === 'ix' ? others : others.filter((f) => busy(f) && straightOn(n, f, -1) >= 0 && others.includes(straightOn(n, f, -1)));
+      // (a road whose far side cannot reach the other roads here another way is kept too, over or under: a
+      // freeway never cuts a piece of the network off)
+      if (what !== 'ix') for (const f of others){
+        if (keep.includes(f)) continue;
+        const far = new Set(others.filter((g) => g !== f).map((g) => other(g, n)));
+        if ((far.size && !reaches(other(f, n), far, n)) || !reaches(other(f, n), new Set(), n, -1, 3000, true)) keep.push(f);
+      }
       for (const f of others){
         if (keep.includes(f)){ detach(f, n, n2); continue; }
         // cut: it ends 25 m short
@@ -640,7 +688,9 @@ export function makeNetwork(c){
       }
       if (!nedges[n2].length) continue;
       if (nh[n] >= 5) nh[n2] = 0; else rise(n2, nh[n] + 7.5);
-      if (what === 'ix') diamond(cor, n, n2, born, sf);
+      // an interchange where planned, or where the roads here would otherwise be left an island (a town
+      // strung along the old road, its only way out along it)
+      if (what === 'ix' || !reaches(n2, new Set(), -1, -1, 3000, true)) diamond(cor, n, n2, born, sf);
     }
   }
   /** a diamond interchange where crossing road node n2 passes over or under freeway node n of corridor cor:
@@ -1016,7 +1066,9 @@ export function makeNetwork(c){
         if (Math.abs(hf - hg) >= 5.5) continue;
         const x = ax + dx * t, z = az + dz * t;
         if (hf >= 5){ if (hg > 0.5) continue; continue; }      // (under a raised freeway: fine on the ground)
-        if (elev[g] >= 3 || eload[g] >= 0.1 || eramp[g]){ const m = splitAt(g, x, z, born); rise(m, hf + 7.5); }
+        // (a quiet road is cut, unless its two sides cannot reach each other another way: then it goes over)
+        const cutOff = !reaches(ea[g], new Set([eb[g]]), -1, g);
+        if (elev[g] >= 3 || eload[g] >= 0.1 || eramp[g] || cutOff){ const m = splitAt(g, x, z, born); rise(m, hf + 7.5); }
         else {
           const m = splitAt(g, x, z, born);
           for (const h of nedges[m].slice()){
@@ -1141,7 +1193,11 @@ export function makeNetwork(c){
         if (townHome && elev[be] < 2){ elev[be] = 2; ew[be] = LEVEL_W[2]; }
       }
     }
-    // levels and health
+    // levels and health. Roads keep their level: a road's level (footpath to freeway) changes only by
+    // use, raised when crowded and let down a level after two quiet ticks (50 years), never below floorOf
+    // (a paved road stays a track at least; no road more than a level below the weaker of its ends). Its
+    // health (wear and repair) is separate: worn out, a road stays, broken. Only a footpath vanishes, and
+    // only where nothing else needs it (mayVanish); nothing removes a road that would cut the network apart
     let gone = 0, up = 0, down = 0;
     const n = ea.length;
     for (let e = 0; e < n; e++){
@@ -1152,21 +1208,63 @@ export function makeNetwork(c){
       const own = o.keeper(c.tagAt((nx[ea[e]] + nx[eb[e]]) / 2, (nz[ea[e]] + nz[eb[e]]) / 2)) || o.keeper(etag[e]);
       if (lev === 3){ ejam[e] = eload[e] > 1 ? ejam[e] + 1 : 0; }
       if (eload[e] > 1 && own && lev < 3 && lev < o.maxLevel(own) && o.canRepair(own)){ raise(e, born, fronted); up++; }
-      else if (eload[e] < 0.02 && lev > 0 && lev < 4 && !eramp[e] && !fronted.has(e) && !(townWay.has(e) && lev <= 2)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
+      else if (eload[e] < 0.02 && lev > 0 && lev < 4 && !eramp[e] && !fronted.has(e) && !(townWay.has(e) && lev <= 2) && lev - 1 >= floorOf(e)){ if (++equiet[e] >= 2){ elev[e] = lev - 1; ew[e] = LEVEL_W[lev - 1]; equiet[e] = 0; down++; } }
       else equiet[e] = 0;
-      // wear, repair, worn away (a freeway's ramp is kept as the freeway is: by its keeper, to its surface,
-      // used or not)
+      // wear and repair (a freeway's ramp is kept as the freeway is: by its keeper, to its surface, used or
+      // not). Worn out, a road stays, broken, until it is mended or let down a level; only a footpath
+      // vanishes (see mayVanish)
       const sf = esf[e], u = eload[e] / (eload[e] + 1);
       eh[e] -= WEAR_BASE[sf] + WEAR_USE[sf] * u;
       const fw = eramp[e] ? rampOf(e) : -1, fwOwn = fw >= 0 ? keeperOf(fw, o) : null;
       if (fwOwn){ if (eh[e] < REPAIR_AT && o.canRepair(fwOwn)){ eh[e] = 1; esf[e] = Math.max(sf, esf[fw], o.best(fwOwn, 4)); } }
       else if (eh[e] < REPAIR_AT && (euse[e] > 0 || fronted.has(e)) && own && o.canRepair(own)){ eh[e] = 1; esf[e] = Math.max(sf, o.best(own, elev[e])); }
-      else if (eh[e] <= 0){ removeEdge(e, born); gone++; }
+      else if (eh[e] <= 0){ if (mayVanish(e, fronted)){ removeEdge(e, born); gone++; } else eh[e] = 0; }
       euse[e] = 0;
     }
     const fw = freeways(born, o) + planned(born, o, through);
     grade(born);
-    return { gone, up, down, fw };
+    const rejoined = rejoin(born, fronted);
+    return { gone, up, down, fw, rejoined };
+  }
+  /** a piece of the network left on its own (any but the biggest): a track to the nearest road of a bigger
+   *  piece within 400 m (not across a freeway); else a small one (under 40 roads) that no home faces goes
+   *  @returns {number} pieces joined or cleared */
+  function rejoin(born, fronted){
+    const par = new Int32Array(nx.length);
+    for (let i = 0; i < par.length; i++) par[i] = i;
+    const f = (a) => { while (par[a] !== a){ par[a] = par[par[a]]; a = par[a]; } return a; };
+    const live = [];
+    for (let e = 0; e < ea.length; e++) if (!edied[e]){ par[f(ea[e])] = f(eb[e]); live.push(e); }
+    const size = new Map(), members = new Map();
+    for (const e of live){ const r = f(ea[e]); size.set(r, (size.get(r) || 0) + 1); }
+    let top = -1; for (const [r, n] of size) if (top < 0 || n > size.get(top)) top = r;
+    for (const e of live){ const r = f(ea[e]); if (r !== top){ let m = members.get(r); if (!m){ m = []; members.set(r, m); } m.push(e); } }
+    let done = 0;
+    for (const [r, es] of members){
+      const nodes = new Set(); for (const e of es){ nodes.add(ea[e]); nodes.add(eb[e]); }
+      let best = null, bd = 400;
+      for (const a of nodes){
+        const k = Math.ceil(400 / NB), ci = Math.floor(nx[a] / NB), cj = Math.floor(nz[a] / NB);
+        for (let j = -k; j <= k; j++) for (let i = -k; i <= k; i++) for (const b of nbk.get(key(ci + i, cj + j)) || []){
+          if (!nedges[b].length || f(b) === r || (size.get(f(b)) || 0) <= es.length || nh[b] > 0.5 || nedges[b].every((g) => elev[g] === 4)) continue;
+          const d = Math.hypot(nx[b] - nx[a], nz[b] - nz[a]);
+          if (d >= bd) continue;
+          // (not across a freeway)
+          let crosses = false;
+          edgesNear(Math.min(nx[a], nx[b]), Math.min(nz[a], nz[b]), Math.max(nx[a], nx[b]), Math.max(nz[a], nz[b]), (g) => {
+            if (crosses || elev[g] !== 4) return;
+            const p = ea[g], q = eb[g], dx = nx[b] - nx[a], dz = nz[b] - nz[a], ex = nx[q] - nx[p], ez = nz[q] - nz[p], den = dx * ez - dz * ex;
+            if (Math.abs(den) < 1e-9) return;
+            const t = ((nx[p] - nx[a]) * ez - (nz[p] - nz[a]) * ex) / den, u = ((nx[p] - nx[a]) * dz - (nz[p] - nz[a]) * dx) / den;
+            if (t > 0 && t < 1 && u > 0 && u < 1) crosses = true;
+          });
+          if (!crosses){ bd = d; best = [a, b]; }
+        }
+      }
+      if (best){ addEdge(best[0], best[1], 1, born, ntag[best[1]], 0); done++; }
+      else if (es.length < 40 && !es.some((e) => fronted.has(e))){ for (const e of es) removeEdge(e, born); done++; }
+    }
+    return done;
   }
   // raise edge e a level; lower roads crowding it alongside are removed to make room; a main road too close
   // beside another main road: the quieter one falls back
@@ -1183,7 +1281,7 @@ export function makeNetwork(c){
       // along the same line is its continuation, not a neighbour)
       const fx = (nx[a] + nx[b]) / 2 - mx, fz = (nz[a] + nz[b]) / 2 - mz, along = fx * dx + fz * dz, d = Math.abs(fx * dz - fz * dx);
       if (Math.abs(along) > L / 2 + fl / 2 || d < 6) return;
-      if (elev[f] < lev && d < LEVEL_W[lev] / 2 + 15 && eload[f] < eload[e] * 0.5 && !fronted.has(f)) removeEdge(f, born);        // make room
+      if (elev[f] < lev && d < LEVEL_W[lev] / 2 + 15 && eload[f] < eload[e] * 0.5 && !fronted.has(f) && safeToRemove(f)) removeEdge(f, born);   // make room (if nothing is cut off)
       else if (lev >= 3 && elev[f] >= 3 && d < MAIN_GAP){
         if (eload[f] <= eload[e]){ elev[f] = 2; ew[f] = LEVEL_W[2]; } else { elev[e] = 2; ew[e] = LEVEL_W[2]; }
       }
