@@ -761,7 +761,8 @@ export function makeNetwork(c){
                         saves little from another).
        in a city        a town of CITY people or more: a freeway across it (along the way most of its homes
                         lie, passing beside its middle), later a second across the first; or, in a city of
-                        RING_POP people or more, a ring around the edge of its built-up part (for traffic passing
+                        RING_POP people or more, a ring around the edge of its built-up part (off for now: RINGS,
+                        to come back to later) (for traffic passing
                         through and between its outer parts). The candidates are weighed against each other, one built
                         at a time (a town looks again every CITY_EVERY ticks).
      Each must pay: the travel time it saves over the trips that would use it, against its length (more over
@@ -771,7 +772,7 @@ export function makeNetwork(c){
      crossings are left to grade(). A freeway clears its way: it demolishes the buildings in it, though where
      it runs raised it sometimes passes over a small one (a single storey: see demolish in src/gen/sim.js).
      Freeway meets freeway: a junction for now (interchanges between freeways are left for later). */
-  const BIG = 5000, CITY = 5000, RING_POP = 10000, PAY_PAIR = 0.025, PAY_CITY = 0.05, CITY_EVERY = 4;
+  const BIG = 5000, CITY = 5000, RING_POP = 10000, RINGS = false, PAY_PAIR = 0.025, PAY_CITY = 0.05, CITY_EVERY = 4;
   // people travelling between two cities each tick: GRAVITY x one's people x the other's / their distance (m)
   // (the usual gravity rule: bigger and nearer cities exchange more), on top of their trade
   const GRAVITY = 0.05, PAIR_MAX = 30000, PAIR_LOOK = 12;
@@ -1024,7 +1025,7 @@ export function makeNetwork(c){
         cands.push({ kind: 'cross', save, cost: lineCost(x0, z0, x1, z1), x0, z0, x1, z1, th });
       }
       // around it: for traffic passing through, and a little for trips between its outer parts
-      if (!s.fwRing && s.pop >= RING_POP){
+      if (RINGS && !s.fwRing && s.pop >= RING_POP){
         const re = ci.edge, thr = (through.get(s) || 0) * TRADE_K, across = 2 * re * ci.slow, around = Math.PI * re / 25 + 60;
         let outer = 0;
         for (const [x, z, p] of ci.homes) if (Math.hypot(x - cx, z - cz) > 0.6 * re) outer += p;
