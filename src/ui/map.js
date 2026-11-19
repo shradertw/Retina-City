@@ -10,6 +10,7 @@ import { radiusKm } from '../gen/history.js';
 import { ZONES } from '../gen/districts.js';
 import { eraOf, namesOf } from '../gen/tech.js';
 import { TRAITS, describe } from '../gen/traits.js';
+import { WORK } from '../gen/goods.js';
 
 // map layers: what each shows, and its legend
 const LAYERS = [
@@ -20,7 +21,16 @@ const LAYERS = [
   { key: 'life', name: 'Life', legend: '' },
   { key: 'metals', name: 'Metals', legend: METALS.map((m, i) => m).join(', ') + ' (dot size = deposit size)' },
   { key: 'districts', name: 'Districts', legend: 'from year 650: green housing, blue shops and offices, ochre industry; darker = more storeys' },
+  { key: 'forest', name: 'Forest', legend: 'tree cover in the year shown' },
 ];
+// a settlement's character in a frame: its main country livelihood when most of its people work the land,
+// water or ground; else a town (src/gen/goods.js WORK)
+export function characterOf(st, f){
+  if (!st.workAt) return '';
+  let rural = 0, bk = 0;
+  for (let k = 0; k < 5; k++){ rural += st.workAt[f * 5 + k]; if (st.workAt[f * 5 + k] > st.workAt[f * 5 + bk]) bk = k; }
+  return rural >= 128 ? WORK[bk] : 'town';
+}
 // town blocks by district (housing, shops and offices, industry) and storeys (1-2, 3-5, 6-12, 13+)
 const ZONE_COL = [null, ['#b9dc8f', '#8cc46a', '#5f9e4a', '#3d7434'], ['#a6cdf2', '#6aa4e3', '#3f78c9', '#27509a'], ['#f0d08a', '#ddb05a', '#b98934', '#8a6222']];
 const band = (st) => st <= 2 ? 0 : st <= 5 ? 1 : st <= 12 ? 2 : 3;
@@ -47,7 +57,7 @@ export function initMap(){
     c.addEventListener('change', () => { show[k] = c.checked; try { localStorage.setItem('retina-map-show', JSON.stringify(show)); } catch (_){ } });
     l.append(c, ' ' + label); filterList.append(l);
   }
-  let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1;
+  let step = -1, playing = false, playT = 0, lastHist = null, farmImg = null, farmFor = null, farmStep = -1, forestImg = null, forestFor = null;
   const ageOf = (h, s) => { let a = 0, s0 = 0; while (a < h.ages.length - 1 && s > s0 + h.ages[a].steps){ s0 += h.ages[a].steps; a++; } return h.ages[a]; };
   const showYear = () => {
     const h = current.history; if (!h) return;
@@ -89,13 +99,13 @@ export function initMap(){
         const dpt = Math.min(Math.max(-w.height[k] / (w.relief * 0.6), 0), 1);
         r = lerp(28, 10, dpt); gg = lerp(62, 26, dpt); b = lerp(88, 50, dpt);
         if (wt === 2){ r += 10; gg += 18; b += 22; }
-      } else if (key === 'terrain' || key === 'metals' || key === 'districts'){
+      } else if (key === 'terrain' || key === 'metals' || key === 'districts' || key === 'forest'){
         const u = h / w.relief;
         if (u < 0.25){ r = lerp(70, 120, u / 0.25); gg = lerp(105, 125, u / 0.25); b = lerp(60, 72, u / 0.25); }
         else if (u < 0.6){ r = lerp(120, 125, (u - 0.25) / 0.35); gg = lerp(125, 105, (u - 0.25) / 0.35); b = lerp(72, 80, (u - 0.25) / 0.35); }
         else { r = lerp(125, 205, (u - 0.6) / 0.4); gg = lerp(105, 200, (u - 0.6) / 0.4); b = lerp(80, 195, (u - 0.6) / 0.4); }
         r *= shade; gg *= shade; b *= shade;
-        if (key === 'metals' || key === 'districts'){ const m = (r + gg + b) / 3; r = gg = b = m * 0.8; }
+        if (key === 'metals' || key === 'districts' || key === 'forest'){ const m = (r + gg + b) / 3; r = gg = b = m * 0.8; }
         if (wt === 3){ r = 70; gg = 150; b = 215; }
       } else if (key === 'temp'){
         const t = w.temp[k];
@@ -152,6 +162,23 @@ export function initMap(){
     replay(hist);
     const L = hist.land, span = L.res * L.cell * scale * d;
     ctx.imageSmoothingEnabled = false;
+    // the forest as it stood (the latest record at or before the year shown)
+    if (LAYERS[layer].key === 'forest' && hist.forest){
+      const FS = hist.forest, snaps = FS.snaps;
+      let q = 0; while (q + 1 < snaps.length && snaps[q + 1][0] <= step) q++;
+      if (!forestImg || forestFor !== snaps[q][1]){
+        forestFor = snaps[q][1];
+        const R = FS.res; forestImg = forestImg && forestImg.width === R ? forestImg : Object.assign(document.createElement('canvas'), { width: R, height: R });
+        const g = forestImg.getContext('2d'), im = g.createImageData(R, R);
+        for (let j = 0; j < R; j++) for (let i = 0; i < R; i++){
+          const v = forestFor[j * R + i] / 255, o = ((R - 1 - j) * R + i) * 4;
+          im.data[o] = 30; im.data[o + 1] = 110 + 40 * v; im.data[o + 2] = 45; im.data[o + 3] = Math.round(235 * Math.min(1, v * 1.4));
+        }
+        g.putImageData(im, 0, 0);
+      }
+      const fs = FS.res * FS.cell * scale * d;
+      ctx.drawImage(forestImg, toX(-FS.half), toY(FS.res * FS.cell - FS.half), fs, fs);
+    }
     if (show.land) ctx.drawImage(sim.tagImg, toX(-L.half), toY(L.res * L.cell - L.half), span, span);
     if (show.farms) ctx.drawImage(sim.farmImg, toX(-L.half), toY(L.res * L.cell - L.half), span, span);
     // town blocks as at the end
@@ -256,7 +283,8 @@ export function initMap(){
         const pop = st.popAt[step]; if (!(pop > 0)) continue;
         const sx = toX(st.xAt[step] * 1000), sy = toY(st.zAt[step] * 1000);
         if (sx < -50 || sy < -20 || sx > W() + 50 || sy > H() + 20) continue;
-        labels.push([pop, st.name + ' ' + Math.round(pop).toLocaleString(), sx, sy]);
+        const ch = characterOf(st, step);
+        labels.push([pop, st.name + ' ' + Math.round(pop).toLocaleString() + (ch && ch !== 'town' && ch !== 'farming' ? ' · ' + ch : ''), sx, sy]);
       }
       labels.sort((a, b) => b[0] - a[0]);
       const placed = [];
@@ -480,6 +508,14 @@ export function initMap(){
           const NT = TRAITS.length, v = (i) => st.traitsAt[step * NT + i] / 255;
           const words = TRAITS.map((t, i) => describe(i, v(i))).filter(Boolean);
           town += `\nWays: ${words.length ? words.join(', ') : 'middling in everything'} (` + TRAITS.map((t, i) => t.key + ' ' + v(i).toFixed(2)).join(', ') + ')';
+        }
+        if (st.workAt && st.popAt[step] > 0){
+          const pc = (v) => Math.round(100 * v / 255);
+          let rural = 0; const parts = [];
+          for (let k = 0; k < 5; k++){ const v = st.workAt[step * 5 + k]; rural += v; if (pc(v) >= 1) parts.push(`${WORK[k]} ${pc(v)}%`); }
+          if (pc(255 - rural) >= 1) parts.push(`town ${pc(255 - rural)}%`);
+          const m = (k) => pc(st.metAt[step * 4 + k]);
+          town += `\nWork: ${parts.join(' · ')}\nSupply: wood ${m(0)}% · stone ${m(1)}% · tools ${m(2)}% · fuel ${m(3)}%`;
         }
         if (st.raids || st.raided) town += `\nRaids: made ${st.raids || 0} (won ${st.wins || 0}) · raided ${st.raided || 0} times (over the whole history)`;
         const found = h.log.filter((e) => e.tag === t && e.step <= step && e.tech >= 0).map((e) => `${e.text.replace(st.name + ' discovers ', '')} (${h.year[e.step]})`);

@@ -4,7 +4,8 @@
    made and spread. Every chance is a hash of the seed, the step and a counter: the same world always has the
    same history.
 
-   Households (family groups) are foragers, farmers or crafts people.
+   Households (family groups) are foragers, country families (farming, fishing, logging, quarrying or mining:
+   see src/gen/goods.js and "Goods" below) or town people (crafts, traders, factory workers).
      Foragers   bands that move each step toward richer, emptier wild land; they grow slowly up to what the
                 wild land feeds. A band can discover farming (an easy discovery on fertile land) or learn it
                 from farming settlements nearby, and then settles: it builds a home on good land near water.
@@ -42,6 +43,8 @@ import { makeRouter } from './route.js';
 import { makeNetwork } from './network.js';
 import { NT, TI, inclination } from './traits.js';
 import { nearRiver } from './roads.js';
+import { G, W, GOODS, RATE, WOOD_CELL, REGROW, SEED, FOREST_OF, FUEL, TOOL, POWER, BUILD, UPKEEP, REACH, WATER_REACH, ROAD_REACH, priceOf,
+  FISH_KM2, FISH_SHORE, ROCK_PEOPLE, MINE_PEOPLE } from './goods.js';
 
 export const STEP_YEARS = 5;
 const BAND = 20;               // people in a forager band at the start
@@ -57,6 +60,7 @@ const FARMER = 1, FORAGER = 0, CRAFTS = 2, TRADER = 3, WORKER = 4;
 // building kinds: 0 farm home, 2 workshop, 3 shop, 4 factory, 5 housing (homes of factory workers)
 const FACTORY = 4, HOUSING = 5;
 const RES_BITS = { copper: 1, iron: 2, coal: 4, river: 8 };
+const addToMap = (m, k, v) => { let l = m.get(k); if (!l){ l = []; m.set(k, l); } l.push(v); };
 
 /** @param {import('./world.js').World} w @param {Record<string, number>} [o] */
 export function runSim(w, o = {}, onProgress = null){
@@ -88,9 +92,10 @@ export function runSim(w, o = {}, onProgress = null){
   const dFresh = chamfer(res, cell, (k) => w.water[k] === 2 || w.water[k] === 3);
   const dSea = chamfer(res, cell, (k) => w.water[k] === 1);
   const lfert = new Float32Array(LN), lwild = new Float32Array(LN), lbuild = new Uint8Array(LN), lwater = new Float32Array(LN);
+  const lfmax = new Float32Array(LN), lrock = new Float32Array(LN);   // natural tree cover; rock to quarry (steep, bare)
   let landKm2 = 0;
   for (let j = 0; j < lres; j++) for (let i = 0; i < lres; i++){
-    let f = 0, wild = 0, land = 0, river = 0, dw = 1e9;
+    let f = 0, wild = 0, land = 0, river = 0, dw = 1e9, fo = 0, rk = 0;
     for (let b = 0; b < lf; b++) for (let a = 0; a < lf; a++){
       const wi = i * lf + a, wj = j * lf + b, k = wj * res + wi;
       if (w.water[k] === 3) river++;
@@ -101,12 +106,14 @@ export function runSim(w, o = {}, onProgress = null){
       const flat = Math.max(0, 1 - Math.hypot(hx, hz) / (2 * cell) / 0.2);
       f += w.fert[k] * flat;
       const L = w.life[k];
+      fo += FOREST_OF[L]; rk += (1 - flat) + (L === 12 ? 1 : 0);
       const lw = L === 5 || L === 7 || L === 8 || L === 10 || L === 11 ? 1 : L === 6 || L === 4 ? 0.4 : 0.1;
       wild += lw * (0.4 + w.fert[k]) * (1 + 0.6 * Math.exp(-dSea[k] / 1500) + 0.4 * Math.exp(-dFresh[k] / 800));
       dw = Math.min(dw, dFresh[k]);
     }
     const c = j * lres + i;
     if (land * 2 <= lf * lf) continue;                         // mostly water: nothing here
+    lfmax[c] = fo / land; lrock[c] = Math.min(1, rk / land);
     landKm2 += cellKm2;
     lfert[c] = f / land; lwild[c] = wild / land;
     lwater[c] = Math.exp(-dw / 700);                            // fresh water nearby (for homes)
@@ -128,6 +135,70 @@ export function runSim(w, o = {}, onProgress = null){
     return m;
   };
   const techRes = TECH.map((t) => t.resource ? RES_BITS[t.resource] : 0);
+
+  // ---- goods (Stage B: src/gen/goods.js): forest, fishing grounds, quarries, deposits ----
+  /* Forest is kept on 512 m blocks: the wood each holds (fbWood) and can hold (fbMax: its land cells' natural
+     cover, less the cells farmed or built on). Wood is cut nearest first, leaving the young trees (15%);
+     it grows back logistically (REGROW), with seeding (SEED). */
+  const FBf = 4, FBC = LC * FBf, fbres = Math.ceil(lres / FBf), FBN = fbres * fbres;
+  const fbOf = (c) => Math.floor(((c / lres) | 0) / FBf) * fbres + Math.floor((c % lres) / FBf);
+  const fbMax = new Float32Array(FBN), fbWood = new Float32Array(FBN);
+  for (let c = 0; c < LN; c++) if (lfmax[c] > 0) fbMax[fbOf(c)] += lfmax[c] * WOOD_CELL;
+  fbWood.set(fbMax);
+  // a land cell taken (farmed, built on) or let go: its block's forest shrinks or may grow back; clearing it
+  // yields its share of the block's wood
+  const lused = new Uint8Array(LN);
+  function useCell(c, d){
+    if (c < 0) return 0;
+    const before = lused[c]; lused[c] = Math.min(255, Math.max(0, before + d));
+    if ((before > 0) === (lused[c] > 0) || !lfmax[c]) return 0;
+    const b = fbOf(c), m = lfmax[c] * WOOD_CELL;
+    if (d > 0){ const cut = fbMax[b] > 0 ? fbWood[b] * m / fbMax[b] : 0; fbWood[b] -= cut; fbMax[b] = Math.max(0, fbMax[b] - m); return cut; }
+    fbMax[b] += m; return 0;
+  }
+  const fbRing = (n) => { const out = []; for (let b = -n; b <= n; b++) for (let a = -n; a <= n; a++) if (a * a + b * b <= n * n + n) out.push([a, b, a * a + b * b]); return out.sort((p, q) => p[2] - q[2]); };
+  const RING_GATHER = fbRing(2), RING_LOG = fbRing(5);            // about 1 km and 2.5 km
+  /** cut up to want units of wood within ring rng of (x, z), nearest first @returns {number} cut */
+  function takeWood(x, z, rng, want){
+    const bi = Math.floor((x + half) / FBC), bj = Math.floor((z + half) / FBC);
+    let got = 0;
+    for (const [a, b] of rng){
+      if (got >= want) break;
+      const i = bi + a, j = bj + b;
+      if (i < 0 || j < 0 || i >= fbres || j >= fbres) continue;
+      const k = j * fbres + i, t = Math.min(want - got, Math.max(0, fbWood[k] - 0.15 * fbMax[k]) * 0.3);
+      fbWood[k] -= t; got += t;
+    }
+    return got;
+  }
+  // wood standing within ring rng of (x, z) that could be cut
+  function woodNear(x, z, rng){
+    const bi = Math.floor((x + half) / FBC), bj = Math.floor((z + half) / FBC);
+    let v = 0;
+    for (const [a, b] of rng){ const i = bi + a, j = bj + b; if (i >= 0 && j >= 0 && i < fbres && j < fbres){ const k = j * fbres + i; v += Math.max(0, fbWood[k] - 0.15 * fbMax[k]) * 0.3; } }
+    return v;
+  }
+  /* Fishing grounds, quarries: on a 2 km grid. A ground's yield (fishK: people's food a step, sustained) comes
+     from the water in it (sea within FISH_SHORE of land, lakes, rivers); its stock (fishS, 0-1) falls when more
+     is caught than grows back, and the most that can be caught in a step is 2 x fishK x the stock. A quarry
+     cell's rock (rockK: people it employs fully) from its steep and bare land. */
+  const FGC = 2000, fgres = Math.ceil(w.size / FGC), FGN = fgres * fgres;
+  const fgAt = (x, z) => Math.min(fgres - 1, Math.max(0, Math.floor((z + half) / FGC))) * fgres + Math.min(fgres - 1, Math.max(0, Math.floor((x + half) / FGC)));
+  const fishK = new Float32Array(FGN), fishS = new Float32Array(FGN).fill(1), fishWant = new Float32Array(FGN), fishOK = new Float32Array(FGN).fill(1);
+  const rockK = new Float32Array(FGN), rockOcc = new Float32Array(FGN);
+  {
+    const dLand = chamfer(res, cell, (k) => w.water[k] !== 1), a = (cell / 1000) ** 2;
+    for (let j = 0; j < res; j++) for (let i = 0; i < res; i++){
+      const k = j * res + i, t = w.water[k];
+      if (!t || (t === 1 && dLand[k] > FISH_SHORE)) continue;
+      fishK[fgAt(-half + (i + 0.5) * cell, -half + (j + 0.5) * cell)] += FISH_KM2[t] * a;
+    }
+    for (let c = 0; c < LN; c++) if (lrock[c] > 0.3) rockK[fgAt(lx(c % lres), lx((c / lres) | 0))] += 2 * (lrock[c] - 0.3);
+  }
+  // deposits that can be mined: iron and copper (metal), coal; gold is left alone. People a deposit employs fully.
+  const mines = w.metals.map((d) => ({ x: d.x, z: d.z, type: d.type, good: d.type === 2 ? G.coal : d.type < 2 ? G.metal : -1, cap: d.size * MINE_PEOPLE, occ: 0 })).filter((m) => m.good >= 0);
+  const mineB = new Map();
+  mines.forEach((m, i) => addToMap(mineB, Math.floor(m.x / 6000) * 1000003 + Math.floor(m.z / 6000), i));
   lap('maps');
 
   // ---- state ----
@@ -136,7 +207,8 @@ export function runSim(w, o = {}, onProgress = null){
   const H = [];                                                 // households
   // buildings: died 0 = standing; empty = the frame its people left (0 = lived in); hh = who lives there (-1 none)
   // st: storeys; cap: households it holds (flats); occ: households in it; rebuilt: frame rebuilt taller (0 never)
-  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], empty: [], hh: [], st: [], cap: [], occ: [], rebuilt: [] };
+  // mat: what it was built of (0 timber, 1 stone); work: its first household's livelihood (src/gen/goods.js WORK)
+  const B = { x: [], z: [], kind: [], tag: [], born: [], died: [], empty: [], hh: [], st: [], cap: [], occ: [], rebuilt: [], mat: [], work: [] };
   const emptyList = [];                                          // [building, step it falls down]
   const T = [];                                                 // settlements (tags)
   // roads between settlements (built when trade between them is enough) and town streets (grown as towns need)
@@ -187,11 +259,19 @@ export function runSim(w, o = {}, onProgress = null){
   };
   const farmRing = ring(FARM_REACH), tagRing = ring(R);
 
+  // how cold it is (0 mild to 1 bitter: more fuel burned) and whether goods can go by water from here
+  const coldAt = (x, z) => Math.min(1, Math.max(0, (16 - w.temp[w.gridIndex(x, z)]) / 22));
+  const nearWater = (x, z) => { const k = w.gridIndex(x, z); return dSea[k] < 1500 || dFresh[k] < 600; };
   function newSettlement(x, z, step){
     const id = T.length;
     const s = { id, name: makeName(h2(id, 7, S)), born: fr(step), bornStep: step, died: 0, alive: true, mergedInto: -1, onRoad: false, core: [x, z],
       popAt: new Float32Array(frames + 1), xAt: new Float32Array(frames + 1), zAt: new Float32Array(frames + 1), areaAt: new Float32Array(frames + 1),
-      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0, bl: [], cells: 0, workers: 0, tm: new Float32Array(NT).fill(0.5), ff: 0, fp: 0, loot: 0, lootLost: 0, lost: 0, inflow: 0, town: 0, traders: 0, hh: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
+      knowAt: new Int32Array(frames + 1), know: 0, nb: 0, townB: 0,
+      // goods: made, wanted, got (this step); met (0-1), price, food paid and earned; materials wanted by new
+      // buildings (for the next step); what its people do and how well supplied they are, per frame
+      prod: new Float32Array(4), dem: new Float32Array(4), got: new Float32Array(4), met: new Float32Array(4).fill(1), price: new Float32Array(4).fill(1),
+      inc: new Float32Array(4), pay: 0, bNeed: new Float32Array(4), fuel: 0, fuelMkt: 0, fuelCoal: 0, metFuel: 1, cleared: 0,
+      cold: coldAt(x, z), water: nearWater(x, z), workAt: new Uint8Array((frames + 1) * 5), metAt: new Uint8Array((frames + 1) * 4), bl: [], cells: 0, workers: 0, tm: new Float32Array(NT).fill(0.5), ff: 0, fp: 0, loot: 0, lootLost: 0, lost: 0, inflow: 0, town: 0, traders: 0, hh: 0, pop: 0, x: x / 1000, z: z / 1000, crafts: 0, cap: 0, everB: 0 };
     T.push(s);
     return s;
   }
@@ -250,8 +330,19 @@ export function runSim(w, o = {}, onProgress = null){
       if (others.length) tag = B.tag[others[Math.floor(chance(a, 2) * others.length)]];
     }
     const id = B.x.length;
+    // what it takes to build (src/gen/goods.js BUILD): stone where masonry is known and stone was to be had
+    // last step, else timber; a farm home's timber its family cuts nearby, the rest is bought
+    const sT = T[tag], hb = a >= 0 && a < H.length ? H[a] : null, know = hb ? hb.know : kOf(sT);
+    const stone = !!(know & masonBit) && sT.met[G.stone] > 0.5 && chance(a, 92) < sT.met[G.stone];
+    const need = kind === FACTORY ? BUILD.factory : kind >= 2 ? (stone ? BUILD.townStone : BUILD.town) : (stone ? BUILD.homeStone : BUILD.home);
+    const mul = kind >= 2 && kind !== FACTORY ? st : 1;
+    for (let g = 0; g < 3; g++){
+      if (g === G.wood && kind === 0 && hb) hb.bw += need[g] * mul;
+      else sT.bNeed[g] += need[g] * mul;
+    }
+    sT.cleared += useCell(c, 1);
     B.x.push(x); B.z.push(z); B.kind.push(kind); B.tag.push(tag); B.born.push(fr(step)); B.died.push(0); B.empty.push(0); B.hh.push(-1);
-    B.st.push(st); B.cap.push(cap); B.occ.push(0); B.rebuilt.push(0);
+    B.st.push(st); B.cap.push(cap); B.occ.push(0); B.rebuilt.push(0); B.mat.push(stone ? 1 : 0); B.work.push(hb ? hb.work || 0 : 0);
     addTo(bkC, key(Math.floor(x / R), Math.floor(z / R)), id); addTo(bkF, key(Math.floor(x / FG), Math.floor(z / FG)), id);
     const s = T[tag];
     s.nb++; s.everB++; if (kind >= 2){ s.townB++; s.bl.push(id); }
@@ -270,18 +361,22 @@ export function runSim(w, o = {}, onProgress = null){
       }
       h.b = -1;
     }
-    for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); }
+    for (const c of h.cells){ lfarm[c] = -1; farmEv.push(c, fr(step), 0); useCell(c, -1); }
     h.cells = []; h.cap = 0;
   }
   function collapse(id, step){
     B.died[id] = fr(step);
+    useCell(landAt(B.x[id], B.z[id]), -1);
     removeFrom(bkC, key(Math.floor(B.x[id] / R), Math.floor(B.z[id] / R)), id);
     removeFrom(bkF, key(Math.floor(B.x[id] / FG), Math.floor(B.z[id] / FG)), id);
     T[B.tag[id]].nb--; if (B.kind[id] >= 2) T[B.tag[id]].townB--;
   }
   // tr: behaviour traits (src/gen/traits.js), 0-1 each
   function newHousehold(x, z, people, ing, know, mode, step, parent, tr){
-    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, job: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0, tr };
+    // work: a country family's livelihood (src/gen/goods.js W); fc: its fishing ground or quarry cell; dep: its
+    // mine; out: what it made this step; bw: timber its new home still needs
+    const h = { id: H.length, x, z, people, ing, know, mode, tag: -1, b: -1, job: -1, cells: [], cap: 0, food: 0, born: step, alive: true, parent, res: 0, ri: 0, tr,
+      work: 0, fc: -1, dep: -1, out: 0, bw: 0 };
     H.push(h);
     return h;
   }
@@ -290,13 +385,18 @@ export function runSim(w, o = {}, onProgress = null){
   const yieldBits = TECH.reduce((m, t, i) => t.yield ? m | (1 << i) : m, 0);
   const labourOf = (m) => TECH.reduce((k, t, i) => t.labour && m & (1 << i) ? k * t.labour : k, 1);
   const farmK = (h) => (1.2 + 0.12 * count(h.know & yieldBits)) * labourOf(h.know);
+  // tools: what bronze and iron add to a harvest (and to what producers make) comes with metal tools, so
+  // only as far as the settlement gets the metal it wants (s.met[metal])
+  const toolBits = bit('bronze') | bit('iron');
+  const yieldT = (know, s) => { const m = s ? s.met[G.metal] : 1; return yieldOf(know & ~toolBits) * (1 + (yieldOf(know & toolBits) - 1) * m); };
+  const toolK = (know, s) => 1 + 0.3 * (s ? s.met[G.metal] : 1) * ((know & bit('bronze') ? 1 : 0) + (know & bit('iron') ? 1 : 0));
   // a branch's traits: its family's, with a little change
   const inheritTr = (tr, a) => Float32Array.from(tr, (v, i) => Math.min(1, Math.max(0, v + 0.12 * (chance(a, 20 + i) - 0.5))));
   const inherit = (ing, a) => Math.min(1, Math.max(0.02, ing + 0.15 * (chance(a, 3) - 0.5)));
   // farmland: take free cells near home (own settlement's land or untagged), best first, until the harvest
   // reaches target people's worth
   function farm(h, target, step){
-    const yf = YIELD * yieldOf(h.know) * cellKm2;
+    const yf = YIELD * yieldT(h.know, h.tag >= 0 ? T[h.tag] : null) * cellKm2;
     if (h.cap * yf >= target) return;
     const ci = Math.floor((h.x + half) / LC), cj = Math.floor((h.z + half) / LC);
     let took = 0;
@@ -311,6 +411,7 @@ export function runSim(w, o = {}, onProgress = null){
       const c = j * lres + i;
       if (lfarm[c] >= 0 || lfert[c] < 0.08 || (ltag[c] >= 0 && ltag[c] !== h.tag)) continue;
       lfarm[c] = h.id; h.cells.push(c); h.cap += lfert[c]; farmEv.push(c, fr(step), 1); took++;
+      if (h.tag >= 0) T[h.tag].cleared += useCell(c, 1);        // (clearing it yields its wood)
     }
   }
   const freeLandNear = (x, z, r) => {
@@ -546,10 +647,11 @@ export function runSim(w, o = {}, onProgress = null){
   function needsOf(h, s, ratio){
     const town = h.mode >= CRAFTS, med = !!(h.know & medBit);
     const food = Math.max(0, ratio), room = Math.min(1, ROOM / Math.max(1, h.people));
-    const health = Math.min(0.95, 0.55 + (med ? 0.35 : 0) - (town && !med ? 0.1 : 0));
+    // (cold without enough fuel is unhealthy: s.metFuel, see distribute)
+    const health = Math.min(0.95, 0.55 + (med ? 0.35 : 0) - (town && !med ? 0.1 : 0) - 0.15 * s.cold * (1 - s.metFuel));
     const safety = 1 - Math.min(0.7, s.danger || 0);
     const surv = Math.pow(health, 1.2);                                      // share of children who grow up
-    const hands = h.mode === FARMER ? (h.full ? 0 : 1) : 0.2;
+    const hands = h.mode === FARMER ? (h.full ? 0 : h.work ? 0.5 : 1) : 0.2;
     const cost = (town ? 0.3 : 0) + (1 - room);
     const plenty = Math.min(1, Math.max(0, food - 1));
     const want = Math.max(0.3, 1 + 0.6 * hands - 0.4 * cost + 0.3 * plenty);  // surviving children wanted per adult
@@ -572,7 +674,7 @@ export function runSim(w, o = {}, onProgress = null){
        town     work in a town within reach (its own or another): its market's food per town person,
                 with the newcomers counted */
   function moveOut(nh, h, s, step, stay){
-    const p = nh.people, a = nh.id, yf = YIELD * yieldOf(nh.know) * cellKm2;
+    const p = nh.people, a = nh.id, yf = YIELD * yieldT(nh.know, s) * cellKm2;
     const offers = [['stay', stay, 1, null]];
     const fl = freeLandNear(h.x, h.z, 1500) * yf;                        // people's worth of free land near
     if (fl > p * 1.5) offers.push(['near', Math.min(1, fl / (p * 3)) * 0.98, 1, null]);
@@ -588,6 +690,7 @@ export function runSim(w, o = {}, onProgress = null){
       const v = Math.min(1, fpp) * (1 - Math.min(0.7, t.danger || 0)) * Math.exp(-d / (3 * news)) * (0.85 + 0.3 * chance(a, 50 + t.id % 50));
       offers.push(['town', v, inclination(nh.tr, 'town') * (t === s ? 1 : inclination(nh.tr, 'trade')), t]);
     }
+    for (const o of workOffers(nh, h, s)) offers.push(o);
     for (let tries = 0; tries < 4 && offers.length; tries++){
       let vmax = -1e9; for (const o of offers) vmax = Math.max(vmax, o[1]);
       let sum = 0; const wts = offers.map((o) => { const w2 = Math.exp((o[1] - vmax) / 0.08) * o[2]; sum += w2; return w2; });
@@ -603,7 +706,15 @@ export function runSim(w, o = {}, onProgress = null){
   // carry out a move: build (or move into) a home and take up the work there
   function placeAt(nh, h, kind, t, step){
     const p = nh.people;
+    if (kind === 'work'){
+      nh.mode = FARMER; nh.work = t.work; nh.fc = t.fc; nh.dep = t.dep;
+      build(nh, t.x, t.z, 0, step); streets.track(B.x[nh.b], B.z[nh.b], nh.tag, fr(step));
+      if (nh.work === W.metal) mines[nh.dep].occ += p; else if (nh.work === W.stone) rockOcc[nh.fc] += p;
+      else if (nh.work === W.fish) fishWant[nh.fc] += p * RATE.fish * fishTech(nh.know);
+      return true;
+    }
     if (kind === 'town'){
+      if (!canBuild(t, nh.id)) return false;
       // traders once the settlement is a market, factory work once steam is known, else makers
       const steam = !!(nh.know & steamBit);
       const use = t.traders < 0.3 * t.town && (t.inflow > t.cap * 1.1 || t.town > 60) ? TRADER : steam ? WORKER : CRAFTS;
@@ -619,25 +730,190 @@ export function runSim(w, o = {}, onProgress = null){
     else if (kind === 'out') sp = site(nh.id * 13, h.x, h.z, 700, Math.max(1200, R * 1.8), 14, true);
     else sp = site(nh.id * 17, h.x, h.z, 3000, chance(nh.id, 8) < 0.3 * inclination(nh.tr, 'leave') ? 12000 : 9000, 16, true);
     if (!sp) return false;
-    nh.mode = FARMER;
+    nh.mode = FARMER; nh.work = W.farm;
     build(nh, sp[0], sp[1], 0, step); farm(nh, nh.people * farmK(nh), step); streets.track(B.x[nh.b], B.z[nh.b], nh.tag, fr(step));
     return true;
   }
 
+  // ---- goods (src/gen/goods.js) ----
+  const fishTech = (know) => know & steamBit ? 1.8 : 1;                      // (steam boats)
+  const reachOf = (s) => { const k = kOf(s); return k & carBit ? 35000 : k & railBit ? 18000 : k & wheelBit ? 6000 : 3500; };
+  const linked = (u, t) => { const L = tradeLinks.get(Math.min(u.id, t.id) * 1e6 + Math.max(u.id, t.id)); return !!(L && L.ok); };
+  // what a producing family makes this step: fish (food: eaten, the rest sold as food), or wood, stone, metal
+  // or coal (sold for food); full: its resource gives out (more hands would add little)
+  function make(h, s){
+    const tk = toolK(h.know, s);
+    let want = 0, out = 0, g = -1;
+    if (h.work === W.fish){
+      want = h.people * RATE.fish * fishTech(h.know); out = h.fc >= 0 ? want * fishOK[h.fc] : 0;
+      h.food = out; s.cap += Math.max(0, out - h.people); s.ff += out; s.fp += h.people;
+    } else if (h.work === W.wood){ g = G.wood; want = h.people * RATE.wood * tk; out = takeWood(h.x, h.z, RING_LOG, want); }
+    else if (h.work === W.stone){ g = G.stone; want = h.people * RATE.stone * tk; out = h.fc >= 0 ? want * Math.min(1, rockK[h.fc] / Math.max(1, rockOcc[h.fc])) : 0; }
+    else {
+      const m = h.dep >= 0 ? mines[h.dep] : null;
+      g = m ? m.good : G.metal; want = h.people * (g === G.coal ? RATE.coal : RATE.metal) * tk; out = m ? want * Math.min(1, m.cap / Math.max(1, m.occ)) : 0;
+    }
+    h.out = out; h.want = want; h.full = out < want * 0.9;
+    if (g >= 0) s.prod[g] += out;
+  }
+  /* Trade in goods, each step before food: a settlement uses what it makes first (and the wood cleared from
+     its new fields and building plots, free); the rest goes to the settlements around that want more (more
+     to those wanting more and nearer; heavy goods less far, REACH; further between places on water and along
+     roads). A settlement's price for a good is what it wants over what arrives (PRICE_MIN to PRICE_MAX); it
+     takes no more than it wants and pays for what it takes, in food, at its price: first from its farmers'
+     spare food (before that goes to market), the rest from everyone's share (payRest). The makers' settlement
+     earns it (inc), shared among its makers by what each made. */
+  function distribute(live, tb, TB){
+    const dl = [];
+    for (const s of live){
+      const free = Math.min(s.cleared, s.dem[G.wood]); s.cleared = 0;
+      s.got.fill(0); s.got[G.wood] = free;
+      s.own = s.own || new Float32Array(4); s.left = s.left || new Float32Array(4); s.want = s.want || new Float32Array(4); s.arr = s.arr || new Float32Array(4);
+      for (let g = 0; g < 4; g++){ s.own[g] = Math.min(s.prod[g], s.dem[g] - s.got[g]); s.left[g] = s.prod[g] - s.own[g]; s.want[g] = s.dem[g] - s.got[g] - s.own[g]; s.arr[g] = 0; }
+    }
+    for (const u of live){
+      const base = reachOf(u), ci = Math.floor(u.cx / TB), cj = Math.floor(u.cz / TB);
+      for (let g = 0; g < 4; g++){
+        if (u.left[g] <= 1e-6) continue;
+        const rg0 = base * REACH[g], nb = Math.min(4, Math.ceil(rg0 * WATER_REACH * 1.5 / TB));
+        const cand = []; let sum = 0;
+        for (let b = -nb; b <= nb; b++) for (let a = -nb; a <= nb; a++) for (const t of tb.get(key(ci + a, cj + b)) || []){
+          if (t === u || t.want[g] <= 1e-6) continue;
+          const rg = rg0 * (u.water && t.water ? WATER_REACH : 1) * (linked(u, t) ? ROAD_REACH : 1);
+          const wt = t.want[g] * Math.exp(-Math.hypot(t.cx - u.cx, t.cz - u.cz) / rg);
+          if (wt < 1e-4) continue;
+          cand.push(t, wt); sum += wt;
+        }
+        for (let q = 0; q < cand.length; q += 2){ const t = cand[q], a = u.left[g] * cand[q + 1] / sum; dl.push(u, t, g, a); t.arr[g] += a; }
+      }
+    }
+    for (const s of live) for (let g = 0; g < 4; g++){
+      s.price[g] = s.dem[g] > 0 ? priceOf(s.dem[g], s.got[g] + s.own[g] + s.arr[g]) : 1;
+      const p = s.own[g] * s.price[g];
+      s.got[g] += s.own[g]; s.pay += p; s.inc[g] += p;
+    }
+    for (let q = 0; q < dl.length; q += 4){
+      const u = dl[q], t = dl[q + 1], g = dl[q + 2], take = dl[q + 3] * Math.min(1, t.want[g] / Math.max(t.arr[g], 1e-9)), p = take * t.price[g];
+      t.got[g] += take; t.pay += p; u.inc[g] += p;
+    }
+    for (const s of live){
+      for (let g = 0; g < 4; g++) s.met[g] = s.dem[g] > 1e-6 ? Math.min(1, s.got[g] / s.dem[g]) : 1;
+      s.metFuel = s.fuel > 0 ? 1 - (s.fuelMkt * (1 - s.met[G.wood]) + s.fuelCoal * (1 - s.met[G.coal])) / s.fuel : 1;
+      const p1 = Math.min(s.cap, s.pay); s.cap -= p1; s.payRest = s.pay - p1;
+    }
+    // what is wanted and not got, by 12 km bucket, for families choosing what to make (see workOffers):
+    // per good, the shortfall, the want and the supply of the settlements around, weighted by distance
+    demandField = new Map();
+    for (const t of live){
+      if (!t.pop) continue;
+      const ci = Math.floor(t.cx / TB), cj = Math.floor(t.cz / TB), base = reachOf(t);
+      for (let b = -1; b <= 1; b++) for (let a = -1; a <= 1; a++){
+        const k = key(ci + a, cj + b), d = Math.hypot((ci + a + 0.5) * TB - t.cx, (cj + b + 0.5) * TB - t.cz);
+        let f = demandField.get(k); if (!f){ f = new Float32Array(12); demandField.set(k, f); }
+        for (let g = 0; g < 4; g++){ const wt = Math.exp(-d / (base * REACH[g] * (t.water ? 1.5 : 1))); f[g] += Math.max(0, t.dem[g] - t.got[g]) * wt; f[4 + g] += t.dem[g] * wt; f[8 + g] += t.got[g] * wt; }
+      }
+    }
+  }
+  let demandField = new Map();
+  /* Making goods: offers to fish, cut wood, quarry or mine on spots around the family, where it knows how
+     (stone needs masonry; copper bronze working, iron iron working, coal steam), the resource has room, and
+     the settlements around want more than they get. Each is valued by the food its work would bring: fish
+     eaten and sold as food; goods by what the settlements wanting them would pay once this family's output
+     arrives (it lowers their price: priceOf). */
+  function workOffers(nh, h, s){
+    const offers = [], p = nh.people, a = nh.id, tk = toolK(nh.know, s), safe = 1 - Math.min(0.7, s.danger || 0);
+    const f = demandField.get(key(Math.floor(h.x / 12000), Math.floor(h.z / 12000)));
+    const pays = (g, made) => { if (!f || f[g] <= 0.01) return 0; const sold = Math.min(made, f[g]); return sold * priceOf(f[4 + g], f[8 + g] + sold) / p; };
+    const best = [null, null, null, null, null];
+    const consider = (work, v, o) => { if (v > 0.3 && (!best[work] || v > best[work][1])) best[work] = ['work', Math.min(1, v) * safe * 0.97, 1, o]; };
+    for (let t = 0; t < 10; t++){
+      const ang = chance(a, 70 + t) * 6.2832, d = 200 + 5000 * Math.sqrt(chance(a, 80 + t));
+      const x = h.x + Math.cos(ang) * d, z = h.z + Math.sin(ang) * d;
+      if (Math.abs(x) > half - 200 || Math.abs(z) > half - 200 || !buildable(x, z)) continue;
+      const k = w.gridIndex(x, z), fc = fgAt(x, z);
+      // fishing: on the shore of the sea, a lake or a river
+      if ((dSea[k] < 400 || dFresh[k] < 250) && fishK[fc] > 0){
+        const room = 2 * fishK[fc] * fishS[fc] - fishWant[fc], catchPP = Math.min(RATE.fish * fishTech(nh.know), Math.max(0, room) / p);
+        consider(W.fish, catchPP, { work: W.fish, x, z, fc, dep: -1 });
+      }
+      if (f && f[G.wood] > 0.01) consider(W.wood, pays(G.wood, Math.min(p * RATE.wood * tk, woodNear(x, z, RING_GATHER) * 4)), { work: W.wood, x, z, fc: -1, dep: -1 });
+      if (f && f[G.stone] > 0.01 && nh.know & masonBit && rockK[fc] > rockOcc[fc]) consider(W.stone, pays(G.stone, p * RATE.stone * tk * Math.min(1, (rockK[fc] - rockOcc[fc]) / p)), { work: W.stone, x, z, fc, dep: -1 });
+    }
+    // mining: next to a deposit within reach that the family knows how to work
+    if (f && (f[G.metal] > 0.01 || f[G.coal] > 0.01)){
+      const ci = Math.floor(h.x / 6000), cj = Math.floor(h.z / 6000);
+      for (let b = -1; b <= 1; b++) for (let q = -1; q <= 1; q++) for (const i of mineB.get((ci + q) * 1000003 + cj + b) || []){
+        const m = mines[i];
+        if (!(m.type === 2 ? nh.know & steamBit : m.type === 1 ? nh.know & bronzeBit : nh.know & ironBit) || m.occ >= m.cap) continue;
+        const ang = chance(a, 90 + i % 50) * 6.2832, x = m.x + Math.cos(ang) * 400, z = m.z + Math.sin(ang) * 400;
+        if (Math.abs(x) > half - 200 || Math.abs(z) > half - 200 || !buildable(x, z)) continue;
+        const made = p * (m.good === G.coal ? RATE.coal : RATE.metal) * tk * Math.min(1, (m.cap - m.occ) / p);
+        consider(W.metal, pays(m.good, made), { work: W.metal, x, z, fc: -1, dep: i });
+      }
+    }
+    for (const o of best) if (o) offers.push(o);
+    return offers;
+  }
+  // a town building goes up only as far as the town gets the timber or stone it wants (a third of the time
+  // at worst: some can always be found)
+  const canBuild = (t, a) => chance(a, 93) < Math.max(0.35, Math.max(t.met[G.wood], kOf(t) & masonBit ? t.met[G.stone] : 0));
+
   const farmingBit = bit('farming');
+  const forestSnaps = []; let lastSnap = -1;
   for (let step = 1; step <= steps; step++){
     nowStep = step;
-    // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement --
-    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.workers = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5); }
+    // -- settlements: farmers' surplus (feeds crafts people), people and knowledge per settlement; goods made
+    //    and wanted (src/gen/goods.js) --
+    for (const s of T){ s.cap = 0; s.town = 0; s.traders = 0; s.inflow = 0; s.pop = 0; s.hh = 0; s.ff = 0; s.fp = 0; s.loot = 0; s.lootLost = 0; s.lost = 0; s.workers = 0; s.raidedNow = 0; s.wonNow = 0; s.kc = s.kc || new Float32Array(TECH.length); s.kc.fill(0); if (!s.tm) s.tm = new Float32Array(NT).fill(0.5);
+      s.prod.fill(0); s.dem.fill(0); s.inc.fill(0); s.pay = 0; s.fuel = 0; s.fuelMkt = 0; s.fuelCoal = 0; (s.work5 || (s.work5 = new Float32Array(5))).fill(0); }
     focc.fill(0);
+    // fishing grounds, quarries and mines: who works each, and what share of what they set out to make they get
+    fishWant.fill(0); rockOcc.fill(0); for (const m of mines) m.occ = 0;
+    for (const h of H){
+      if (!h.alive || h.mode !== FARMER || !h.work) continue;
+      if (h.work === W.fish && h.fc >= 0) fishWant[h.fc] += h.people * RATE.fish * fishTech(h.know);
+      else if (h.work === W.stone && h.fc >= 0) rockOcc[h.fc] += h.people;
+      else if (h.work === W.metal && h.dep >= 0) mines[h.dep].occ += h.people;
+    }
+    for (let k = 0; k < FGN; k++){
+      if (!fishK[k]) continue;
+      const most = 2 * fishK[k] * fishS[k], caught = Math.min(fishWant[k], most);
+      fishOK[k] = fishWant[k] > 0 ? caught / fishWant[k] : 1;
+      fishS[k] = Math.min(1, Math.max(0, fishS[k] + fishS[k] * (1 - fishS[k]) - 0.25 * caught / fishK[k] + 0.01));
+    }
     for (const h of H){
       if (!h.alive) continue;
       if (h.mode === FORAGER){ focc[fAt(h.x, h.z)] += h.people; continue; }
       const s = T[h.tag];
       s.pop += h.people; s.hh++;
-      if (h.mode === FARMER){ h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2; s.cap += Math.max(0, h.food - h.people); s.ff += h.food; s.fp += h.people; }
-      else { s.town += h.people; if (h.mode === TRADER) s.traders += h.people; if (h.mode === WORKER) s.workers += h.people; }
+      // fuel: country families cut their own firewood (and their new home's timber) within about 1 km; what
+      // they cannot, and all a town family burns, is bought. Half of it is coal once a family knows steam
+      // (country families too); with electricity half as much is burned at all
+      const fuel = h.people * FUEL * (0.3 + s.cold) * (h.know & elecBit ? 0.5 : 1), coal = h.know & steamBit ? 0.5 : 0;
+      s.fuel += fuel;
+      if (h.mode === FARMER){
+        const fw = fuel * (1 - coal), cut = takeWood(h.x, h.z, RING_GATHER, fw + h.bw), short = fw + h.bw - cut;
+        h.bw = Math.max(0, h.bw - Math.max(0, cut - fw));
+        if (short > 0){ s.dem[G.wood] += short; s.fuelMkt += Math.min(short, fw); }
+        if (coal){ s.dem[G.coal] += fuel * coal; s.fuelCoal += fuel * coal; }
+        s.work5[h.work] += h.people;
+        if (!h.work){ h.food = h.cap * YIELD * yieldT(h.know, s) * cellKm2; s.cap += Math.max(0, h.food - h.people); s.ff += h.food; s.fp += h.people; }
+        else make(h, s);
+      } else {
+        s.dem[G.wood] += fuel * (1 - coal); s.fuelMkt += fuel * (1 - coal); s.dem[G.coal] += fuel * coal; s.fuelCoal += fuel * coal;
+        s.town += h.people; if (h.mode === TRADER) s.traders += h.people;
+        if (h.mode === WORKER){ s.workers += h.people; if (h.know & steamBit) s.dem[G.coal] += h.people * POWER; }
+      }
+      // tools: metal, once bronze is known (more with iron; factory workers' machines twice as much)
+      if (h.know & bronzeBit) s.dem[G.metal] += h.people * TOOL * (h.know & ironBit ? 1.5 : 1) * (h.mode === WORKER ? 2 : 1);
       for (let t = 0; t < TECH.length; t++) if (h.know & (1 << t)) s.kc[t]++;
+    }
+    // what new buildings (last step) and repairs take
+    for (const s of T){
+      if (!s.pop){ s.bNeed.fill(0); continue; }
+      for (let g = 0; g < 3; g++) s.dem[g] += s.bNeed[g];
+      s.bNeed.fill(0);
+      s.dem[kOf(s) & masonBit ? G.stone : G.wood] += UPKEEP * s.nb;
     }
     // contact between settlements: knowledge exposure from the others nearby (bigger and nearer count more)
     const live = T.filter((s) => s.nb > 0);
@@ -654,6 +930,8 @@ export function runSim(w, o = {}, onProgress = null){
         for (let t = 0; t < TECH.length; t++) s.ext[t] += wgt * (shared ? ((u.know >> t) & 1) : u.kc[t] / u.hh);
       }
     }
+    // goods first (see distribute): what they cost comes out of the farmers' spare food before it goes to market
+    distribute(live, tb, TB);
     // trade: each settlement's spare food goes to the markets around it (itself included), more to bigger
     // and nearer ones; the food that reaches a market feeds its town people (crafts and traders)
     let roadsThisStep = 0;
@@ -738,7 +1016,7 @@ export function runSim(w, o = {}, onProgress = null){
         if (h.know & farmingBit){
           // settle: a home on good land near water, within a few km
           const sp = site(h.id * 31 + step, h.x, h.z, 0, 3000, 10, true);
-          if (sp){ h.mode = FARMER; build(h, sp[0], sp[1], 0, step); farm(h, h.people * farmK(h), step); }
+          if (sp){ h.mode = FARMER; h.work = W.farm; build(h, sp[0], sp[1], 0, step); farm(h, h.people * farmK(h), step); }
         }
         if (h.mode === FORAGER){
           if (h.people < 4){ h.alive = false; continue; }
@@ -751,17 +1029,22 @@ export function runSim(w, o = {}, onProgress = null){
       let ratio;
       // raids: food taken from the settlement comes off everyone's share; food taken by it goes to everyone
       const keep = 1 - Math.min(0.6, (s.lootLost || 0) / Math.max(1, s.ff + s.inflow)), extra = s.loot / Math.max(1, s.pop);
-      if (h.mode === FARMER){
+      // (what a settlement pays for goods beyond its farmers' spare food comes off everyone's share)
+      const keepG = 1 - Math.min(0.6, (s.payRest || 0) / Math.max(1, s.ff + s.inflow));
+      if (h.mode === FARMER && h.work && h.work !== W.fish){
+        // a family making goods eats what they sell for: its share (by what it made) of its settlement's earnings
+        const g = h.work === W.wood ? G.wood : h.work === W.stone ? G.stone : h.dep >= 0 ? mines[h.dep].good : G.metal;
+        h.food = s.prod[g] > 0 ? h.out / s.prod[g] * s.inc[g] : 0;
+        ratio = h.food / h.people * keep * keepG + extra;
+      } else if (h.mode === FARMER){
         const want = h.people * farmK(h);
-        farm(h, want, step);
-        h.food = h.cap * YIELD * yieldOf(h.know) * cellKm2;
-        h.full = h.food < want * 0.95;                       // no more land within reach: more hands add little
+        if (!h.work){ farm(h, want, step); h.food = h.cap * YIELD * yieldT(h.know, s) * cellKm2; h.full = h.food < want * 0.95; }   // no more land within reach: more hands add little
         // sharing: part of each family's harvest is pooled with the settlement's other farmers (up to 60% where
         // everyone shares readily, none where no one does)
         const sh = 0.6 * Math.min(1, s.tm[TI.sharing] * inclination(h.tr, 'share') * 0.5);
         const avg = s.fp > 0 ? s.ff / s.fp : 1;
-        ratio = ((1 - sh) * h.food / h.people + sh * avg) * keep + extra;
-      } else ratio = (s.town > 0 ? s.inflow / s.town : 1) * keep + extra;
+        ratio = ((1 - sh) * h.food / h.people + sh * avg) * keep * keepG + extra;
+      } else ratio = (s.town > 0 ? s.inflow / s.town : 1) * keep * keepG + extra;
       // being raided makes people warier and readier to use force; winning raids, readier still
       if (s.raidedNow){ h.tr[TI.trust] = Math.max(0, h.tr[TI.trust] - 0.02); h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01); }
       if (s.wonNow) h.tr[TI.force] = Math.min(1, h.tr[TI.force] + 0.01);
@@ -797,7 +1080,7 @@ export function runSim(w, o = {}, onProgress = null){
       if (h.people < 4){ h.alive = false; abandon(h, step); continue; }
       // leaving home: a grown branch of the family (when the family is too big for one home, or the farm has
       // more hands than its land can use) weighs its offers and goes where it expects its needs best met
-      const idle = h.mode === FARMER && h.full ? h.people - h.food / farmK(h) : 0;
+      const idle = h.mode !== FARMER || !h.full ? 0 : h.work && h.work !== W.fish ? h.people * (1 - h.out / Math.max(1e-6, h.want)) : h.people - h.food / (h.work ? RATE.fish : farmK(h));
       if (h.people > SPLIT || idle >= 10){
         const p = Math.min(8 + 7 * rnd(hS, 7), h.people * 0.4);
         const nh = newHousehold(h.x, h.z, p, inherit(h.ing, h.id), h.know, FARMER, step, h.id, inheritTr(h.tr, h.id));
@@ -811,6 +1094,13 @@ export function runSim(w, o = {}, onProgress = null){
       }
     }
     lap('households');
+    // the forest grows back where it was cut (logistically, with seeding), up to what each block can hold
+    for (let k = 0; k < FBN; k++){
+      const m = fbMax[k];
+      if (m <= 0){ fbWood[k] = 0; continue; }
+      const F = fbWood[k] / m;
+      fbWood[k] = Math.min(m, fbWood[k] + m * (REGROW * F * (1 - F) + SEED));
+    }
     // setbacks: now and then a settlement loses part of its people
     const hit = new Map();
     for (const s of live) if (rnd(h2(s.id, step, S + 5), 1) < setback){
@@ -943,11 +1233,17 @@ export function runSim(w, o = {}, onProgress = null){
       const f = fr(step);
       s.popAt[f] = s.pop; s.xAt[f] = s.pop > 0 ? s.sx / s.pop / 1000 : s.core[0] / 1000; s.zAt[f] = s.pop > 0 ? s.sz / s.pop / 1000 : s.core[1] / 1000;
       s.areaAt[f] = s.cells * cellKm2; s.knowAt[f] = shared ? s.know : s.kn;
+      // what its people do (country livelihoods, of all its people: the rest live in town) and how well it is
+      // supplied (wood, stone, tools, fuel), 0-255
+      if (s.work5){ let all = s.town; for (let k = 0; k < 5; k++) all += s.work5[k]; for (let k = 0; k < 5; k++) s.workAt[f * 5 + k] = all > 0 ? Math.round(255 * s.work5[k] / all) : 0; }
+      s.metAt[f * 4] = Math.round(255 * s.met[G.wood]); s.metAt[f * 4 + 1] = Math.round(255 * s.met[G.stone]); s.metAt[f * 4 + 2] = Math.round(255 * s.met[G.metal]); s.metAt[f * 4 + 3] = Math.round(255 * s.metFuel);
       // its people's average ways (0-255 per trait)
       if (!s.traitsAt) s.traitsAt = new Uint8Array((frames + 1) * NT);
       if (s.pop > 0) for (let i = 0; i < NT; i++){ s.tm[i] = s.trs[i] / s.pop; s.traitsAt[f * NT + i] = Math.round(255 * s.tm[i]); }
       s.x = s.xAt[f]; s.z = s.zAt[f];
     }
+    // the forest, every 20 frames and at the end: each block's wood over what full forest on all its land holds
+    { const f = fr(step); if ((f % 20 === 0 && f !== lastSnap) || step === steps){ lastSnap = f; const v = new Uint8Array(FBN); for (let k = 0; k < FBN; k++) v[k] = Math.min(255, Math.round(255 * fbWood[k] / (FBf * FBf * WOOD_CELL))); forestSnaps.push([f, v]); } }
     lap('record');
     if (onProgress) onProgress(step / steps, step * STEP_YEARS);
   }
@@ -1029,9 +1325,10 @@ export function runSim(w, o = {}, onProgress = null){
 
   const buildings = { n: nb, x: Float32Array.from(B.x), z: Float32Array.from(B.z), kind: Uint8Array.from(B.kind), tag: Int32Array.from(B.tag),
     born: Int16Array.from(B.born), died: Int16Array.from(B.died), empty: Int16Array.from(B.empty),
-    st: Uint8Array.from(B.st, (v) => Math.min(63, v)), rebuilt: Int16Array.from(B.rebuilt) };
+    st: Uint8Array.from(B.st, (v) => Math.min(63, v)), rebuilt: Int16Array.from(B.rebuilt), mat: Uint8Array.from(B.mat), work: Uint8Array.from(B.work) };
   for (const s of T) for (const k of Object.keys(s)) if (/^[wr]\d+$/.test(k)) delete s[k];     // raid bookkeeping
-  for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; delete s.danger; }
+  for (const s of T){ delete s.trs; delete s.tm; delete s.ff; delete s.fp; delete s.loot; delete s.lootLost; delete s.lost; delete s.raidedNow; delete s.wonNow; delete s.nodes; delete s.kc; delete s.ext; delete s.cx; delete s.cz; delete s.sx; delete s.sz; delete s.kn; delete s.hh; delete s.found; delete s.danger;
+    for (const k of ['prod', 'dem', 'got', 'met', 'price', 'inc', 'pay', 'payRest', 'bNeed', 'fuel', 'fuelMkt', 'fuelCoal', 'metFuel', 'cleared', 'own', 'left', 'want', 'arr', 'work5', 'cold', 'water']) delete s[k]; }
   const aliveN = alive.length;
   return {
     version: 2, steps: frames, year, stepYears: rec * STEP_YEARS, ages: [{ name: 'Simulation', from: 0, steps: frames, years: rec * STEP_YEARS }],
@@ -1041,6 +1338,8 @@ export function runSim(w, o = {}, onProgress = null){
     knowMap: { res: lres, cell: LC, half, know: kmap },
     log, eras: T.map((s) => eraOf(s.knowAt[s.died || frames])),
     farms: { res: lres, cell: LC, owner, since: new Int16Array(LN), until: new Int16Array(LN), half },
+    forest: { res: fbres, cell: FBC, half, snaps: forestSnaps, standing: fbWood.reduce((a, v) => a + v, 0) / Math.max(1, fbMax.reduce((a, v) => a + v, 0)) },
+    goods: { fishing: fishS.reduce((a, v, k) => a + (fishK[k] ? 1 : 0), 0), mines: mines.length },
     centres: [], roads: [], network: { ...streets.stats(), razed: razedTotal, displaced }, blocks, streets: town.streets, junctions: town.junctions, raids: Int32Array.from(raidLog),
     ms: performance.now() - t0, times };
 }
