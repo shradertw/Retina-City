@@ -18,7 +18,7 @@
      deck      a raised stretch of road, in the building list: (centre x, z, direction x, z)
                (half length, minus half width (negative: a deck), height at the -direction end, at the + end)
                (5, pier offset along it from the centre, 1 if it has a pier (0: it spans this stretch without
-               one), -1). Both ends 2.5 m up or more: a deck on a pier (where no road runs below) with barriers;
+               one), -1). Both ends DECK_H (5.5 m) up or more: a deck on a pier (where no road runs below) with barriers;
                else an embankment, solid down to the ground (ramps and the approaches of overpasses).
      light     (pole x, z, arm direction x, z): the arm direction is a unit vector for an electric light on an
                8 m pole, half that for a gas lamp on a 3.6 m post (no arm: the lantern is on the post)
@@ -55,6 +55,8 @@ let warned = false;
 const warn = (m) => { if (!warned){ console.warn('render cells: ' + m); warned = true; } };
 
 /** @param {ReturnType<import('./roads.js').makeRoads>} roads @param {ReturnType<import('./blocks.js').makeBlocks>} blocks */
+// below this (m), a raised road stands on an embankment; at or above, a deck on piers (clear of a lorry below)
+export const DECK_H = 5.5;
 export function makeCells(roads, blocks){
   // ---- where a deck's pier may stand: never on a road below ----
   // the ground-level road segments of a road chunk (x0, z0, x1, z1, half width), kept per chunk
@@ -187,7 +189,7 @@ export function makeCells(roads, blocks){
         // a raised stretch: a deck (or embankment) in the building lists
         if (Math.max(ha, hb) > 0.3 && sl > 0.5){
           const ux = (bx - ax) / sl, uz = (bz - az) / sl, mx = (ax + bx) / 2, mz = (az + bz) / 2, dw = hw + 0.6;
-          const pier = Math.min(ha, hb) >= 2.5 ? pierOf(mx, mz, ux, uz, sl / 2, dw) : 0;
+          const pier = Math.min(ha, hb) >= DECK_H ? pierOf(mx, mz, ux, uz, sl / 2, dw) : 0;
           const drec = [mx, mz, ux, uz, sl / 2 + 0.3, -dw, ha, hb, 5, pier ?? 0, pier === null ? 0 : 1, -1], tp = Math.max(ha, hb) + 1.2;
           decks.push(drec);
           const ex = Math.abs(ux) * (sl / 2) + Math.abs(uz) * dw, ez = Math.abs(uz) * (sl / 2) + Math.abs(ux) * dw;

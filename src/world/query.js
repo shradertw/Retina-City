@@ -31,7 +31,7 @@ export function sdBox3(x, y, z, bx, by, bz){
 function deckAt(d, o, x, z){
   const i = o * 4, qx = x - d[i], qz = z - d[i + 1], ux = d[i + 2], uz = d[i + 3];
   const lx = qx * ux + qz * uz, lz = -qx * uz + qz * ux, hl = d[i + 4], t = Math.max(0, Math.min(1, (lx + hl) / (2 * hl)));
-  return { lx, lz, hl, hw: -d[i + 5], top: d[i + 6] + (d[i + 7] - d[i + 6]) * t, pier: Math.min(d[i + 6], d[i + 7]) >= 2.5, ux, uz };
+  return { lx, lz, hl, hw: -d[i + 5], top: d[i + 6] + (d[i + 7] - d[i + 6]) * t, pier: Math.min(d[i + 6], d[i + 7]) >= 5.5 /* DECK_H in src/gen/cells.js */, ux, uz };
 }
 // a building (texel offset o in list d): distance from (x, y, z)
 function bldDist(d, o, x, y, z){

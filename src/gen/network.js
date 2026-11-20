@@ -696,14 +696,32 @@ export function makeNetwork(c){
   /** a diamond interchange where crossing road node n2 passes over or under freeway node n of corridor cor:
    *  ramps from the freeway 150 m either side to the crossing road 60 m either side */
   function diamond(cor, n, n2, born, sf){
-    const legs = nedges[n2].slice(0, 2);
-    const fwd = alongCorridor(cor, cor.nodes.indexOf(n), 150, 1, born), back = alongCorridor(cor, cor.nodes.indexOf(n), 150, -1, born);
-    const ends = legs.map((f) => { const o = other(f, n2), L = elen(f); return L > 80 ? splitAt(f, nx[n2] + (nx[o] - nx[n2]) * 60 / L, nz[n2] + (nz[o] - nz[n2]) * 60 / L, born) : o; });
+    // (only legs that lead somewhere: not a short stub ending just past the freeway)
+    const legs = nedges[n2].slice(0, 2).filter((f) => { const o = other(f, n2); return elen(f) >= 100 || nedges[o].length > 1; });
+    // a raised freeway's ramps start further out, so they can come down at a gentle slope
+    const reach = Math.max(150, 60 + nh[n] / 0.06), k = cor.nodes.indexOf(n);
+    const fwd = alongCorridor(cor, k, reach, 1, born), back = alongCorridor(cor, cor.nodes.indexOf(n), reach, -1, born);
+    // where each ramp meets the crossing road: 60 m along each leg, further where the road crosses at a slant,
+    // so the meeting point is at least 30 m out to the side of the freeway (a leg running almost alongside the
+    // freeway gets none)
+    const fx = fwd >= 0 ? nx[fwd] - nx[n] : back >= 0 ? nx[n] - nx[back] : 1, fz = fwd >= 0 ? nz[fwd] - nz[n] : back >= 0 ? nz[n] - nz[back] : 0, fl = Math.hypot(fx, fz) || 1;
+    const ends = legs.map((f) => {
+      const o = other(f, n2), L = elen(f), sin = Math.abs(((nx[o] - nx[n2]) * fz - (nz[o] - nz[n2]) * fx) / (L * fl));
+      if (sin < 0.5) return -1;
+      const at = Math.max(60, 30 / sin);
+      return L > at + 20 ? splitAt(f, nx[n2] + (nx[o] - nx[n2]) * at / L, nz[n2] + (nz[o] - nz[n2]) * at / L, born) : L >= at ? o : -1;
+    });
+    const side = LEVEL_W[4] / 2 + 2 + 3.5;
     for (const fn of [fwd, back]) for (const cn of ends){
       if (fn < 0 || cn < 0) continue;
-      const r = rawEdge(fn, cn, 2, born, etag[cor.edges[0]], sf);
-      eramp[r] = 1; ew[r] = 7;
-      clearAlong([fn, cn], 8);
+      // each ramp leaves the freeway sideways at the freeway's height (a gore 40 m along toward the crossing,
+      // clear of its edge), and only then goes down (or up) to the crossing road: it never runs under the deck
+      const ux = nx[n] - nx[fn], uz = nz[n] - nz[fn], ul = Math.hypot(ux, uz) || 1, s = Math.sign(ux * (nz[cn] - nz[fn]) - uz * (nx[cn] - nx[fn])) || 1;
+      const gx = nx[fn] + ux / ul * 40 - uz / ul * side * s, gz = nz[fn] + uz / ul * 40 + ux / ul * side * s;
+      const g = addNode(gx, gz, ntag[fn], born);
+      nh[g] = nh[fn] + (nh[n] - nh[fn]) * 40 / ul;          // (the freeway's height beside it, where the freeway slopes)
+      for (const [a, b] of [[fn, g], [g, cn]]){ const r = rawEdge(a, b, 2, born, etag[cor.edges[0]], sf); eramp[r] = 1; ew[r] = 7; }
+      clearAlong([fn, g, cn], 8);
     }
   }
   /** a bypass: a new freeway from the corridor's first node to its last, around crowded land @returns {boolean} */

@@ -386,7 +386,7 @@ float deckSDF(vec3 p, vec4 a, vec4 b, vec3 pier, out float top){
   float hl = b.x, hw = -b.y;
   top = mix(b.z, b.w, clamp((l.x + hl) / (2.0 * hl), 0.0, 1.0));
   float ax = abs(l.x) - hl;
-  if (min(b.z, b.w) >= 2.5){
+  if (min(b.z, b.w) >= 5.5){             // (DECK_H in src/gen/cells.js)
     // a slab 1.2 m deep, a concrete barrier 0.9 m tall at each side, and a pier under it (where no road runs
     // below: see src/gen/cells.js)
     float slab = max(max(ax, abs(l.y) - hw), abs(p.y - (top - 0.6)) - 0.6);
@@ -1556,7 +1556,7 @@ Surf surfAt(float mat, vec3 p, vec3 n, vec2 uv, vec2 f){
       gRoadY = tp; roadAt(p.xz, g, fr, dC, gC); gRoadY = 0.0;
       return road(uv, fr, vec2(-g.y, g.x), f);
     }
-    if (min(b.z, b.w) < 2.5 && abs(ly) > hw + 0.5){ Surf s = blank(); float hh; s.alb = grassCol(uv, f, 0.4, hh); s.h = hh; s.refl = 0.02; return s; }
+    if (min(b.z, b.w) < 5.5 && abs(ly) > hw + 0.5){ Surf s = blank(); float hh; s.alb = grassCol(uv, f, 0.4, hh); s.h = hh; s.refl = 0.02; return s; }
     return roof(uv * vec2(1.0, 3.0), f);
   }
   if (m > 8.5) return water(uv, f);
